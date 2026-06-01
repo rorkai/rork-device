@@ -17,7 +17,10 @@ The first release focuses on the app-install workflows used by developer tools:
 - Install and remove provisioning profiles through MISAgent.
 - List, install, and uninstall applications through InstallationProxy.
 - Expose structured progress and errors.
+- Upgrade secure Lockdown and service connections on Apple platforms.
 - Provide a Swift library and `rorkdevice` CLI.
+- Include an opt-in physical-device smoke test for list, info, profile
+  install, IPA install, and IPA uninstall.
 
 Out of scope for 0.1.0:
 
@@ -29,9 +32,8 @@ Out of scope for 0.1.0:
 - Windows support.
 
 Secure-session upgrades are represented by the public `SecureSessionUpgrader`
-protocol. Built-in TLS backends should be added as the next implementation
-slice so the same API can support more physical-device environments without
-changing the high-level install flow.
+protocol. The Apple backend is built in for 0.1.0, and additional platform
+backends can be added without changing the high-level install flow.
 
 ## Future Milestones
 

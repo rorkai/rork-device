@@ -48,6 +48,24 @@ public protocol SecureSessionUpgrader {
     func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection
 }
 
+/// Platform default secure-session upgrader.
+///
+/// On Apple platforms this delegates to `AppleSecureSessionUpgrader`. On other
+/// platforms it fails explicitly until a backend is provided by the caller.
+public struct DefaultSecureSessionUpgrader: SecureSessionUpgrader {
+    /// Creates the default platform upgrader.
+    public init() {}
+
+    /// Upgrades with the platform backend when available.
+    public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection {
+        #if canImport(Security)
+        return try await AppleSecureSessionUpgrader().upgrade(connection, pairingRecord: pairingRecord)
+        #else
+        throw RorkDeviceError.secureSessionUnsupported
+        #endif
+    }
+}
+
 /// Default secure-session upgrader used when TLS support has not been supplied.
 ///
 /// This type makes unsupported secure sessions fail explicitly instead of

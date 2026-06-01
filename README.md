@@ -34,9 +34,9 @@ Pairing creation, device event streams, syslog, crash reports, debugserver,
 developer image mounting, backup, and restore are planned for later milestones.
 
 Secure Lockdown/session upgrades are modeled through `SecureSessionUpgrader` so
-apps can supply the TLS backend that matches their platform. Built-in secure
-session backends are part of the next implementation slice before broad
-physical-device coverage.
+apps can supply the TLS backend that matches their platform. On Apple
+platforms, `DeviceClient` uses the built-in Security.framework backend by
+default for Lockdown and secure service connections.
 
 See [Docs/Roadmap.md](Docs/Roadmap.md) for the release roadmap.
 
@@ -92,3 +92,17 @@ swift run rorkdevice --help
 
 Physical-device checks should be opt-in and must not run in normal CI unless
 the required device and pairing record are available.
+
+Run the release smoke test against a paired device with:
+
+```bash
+RORK_DEVICE_PHYSICAL_SMOKE=1 \
+RORK_DEVICE_PAIRING_RECORD=/path/to/pairing.plist \
+RORK_DEVICE_PROFILE=/path/to/Profile.mobileprovision \
+RORK_DEVICE_IPA=/path/to/App.ipa \
+RORK_DEVICE_BUNDLE_ID=com.example.app \
+swift test --filter PhysicalDeviceSmokeTests
+```
+
+Set `RORK_DEVICE_UDID` as well when more than one device is visible through
+local `usbmuxd`.

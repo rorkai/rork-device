@@ -26,6 +26,9 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Sendable
     /// configured.
     case secureSessionUnsupported
 
+    /// Secure-session setup, certificate parsing, or TLS I/O failed.
+    case secureSession(String)
+
     /// AFC returned a non-zero status code.
     case afcStatus(UInt64)
 
@@ -50,6 +53,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Sendable
             return "Lockdown error: \(message)"
         case .secureSessionUnsupported:
             return "The device requested a secure Lockdown session, but this client was created without a secure-session upgrader."
+        case let .secureSession(message):
+            return "Secure session error: \(message)"
         case let .afcStatus(status):
             return "AFC returned status \(status)."
         case let .installationProxy(name, description):

@@ -34,11 +34,11 @@ public final class DeviceClient {
     ///     device-port connections.
     ///   - secureSessionUpgrader: Component responsible for upgrading
     ///     Lockdown and service connections when the device asks for secure
-    ///     traffic. The default throws `RorkDeviceError.secureSessionUnsupported`
-    ///     so applications can wire their preferred TLS backend explicitly.
+    ///     traffic. The default uses the built-in Apple backend when Security
+    ///     is available and otherwise throws `secureSessionUnsupported`.
     public init(
         usbmuxClient: USBMuxClient = USBMuxClient(),
-        secureSessionUpgrader: SecureSessionUpgrader = UnsupportedSecureSessionUpgrader()
+        secureSessionUpgrader: SecureSessionUpgrader = DefaultSecureSessionUpgrader()
     ) {
         self.usbmuxClient = usbmuxClient
         self.secureSessionUpgrader = secureSessionUpgrader
