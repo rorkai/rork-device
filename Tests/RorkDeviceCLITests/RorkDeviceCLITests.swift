@@ -10,4 +10,38 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("install"))
         XCTAssertTrue(help.contains("profiles"))
     }
+
+    func testInstallCommandParsesArguments() throws {
+        let command = try Install.parse([
+            "--pairing-record", "pairing.plist",
+            "App.ipa",
+            "--bundle-identifier", "com.example.app",
+        ])
+
+        XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.ipaPath, "App.ipa")
+        XCTAssertEqual(command.bundleIdentifier, "com.example.app")
+    }
+
+    func testAppsListCommandParsesApplicationType() throws {
+        let command = try AppsList.parse([
+            "--pairing-record", "pairing.plist",
+            "--type", "Any",
+        ])
+
+        XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.type, .any)
+    }
+
+    func testInfoCommandParsesDirectEndpoint() throws {
+        let command = try Info.parse([
+            "--host", "127.0.0.1",
+            "--port", "62079",
+            "--pairing-record", "pairing.plist",
+        ])
+
+        XCTAssertEqual(command.connection.host, "127.0.0.1")
+        XCTAssertEqual(command.connection.port, 62079)
+        XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+    }
 }

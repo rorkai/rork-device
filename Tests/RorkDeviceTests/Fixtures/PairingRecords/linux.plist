@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>DeviceCertificate</key>
+    <data>AQIDBAUG</data>
+    <key>EscrowBag</key>
+    <data>BwgJCgsM</data>
+    <key>HostCertificate</key>
+    <data>DQ4PEBES</data>
+    <key>HostID</key>
+    <string>host-linux-fixture</string>
+    <key>HostPrivateKey</key>
+    <data>ExQVFhcY</data>
+    <key>RootCertificate</key>
+    <data>GRobHB0e</data>
+    <key>RootPrivateKey</key>
+    <data>HyAhIiMk</data>
+    <key>SystemBUID</key>
+    <string>system-linux-fixture</string>
+    <key>UDID</key>
+    <string>00008030-00ABCDEF12345678</string>
+</dict>
+</plist>

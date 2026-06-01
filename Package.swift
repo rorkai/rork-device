@@ -34,7 +34,10 @@ let package = Package(
         ),
         .testTarget(
             name: "RorkDeviceTests",
-            dependencies: ["RorkDevice"]
+            dependencies: ["RorkDevice"],
+            resources: [
+                .process("Fixtures"),
+            ]
         ),
         .testTarget(
             name: "RorkDeviceCLITests",

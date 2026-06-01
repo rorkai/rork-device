@@ -24,6 +24,45 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(try afcOperation(connection.sent[0]), 8)
     }
 
+    func testMakeDirectoryThrowsNonZeroStatus() async throws {
+        let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 7))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .afcStatus(7))
+        }
+    }
+
+    func testRejectsInvalidMagic() async throws {
+        let connection = FakeConnection(inbound: Data(repeating: 0, count: 40))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Invalid AFC magic."))
+        }
+    }
+
+    func testRejectsUnexpectedPacketNumber() async throws {
+        let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 99, status: 0))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("Unexpected AFC packet number 99, expected 1.")
+            )
+        }
+    }
+
+    func testRejectsInvalidPacketLengths() async throws {
+        let connection = FakeConnection(inbound: afcMalformedLengthResponse(packetNumber: 1))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Invalid AFC packet lengths."))
+        }
+    }
+
     func testUploadFileOpensWritesAndClosesRemoteFile() async throws {
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(UUID().uuidString)
@@ -43,6 +82,19 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
+
+    func testUploadFileThrowsWhenOpenReturnsStatusFailure() async throws {
+        let fileURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try Data("hello".utf8).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 5))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.uploadFile(localURL: fileURL, remotePath: "/PublicStaging/App.ipa") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .afcStatus(5))
+        }
+    }
 }
 
 private func afcOperation(_ packet: Data) throws -> UInt64 {
@@ -59,6 +111,15 @@ private func afcFileOpenResponse(packetNumber: UInt64, handle: UInt64) -> Data {
     var payload = Data()
     payload.appendLittleEndian(handle)
     return afcResponse(packetNumber: packetNumber, operation: 14, payload: payload)
+}
+
+private func afcMalformedLengthResponse(packetNumber: UInt64) -> Data {
+    var data = Data("CFA6LPAA".utf8)
+    data.appendLittleEndian(UInt64(39))
+    data.appendLittleEndian(UInt64(40))
+    data.appendLittleEndian(packetNumber)
+    data.appendLittleEndian(UInt64(1))
+    return data
 }
 
 private func afcResponse(packetNumber: UInt64, operation: UInt64, payload: Data) -> Data {

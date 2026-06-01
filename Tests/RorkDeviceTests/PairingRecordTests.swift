@@ -64,4 +64,21 @@ final class PairingRecordTests: XCTestCase {
         XCTAssertEqual(record.hostID, "host-1")
         XCTAssertEqual(record.systemBUID, "system-1")
     }
+
+    func testLoadsSanitizedPairingRecordFixtures() throws {
+        for name in ["macos", "linux"] {
+            let url = try XCTUnwrap(
+                Bundle.module.url(
+                    forResource: name,
+                    withExtension: "plist"
+                )
+            )
+            let record = try PairingRecord.load(from: url)
+
+            XCTAssertFalse(record.udid.isEmpty)
+            XCTAssertFalse(record.hostID.isEmpty)
+            XCTAssertFalse(record.systemBUID.isEmpty)
+            XCTAssertTrue(record.hasSecureSessionMaterial)
+        }
+    }
 }
