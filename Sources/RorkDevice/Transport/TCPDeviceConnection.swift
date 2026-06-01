@@ -113,6 +113,7 @@ public final class TCPDeviceConnection: DeviceConnection {
         close()
     }
 
+    /// Runs a socket operation after checking that the descriptor is open.
     private func withOpenSocket<T>(_ body: () throws -> T) throws -> T {
         lock.lock()
         let isClosed = closed
@@ -124,6 +125,7 @@ public final class TCPDeviceConnection: DeviceConnection {
     }
 }
 
+/// Resolves and opens a TCP socket.
 private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     var hints = addrinfo(
         ai_flags: 0,
@@ -159,10 +161,12 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     throw RorkDeviceError.transport(lastError)
 }
 
+/// Formats the current POSIX `errno` for diagnostics.
 private func lastErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
 }
 
+/// Platform wrapper for `send`.
 @discardableResult
 private func systemSend(_ fd: Int32, _ buffer: UnsafeRawPointer, _ length: Int, _ flags: Int32) -> Int {
     #if canImport(Darwin)
@@ -172,6 +176,7 @@ private func systemSend(_ fd: Int32, _ buffer: UnsafeRawPointer, _ length: Int, 
     #endif
 }
 
+/// Platform wrapper for `recv`.
 @discardableResult
 private func systemRecv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ length: Int, _ flags: Int32) -> Int {
     #if canImport(Darwin)
@@ -181,6 +186,7 @@ private func systemRecv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ length
     #endif
 }
 
+/// Platform wrapper for `connect`.
 @discardableResult
 private func systemConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>?, _ length: socklen_t) -> Int32 {
     #if canImport(Darwin)
@@ -190,6 +196,7 @@ private func systemConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>?, _ l
     #endif
 }
 
+/// Platform wrapper for `close`.
 @discardableResult
 private func systemClose(_ fd: Int32) -> Int32 {
     #if canImport(Darwin)

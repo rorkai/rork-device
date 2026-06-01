@@ -20,4 +20,22 @@ final class USBMuxPacketTests: XCTestCase {
         XCTAssertEqual(decoded.tag, 42)
         XCTAssertEqual(decoded.payload, payload)
     }
+
+    func testDecodeRejectsWrongHeaderLength() {
+        XCTAssertThrowsError(try USBMuxPacket.decode(header: Data([0]), payload: Data())) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Invalid usbmux header length 1."))
+        }
+    }
+
+    func testDecodeRejectsPayloadLengthMismatch() throws {
+        var header = Data()
+        header.appendLittleEndian(UInt32(99))
+        header.appendLittleEndian(UInt32(1))
+        header.appendLittleEndian(UInt32(8))
+        header.appendLittleEndian(UInt32(42))
+
+        XCTAssertThrowsError(try USBMuxPacket.decode(header: header, payload: Data([1, 2, 3]))) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("usbmux payload length mismatch."))
+        }
+    }
 }

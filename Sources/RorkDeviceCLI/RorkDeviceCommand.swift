@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import RorkDevice
 
+/// Root command for the `rorkdevice` CLI.
 @main
 struct RorkDeviceCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -19,6 +20,7 @@ struct RorkDeviceCommand: AsyncParsableCommand {
     )
 }
 
+/// Shared options for commands that need an authenticated device session.
 struct ConnectionOptions: ParsableArguments {
     @Option(help: "Device UDID. Defaults to the first discovered device.")
     var udid: String?
@@ -32,6 +34,7 @@ struct ConnectionOptions: ParsableArguments {
     @Option(help: "Existing Lockdown pairing record plist.")
     var pairingRecord: String?
 
+    /// Loads and validates the pairing record option.
     func pairingRecordValue() throws -> PairingRecord {
         guard let pairingRecord else {
             throw ValidationError("--pairing-record is required for this command.")
@@ -39,6 +42,7 @@ struct ConnectionOptions: ParsableArguments {
         return try PairingRecord.load(from: URL(fileURLWithPath: pairingRecord))
     }
 
+    /// Opens a direct or usbmux-backed session from parsed CLI options.
     func session(label: String = "rorkdevice") async throws -> DeviceSession {
         let client = DeviceClient()
         let pairing = try pairingRecordValue()
@@ -60,6 +64,7 @@ struct ConnectionOptions: ParsableArguments {
     }
 }
 
+/// Lists devices currently visible through local usbmux.
 struct List: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -78,6 +83,7 @@ struct List: AsyncParsableCommand {
     }
 }
 
+/// Prints common Lockdown information for the selected device.
 struct Info: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "info",
@@ -97,6 +103,7 @@ struct Info: AsyncParsableCommand {
     }
 }
 
+/// Parent command for installed-application operations.
 struct Apps: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "apps",
@@ -105,6 +112,7 @@ struct Apps: AsyncParsableCommand {
     )
 }
 
+/// Lists installed applications through InstallationProxy.
 struct AppsList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -127,6 +135,7 @@ struct AppsList: AsyncParsableCommand {
     }
 }
 
+/// Installs an IPA by staging it through AFC and invoking InstallationProxy.
 struct Install: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "install",
@@ -156,6 +165,7 @@ struct Install: AsyncParsableCommand {
     }
 }
 
+/// Uninstalls an app through InstallationProxy.
 struct Uninstall: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "uninstall",
@@ -175,6 +185,7 @@ struct Uninstall: AsyncParsableCommand {
     }
 }
 
+/// Parent command for provisioning-profile operations.
 struct Profiles: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "profiles",
@@ -183,6 +194,7 @@ struct Profiles: AsyncParsableCommand {
     )
 }
 
+/// Installs a provisioning profile through MISAgent.
 struct ProfilesInstall: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "install",

@@ -122,6 +122,7 @@ public struct AnySendableValue: Equatable, Sendable {
     }
 }
 
+/// Reads a required non-empty string from a pairing-record dictionary.
 private func requiredString(_ key: String, in dictionary: [String: Any]) throws -> String {
     guard let value = dictionary[key] as? String else {
         throw RorkDeviceError.invalidPairingRecord("Missing \(key).")
@@ -133,6 +134,7 @@ private func requiredString(_ key: String, in dictionary: [String: Any]) throws 
     return trimmed
 }
 
+/// Reads binary pairing material from either plist data or legacy string form.
 private func dataValue(_ key: String, in dictionary: [String: Any]) -> Data? {
     if let data = dictionary[key] as? Data, !data.isEmpty {
         return data

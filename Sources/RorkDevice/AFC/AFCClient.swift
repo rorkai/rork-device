@@ -78,6 +78,7 @@ public final class AFCClient {
         try await closeFile(handle)
     }
 
+    /// Sends a path-only AFC command and validates its status response.
     private func sendPathOperation(_ operation: AFCOperation, path: String) async throws {
         var payload = Data(path.utf8)
         payload.append(0)
@@ -85,6 +86,7 @@ public final class AFCClient {
         _ = try await receiveStatus()
     }
 
+    /// Opens a remote file and returns the AFC file handle.
     private func openFile(_ path: String, mode: AFCFileOpenMode) async throws -> UInt64 {
         var payload = Data()
         payload.appendLittleEndian(mode.rawValue)
@@ -99,6 +101,7 @@ public final class AFCClient {
         return try response.payload.littleEndianInteger(at: 0, as: UInt64.self)
     }
 
+    /// Writes one chunk to an open AFC file handle.
     private func write(handle: UInt64, data: Data.SubSequence) async throws {
         var header = Data()
         header.appendLittleEndian(handle)
@@ -106,6 +109,7 @@ public final class AFCClient {
         _ = try await receiveStatus()
     }
 
+    /// Closes an AFC file handle.
     private func closeFile(_ handle: UInt64) async throws {
         var payload = Data()
         payload.appendLittleEndian(handle)
@@ -113,6 +117,7 @@ public final class AFCClient {
         _ = try await receiveStatus()
     }
 
+    /// Encodes and sends one AFC packet.
     private func sendPacket(operation: AFCOperation, headerPayload: Data = Data(), bodyPayload: Data = Data()) async throws {
         packetNumber += 1
         let thisLength = UInt64(40 + headerPayload.count)
@@ -128,6 +133,7 @@ public final class AFCClient {
         try await connection.send(packet)
     }
 
+    /// Receives an AFC status packet and returns the numeric status value.
     private func receiveStatus() async throws -> UInt64 {
         let response = try await receivePacket()
         try handleStatus(response)
@@ -137,6 +143,7 @@ public final class AFCClient {
         return try response.payload.littleEndianInteger(at: 0, as: UInt64.self)
     }
 
+    /// Throws when a response is an AFC status packet with a non-zero status.
     private func handleStatus(_ response: AFCPacketResponse) throws {
         if response.operation == .status {
             let status = response.payload.count >= 8
@@ -148,6 +155,7 @@ public final class AFCClient {
         }
     }
 
+    /// Receives and validates one AFC packet.
     private func receivePacket() async throws -> AFCPacketResponse {
         let header = try await connection.receive(count: 40)
         guard header.prefix(8) == Data(AFCMagic.bytes) else {
@@ -174,10 +182,12 @@ public final class AFCClient {
     }
 }
 
+/// AFC magic bytes as they appear at the start of every packet.
 private enum AFCMagic {
     static let bytes = Array("CFA6LPAA".utf8)
 }
 
+/// AFC operation codes used by the staging workflow.
 private enum AFCOperation: UInt64 {
     case invalid = 0
     case status = 1
@@ -189,10 +199,12 @@ private enum AFCOperation: UInt64 {
     case fileClose = 20
 }
 
+/// AFC file-open modes used by this package.
 private enum AFCFileOpenMode: UInt64 {
     case writeOnly = 3
 }
 
+/// Decoded AFC packet response used internally by the client.
 private struct AFCPacketResponse {
     let operation: AFCOperation
     let payload: Data

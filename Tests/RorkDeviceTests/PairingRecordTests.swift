@@ -38,4 +38,30 @@ final class PairingRecordTests: XCTestCase {
         XCTAssertTrue(record.missingSecureSessionFields.contains("HostPrivateKey"))
         XCTAssertTrue(record.missingSecureSessionFields.contains("EscrowBag"))
     }
+
+    func testRejectsMissingRequiredFields() throws {
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["UDID": "device-1", "SystemBUID": "system-1"],
+            format: .xml,
+            options: 0
+        )
+
+        XCTAssertThrowsError(try PairingRecord.parse(data)) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .invalidPairingRecord("Missing HostID."))
+        }
+    }
+
+    func testTrimsRequiredStringFields() throws {
+        let plist: [String: Any] = [
+            "UDID": " device-1 ",
+            "HostID": " host-1\n",
+            "SystemBUID": "\tsystem-1 ",
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let record = try PairingRecord.parse(data)
+
+        XCTAssertEqual(record.udid, "device-1")
+        XCTAssertEqual(record.hostID, "host-1")
+        XCTAssertEqual(record.systemBUID, "system-1")
+    }
 }

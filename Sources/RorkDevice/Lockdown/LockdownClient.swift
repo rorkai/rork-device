@@ -95,6 +95,7 @@ public final class LockdownClient {
         )
     }
 
+    /// Sends one Lockdown request and returns its decoded response dictionary.
     private func request(_ dictionary: [String: Any]) async throws -> [String: Any] {
         try await PropertyListMessageFramer.send(dictionary, to: connection)
         return try await PropertyListMessageFramer.receive(from: connection)
@@ -124,6 +125,7 @@ public struct LockdownService: Equatable, Sendable {
     public let requiresSecureConnection: Bool
 }
 
+/// Validates common Lockdown `Result` and `Error` fields.
 func checkResult(_ response: [String: Any], request: String) throws {
     if let result = response.string("Result"), result != "Success" {
         let error = response.string("Error") ?? result

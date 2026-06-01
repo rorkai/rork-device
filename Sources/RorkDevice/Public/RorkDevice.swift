@@ -113,6 +113,7 @@ public final class DeviceClient {
         return try await openSession(transport: transport, pairingRecord: pairingRecord, label: label)
     }
 
+    /// Shared implementation for direct and usbmux-backed Lockdown sessions.
     private func openSession(
         transport: DeviceTransport,
         pairingRecord: PairingRecord,

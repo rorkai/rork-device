@@ -1,6 +1,7 @@
 import Foundation
 
 extension Data {
+    /// Appends an integer in network byte order.
     mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
         var copy = value.bigEndian
         Swift.withUnsafeBytes(of: &copy) { bytes in
@@ -8,6 +9,7 @@ extension Data {
         }
     }
 
+    /// Appends an integer in little-endian wire order.
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var copy = value.littleEndian
         Swift.withUnsafeBytes(of: &copy) { bytes in
@@ -15,14 +17,17 @@ extension Data {
         }
     }
 
+    /// Reads an integer stored in network byte order.
     func bigEndianInteger<T: FixedWidthInteger>(at offset: Int, as type: T.Type = T.self) throws -> T {
         try integer(at: offset, as: T.self).bigEndian
     }
 
+    /// Reads an integer stored in little-endian wire order.
     func littleEndianInteger<T: FixedWidthInteger>(at offset: Int, as type: T.Type = T.self) throws -> T {
         try integer(at: offset, as: T.self).littleEndian
     }
 
+    /// Performs a bounds-checked unaligned integer load.
     private func integer<T: FixedWidthInteger>(at offset: Int, as type: T.Type) throws -> T {
         let end = offset + MemoryLayout<T>.size
         guard offset >= 0, end <= count else {

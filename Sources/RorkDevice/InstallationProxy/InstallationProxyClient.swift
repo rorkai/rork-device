@@ -81,6 +81,7 @@ public final class InstallationProxyClient {
         ], progress: progress)
     }
 
+    /// Sends an InstallationProxy command and streams status events to completion.
     private func performCommand(_ command: [String: Any], progress: InstallationProgressHandler?) async throws {
         try await PropertyListMessageFramer.send(command, to: connection)
         while true {

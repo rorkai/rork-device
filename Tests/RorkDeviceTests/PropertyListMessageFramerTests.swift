@@ -20,4 +20,28 @@ final class PropertyListMessageFramerTests: XCTestCase {
         XCTAssertEqual(response["Value"] as? String, "ok")
         XCTAssertEqual(connection.sent.count, 1)
     }
+
+    func testReceiveRejectsNonDictionaryPayload() async throws {
+        let payload = try PropertyListCodec.encode(["not", "a", "dictionary"])
+        var inbound = Data()
+        inbound.appendBigEndian(UInt32(payload.count))
+        inbound.append(payload)
+        let connection = FakeConnection(inbound: inbound)
+
+        await XCTAssertThrowsErrorAsync({ try await PropertyListMessageFramer.receive(from: connection) }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Expected property list dictionary response."))
+        }
+    }
+
+    func testDictionaryHelpersCoerceNSNumberValues() {
+        let dictionary: [String: Any] = [
+            "String": "value",
+            "Bool": NSNumber(value: true),
+            "Int": NSNumber(value: 42),
+        ]
+
+        XCTAssertEqual(dictionary.string("String"), "value")
+        XCTAssertEqual(dictionary.bool("Bool"), true)
+        XCTAssertEqual(dictionary.int("Int"), 42)
+    }
 }

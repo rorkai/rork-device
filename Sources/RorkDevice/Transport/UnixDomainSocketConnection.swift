@@ -145,6 +145,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
         close()
     }
 
+    /// Runs a socket operation after checking that the descriptor is open.
     private func withOpenSocket<T>(_ body: () throws -> T) throws -> T {
         lock.lock()
         let isClosed = closed
@@ -156,10 +157,12 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     }
 }
 
+/// Formats the current POSIX `errno` for Unix-socket diagnostics.
 private func lastUnixErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
 }
 
+/// Platform wrapper for `send`.
 @discardableResult
 private func systemUnixSend(_ fd: Int32, _ buffer: UnsafeRawPointer, _ length: Int, _ flags: Int32) -> Int {
     #if canImport(Darwin)
@@ -169,6 +172,7 @@ private func systemUnixSend(_ fd: Int32, _ buffer: UnsafeRawPointer, _ length: I
     #endif
 }
 
+/// Platform wrapper for `recv`.
 @discardableResult
 private func systemUnixRecv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ length: Int, _ flags: Int32) -> Int {
     #if canImport(Darwin)
@@ -178,6 +182,7 @@ private func systemUnixRecv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ le
     #endif
 }
 
+/// Platform wrapper for `connect`.
 @discardableResult
 private func systemUnixConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>?, _ length: socklen_t) -> Int32 {
     #if canImport(Darwin)
@@ -187,6 +192,7 @@ private func systemUnixConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>?,
     #endif
 }
 
+/// Platform wrapper for `close`.
 @discardableResult
 private func systemUnixClose(_ fd: Int32) -> Int32 {
     #if canImport(Darwin)

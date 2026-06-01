@@ -89,12 +89,14 @@ public final class USBMuxClient {
         return connection
     }
 
+    /// Sends a one-shot usbmux control request.
     private func request(_ dictionary: [String: Any]) async throws -> [String: Any] {
         let connection = try await openConnection()
         defer { connection.close() }
         return try await request(dictionary, connection: connection)
     }
 
+    /// Opens a connection to the configured usbmux endpoint.
     private func openConnection() async throws -> DeviceConnection {
         switch endpoint {
         case let .unixSocket(path):
@@ -104,6 +106,7 @@ public final class USBMuxClient {
         }
     }
 
+    /// Sends a usbmux request over an existing connection.
     private func request(_ dictionary: [String: Any], connection: DeviceConnection) async throws -> [String: Any] {
         let tag = nextRequestTag()
         let payload = try PropertyListCodec.encode(dictionary, format: .xml)
@@ -127,6 +130,7 @@ public final class USBMuxClient {
         return response
     }
 
+    /// Returns the next non-zero request tag.
     private func nextRequestTag() -> UInt32 {
         let tag = nextTag
         nextTag &+= 1
@@ -171,6 +175,7 @@ public struct USBMuxDeviceTransport: DeviceTransport {
     }
 }
 
+/// Converts scalar plist values to printable strings.
 private func stringify(_ dictionary: [String: Any]) -> [String: String] {
     dictionary.compactMapValues { value in
         switch value {
