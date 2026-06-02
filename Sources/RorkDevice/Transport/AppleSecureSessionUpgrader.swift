@@ -85,15 +85,19 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             data.count - sent,
                             &processed
                         )
-                        sent += processed
-                        if status != errSecSuccess {
-                            if status == errSSLWouldBlock {
-                                continue
+                        switch status {
+                        case errSecSuccess:
+                            guard processed > 0 else {
+                                throw RorkDeviceError.secureSession("SSLWrite made no progress.")
                             }
+                            sent += processed
+                        case errSSLWouldBlock:
+                            guard processed == 0 else {
+                                throw RorkDeviceError.secureSession("SSLWrite reported progress while blocked.")
+                            }
+                            continue
+                        default:
                             throw RorkDeviceError.secureSession("SSLWrite failed with status \(status).")
-                        }
-                        guard processed > 0 else {
-                            throw RorkDeviceError.secureSession("SSLWrite made no progress.")
                         }
                     }
                 }
@@ -119,15 +123,19 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             count - received,
                             &processed
                         )
-                        received += processed
-                        if status != errSecSuccess {
-                            if status == errSSLWouldBlock {
-                                continue
+                        switch status {
+                        case errSecSuccess:
+                            guard processed > 0 else {
+                                throw RorkDeviceError.secureSession("SSLRead made no progress.")
                             }
+                            received += processed
+                        case errSSLWouldBlock:
+                            guard processed == 0 else {
+                                throw RorkDeviceError.secureSession("SSLRead reported progress while blocked.")
+                            }
+                            continue
+                        default:
                             throw RorkDeviceError.secureSession("SSLRead failed with status \(status).")
-                        }
-                        guard processed > 0 else {
-                            throw RorkDeviceError.secureSession("SSLRead made no progress.")
                         }
                     }
                 }
