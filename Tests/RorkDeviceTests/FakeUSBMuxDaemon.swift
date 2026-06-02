@@ -15,6 +15,7 @@ final class FakeUSBMuxDaemon {
     private var _installedPackagePaths: [String] = []
     private var _misagentMessageTypes: [String] = []
     private var _servicesStartedWithEscrow: [String] = []
+    private var _heartbeatReplies: [String] = []
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -44,6 +45,12 @@ final class FakeUSBMuxDaemon {
         lock.lock()
         defer { lock.unlock() }
         return _servicesStartedWithEscrow
+    }
+
+    var heartbeatReplies: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _heartbeatReplies
     }
 
     init(secureLockdown: Bool = false, secureServices: Set<String> = []) throws {
@@ -162,6 +169,8 @@ final class FakeUSBMuxDaemon {
                 handleInstallationProxy(fd)
             case 3456:
                 handleMISAgent(fd)
+            case 4567:
+                handleHeartbeat(fd)
             default:
                 return
             }
@@ -203,6 +212,8 @@ final class FakeUSBMuxDaemon {
                     port = 2345
                 case LockdownServiceName.misagent.rawValue:
                     port = 3456
+                case LockdownServiceName.heartbeat.rawValue:
+                    port = 4567
                 default:
                     sendPlistMessage(["Result": "Failure", "Error": "UnknownService"], to: fd)
                     continue
@@ -258,6 +269,15 @@ final class FakeUSBMuxDaemon {
         } else {
             sendPlistMessage(["Status": 0], to: fd)
         }
+    }
+
+    private func handleHeartbeat(_ fd: Int32) {
+        sendPlistMessage(["Interval": 2], to: fd)
+        guard let request = readPlistMessage(fd),
+              let command = request["Command"] as? String else {
+            return
+        }
+        recordHeartbeatReply(command)
     }
 
     private func readUSBMuxRequest(_ fd: Int32) -> (packet: USBMuxPacket, dictionary: [String: Any])? {
@@ -328,6 +348,12 @@ final class FakeUSBMuxDaemon {
     private func recordServiceStartedWithEscrow(_ service: String) {
         lock.lock()
         _servicesStartedWithEscrow.append(service)
+        lock.unlock()
+    }
+
+    private func recordHeartbeatReply(_ command: String) {
+        lock.lock()
+        _heartbeatReplies.append(command)
         lock.unlock()
     }
 }

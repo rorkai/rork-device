@@ -85,10 +85,20 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             data.count - sent,
                             &processed
                         )
-                        if status != errSecSuccess {
+                        switch status {
+                        case errSecSuccess:
+                            guard processed > 0 else {
+                                throw RorkDeviceError.secureSession("SSLWrite made no progress.")
+                            }
+                            sent += processed
+                        case errSSLWouldBlock:
+                            guard processed == 0 else {
+                                throw RorkDeviceError.secureSession("SSLWrite reported progress while blocked.")
+                            }
+                            continue
+                        default:
                             throw RorkDeviceError.secureSession("SSLWrite failed with status \(status).")
                         }
-                        sent += processed
                     }
                 }
             }
@@ -113,10 +123,20 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             count - received,
                             &processed
                         )
-                        if status != errSecSuccess {
+                        switch status {
+                        case errSecSuccess:
+                            guard processed > 0 else {
+                                throw RorkDeviceError.secureSession("SSLRead made no progress.")
+                            }
+                            received += processed
+                        case errSSLWouldBlock:
+                            guard processed == 0 else {
+                                throw RorkDeviceError.secureSession("SSLRead reported progress while blocked.")
+                            }
+                            continue
+                        default:
                             throw RorkDeviceError.secureSession("SSLRead failed with status \(status).")
                         }
-                        received += processed
                     }
                 }
                 return data
@@ -223,7 +243,7 @@ private final class SecureTransportAsyncResultBox<T>: @unchecked Sendable {
     var result: Result<T, Error>?
 }
 
-/// SecureTransport read callback backed by `DeviceConnection.receive`.
+/// SecureTransport read callback backed by the underlying device connection.
 private func secureTransportRead(
     connection: SSLConnectionRef,
     data: UnsafeMutableRawPointer,
@@ -240,7 +260,10 @@ private func secureTransportRead(
         .takeUnretainedValue()
     do {
         let bytes = try waitForSecureTransportIO {
-            try await box.base.receive(exactly: requested)
+            if let partialConnection = box.base as? PartialReceiveDeviceConnection {
+                return try await partialConnection.receive(upTo: requested)
+            }
+            return try await box.base.receive(exactly: requested)
         }
         bytes.withUnsafeBytes { buffer in
             if let source = buffer.baseAddress {
@@ -248,6 +271,9 @@ private func secureTransportRead(
             }
         }
         dataLength.pointee = bytes.count
+        if bytes.count < requested {
+            return errSSLWouldBlock
+        }
         return errSecSuccess
     } catch {
         dataLength.pointee = 0

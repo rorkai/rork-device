@@ -86,6 +86,21 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.servicesStartedWithEscrow, [LockdownServiceName.afc.rawValue])
     }
 
+    func testStartsHeartbeatThroughFakeUSBMuxDeviceStack() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(to: device, using: try testPairingRecord())
+        let heartbeat = try await session.startHeartbeat(firstMessageTimeout: .seconds(2))
+        defer { heartbeat.stop() }
+
+        XCTAssertTrue(daemon.connectedPorts.contains(4567))
+        XCTAssertEqual(daemon.heartbeatReplies, ["Polo"])
+    }
+
     func testManagesProvisioningProfilesThroughFakeUSBMuxDeviceStack() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }

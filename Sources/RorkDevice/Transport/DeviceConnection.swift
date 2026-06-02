@@ -22,6 +22,17 @@ public protocol DeviceConnection: AnyObject {
     func close()
 }
 
+/// Optional capability for transports that can return a short read.
+///
+/// SecureTransport callbacks should not require the lower transport to fill
+/// the entire requested buffer before returning. Socket-backed connections
+/// conform to this so TLS can consume whatever encrypted bytes are currently
+/// available and continue driving its own state machine.
+protocol PartialReceiveDeviceConnection: DeviceConnection {
+    /// Receives at least one byte and at most `byteCount` bytes.
+    func receive(upTo byteCount: Int) async throws -> Data
+}
+
 /// Transport capable of opening device service connections by port.
 ///
 /// A transport abstracts how bytes reach the device: local usbmux forwarding,

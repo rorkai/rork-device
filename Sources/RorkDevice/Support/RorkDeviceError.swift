@@ -32,6 +32,9 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// AFC returned a non-zero status code.
     case afcStatus(UInt64)
 
+    /// Heartbeat returned malformed data, timed out, or reported device sleep.
+    case heartbeat(String)
+
     /// InstallationProxy returned an operation error.
     case installationProxy(InstallationError)
 
@@ -57,6 +60,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Secure session error: \(message)"
         case let .afcStatus(status):
             return "AFC returned status \(status)."
+        case let .heartbeat(message):
+            return "Heartbeat error: \(message)"
         case let .installationProxy(error):
             return "InstallationProxy \(error)"
         case let .misagentStatus(status):
