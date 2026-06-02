@@ -16,12 +16,6 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
     /// Inbound handler that buffers channel reads for protocol consumers.
     private let handler: NIOByteStreamHandler
 
-    /// Protects idempotent shutdown state.
-    private let lock = NSLock()
-
-    /// Tracks whether `close()` has already started shutdown.
-    private var closed = false
-
     /// Creates a connection around an initialized NIO channel.
     ///
     /// - Parameters:
@@ -40,7 +34,11 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
 
         var buffer = channel.allocator.buffer(capacity: data.count)
         buffer.writeBytes(data)
-        try await channel.writeAndFlush(buffer).get()
+        do {
+            try await channel.writeAndFlush(buffer).get()
+        } catch ChannelError.ioOnClosedChannel {
+            throw RorkDeviceError.transport("Connection is closed.")
+        }
     }
 
     /// Receives exactly `byteCount` bytes from the accumulated inbound stream.
@@ -67,15 +65,10 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
 
     /// Closes the channel and releases connection-owned stream state.
     func close() {
-        lock.lock()
-        guard !closed else {
-            lock.unlock()
+        guard handler.beginClose() else {
             return
         }
-        closed = true
-        lock.unlock()
 
-        handler.close()
         closeChannel()
     }
 
@@ -98,8 +91,10 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
 /// The handler keeps one FIFO queue of pending reads. Exact reads wait until the
 /// requested count is buffered, while short reads complete as soon as at least
 /// one byte is available.
-final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
+final class NIOByteStreamHandler: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
 
     /// Shape of a pending read request.
     private enum ReadMode {
@@ -154,7 +149,8 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     /// Fails pending reads because the owning connection is closing explicitly.
-    func close() {
+    @discardableResult
+    func beginClose() -> Bool {
         closeExplicitly(with: RorkDeviceError.transport("Connection is closed."))
     }
 
@@ -182,6 +178,22 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
         failPendingReads(with: RorkDeviceError.transport("Connection closed."))
     }
 
+    /// Rejects writes that arrive after explicit owner shutdown has started.
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        guard let error = explicitCloseError else {
+            context.write(data, promise: promise)
+            return
+        }
+
+        promise?.fail(error)
+    }
+
+    /// Marks local close before forwarding the close event through the pipeline.
+    func close(context: ChannelHandlerContext, mode: CloseMode, promise: EventLoopPromise<Void>?) {
+        _ = beginClose()
+        context.close(mode: mode, promise: promise)
+    }
+
     /// Registers a read request or fulfills it immediately from buffered bytes.
     private func read(_ mode: ReadMode) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
@@ -207,11 +219,26 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
         }
     }
 
+    /// Error returned to outbound writes once local close has started.
+    private var explicitCloseError: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard explicitlyClosed else {
+            return nil
+        }
+        return terminalError ?? RorkDeviceError.transport("Connection is closed.")
+    }
+
     /// Closes the stream locally and prevents future reads from draining stale bytes.
-    private func closeExplicitly(with error: Error) {
+    private func closeExplicitly(with error: Error) -> Bool {
         let completions: [Completion]
 
         lock.lock()
+        guard !explicitlyClosed else {
+            lock.unlock()
+            return false
+        }
         if terminalError == nil {
             terminalError = error
         }
@@ -222,6 +249,7 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
         lock.unlock()
 
         resume(completions)
+        return true
     }
 
     /// Marks the stream failed and drains all queued continuations.

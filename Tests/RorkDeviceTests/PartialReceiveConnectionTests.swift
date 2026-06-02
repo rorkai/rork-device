@@ -53,6 +53,40 @@ final class PartialReceiveConnectionTests: XCTestCase {
             XCTAssertTrue(message.contains("closed"))
         }
     }
+
+    /// Verifies explicit close prevents later writes from entering the NIO channel.
+    func testClosedConnectionRejectsLaterSend() async throws {
+        let server = try TCPDataServer(data: "abc")
+        defer { server.stop() }
+
+        let connection = try await TCPDeviceConnection.connect(to: "127.0.0.1", port: server.port)
+        connection.close()
+
+        await XCTAssertThrowsErrorAsync({ try await connection.send(Data([1])) }) { error in
+            guard case let RorkDeviceError.transport(message) = error else {
+                XCTFail("Expected transport error, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("closed"))
+        }
+    }
+
+    /// Verifies exact reads also reject new work after explicit close.
+    func testClosedConnectionRejectsLaterExactReceive() async throws {
+        let server = try TCPDataServer(data: "abc")
+        defer { server.stop() }
+
+        let connection = try await TCPDeviceConnection.connect(to: "127.0.0.1", port: server.port)
+        connection.close()
+
+        await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 1) }) { error in
+            guard case let RorkDeviceError.transport(message) = error else {
+                XCTFail("Expected transport error, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("closed"))
+        }
+    }
 }
 
 /// One-shot TCP server that accepts a single client and sends fixed bytes.
