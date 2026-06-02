@@ -13,9 +13,6 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
     /// Open NIO channel carrying the device byte stream.
     private let channel: Channel
 
-    /// Event loop group created for this connection.
-    private let eventLoopGroup: MultiThreadedEventLoopGroup
-
     /// Inbound handler that buffers channel reads for protocol consumers.
     private let handler: NIOByteStreamHandler
 
@@ -29,12 +26,9 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
     ///
     /// - Parameters:
     ///   - channel: Open channel whose pipeline contains `handler`.
-    ///   - eventLoopGroup: Group that owns the channel's event loop. The
-    ///     connection shuts this group down when it closes.
     ///   - handler: Inbound byte accumulator installed in the channel pipeline.
-    init(channel: Channel, eventLoopGroup: MultiThreadedEventLoopGroup, handler: NIOByteStreamHandler) {
+    init(channel: Channel, handler: NIOByteStreamHandler) {
         self.channel = channel
-        self.eventLoopGroup = eventLoopGroup
         self.handler = handler
     }
 
@@ -71,7 +65,7 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         return try await handler.read(upTo: byteCount)
     }
 
-    /// Closes the channel and releases the connection-owned event loop group.
+    /// Closes the channel and releases connection-owned stream state.
     func close() {
         lock.lock()
         guard !closed else {
@@ -82,26 +76,19 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         lock.unlock()
 
         handler.close()
-        shutdownChannelAndEventLoopGroup()
+        closeChannel()
     }
 
     deinit {
         close()
     }
 
-    /// Performs blocking NIO shutdown away from the channel event loop.
-    private func shutdownChannelAndEventLoopGroup() {
-        let channel = channel
-        let eventLoopGroup = eventLoopGroup
-        let shutdown = {
-            _ = try? channel.close().wait()
-            try? eventLoopGroup.syncShutdownGracefully()
-        }
-
+    /// Closes the NIO channel without shutting down the shared runtime.
+    private func closeChannel() {
         if channel.eventLoop.inEventLoop {
-            Thread.detachNewThread(shutdown)
+            channel.close(promise: nil)
         } else {
-            shutdown()
+            _ = try? channel.close().wait()
         }
     }
 }

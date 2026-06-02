@@ -21,9 +21,8 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
     ///   `/var/run/usbmuxd`.
     /// - Returns: An open byte-stream connection.
     public static func connect(toSocketAt path: String) async throws -> UnixDomainSocketConnection {
-        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let handler = NIOByteStreamHandler()
-        let bootstrap = ClientBootstrap(group: eventLoopGroup)
+        let bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
             .channelInitializer { channel in
                 channel.pipeline.addHandler(handler)
             }
@@ -32,12 +31,10 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
             let channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
             let connection = NIODeviceConnection(
                 channel: channel,
-                eventLoopGroup: eventLoopGroup,
                 handler: handler
             )
             return UnixDomainSocketConnection(connection: connection)
         } catch {
-            try? await eventLoopGroup.shutdownGracefully()
             throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")
         }
     }
