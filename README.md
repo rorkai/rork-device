@@ -106,3 +106,7 @@ swift test --filter PhysicalDeviceSmokeTests
 
 Set `RORK_DEVICE_UDID` as well when more than one device is visible through
 local `usbmuxd`.
+
+## License
+
+rork-device is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
