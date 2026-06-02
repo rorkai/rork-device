@@ -11,7 +11,7 @@ import Glibc
 /// This connection is intentionally small and blocking internally. Public async
 /// methods run socket work on detached tasks so service clients can use a
 /// uniform async API without depending on Foundation networking APIs.
-public final class TCPDeviceConnection: DeviceConnection {
+public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
     private let fileDescriptor: Int32
     private let condition = NSCondition()
     private var closed = false
@@ -98,6 +98,35 @@ public final class TCPDeviceConnection: DeviceConnection {
                         received += result
                     }
                 }
+                return data
+            }
+        }.value
+    }
+
+    /// Receives one socket read containing at least one byte and at most `count`.
+    func receive(upTo count: Int) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try self.withOpenSocket { fd in
+                guard count > 0 else {
+                    return Data()
+                }
+
+                var data = Data(count: count)
+                let received = try data.withUnsafeMutableBytes { rawBuffer in
+                    guard let base = rawBuffer.baseAddress else {
+                        return 0
+                    }
+
+                    let result = systemRecv(fd, base, count, 0)
+                    if result == 0 {
+                        throw RorkDeviceError.transport("Connection closed while reading up to \(count) bytes.")
+                    }
+                    if result < 0 {
+                        throw RorkDeviceError.transport(lastErrnoMessage("recv"))
+                    }
+                    return result
+                }
+                data.removeSubrange(received..<data.count)
                 return data
             }
         }.value

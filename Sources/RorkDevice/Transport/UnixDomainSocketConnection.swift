@@ -11,7 +11,7 @@ import Glibc
 /// This is the default transport used to reach the local usbmux daemon. Like
 /// `TCPDeviceConnection`, socket operations are performed on detached tasks so
 /// higher-level protocol clients can use one async byte-stream interface.
-public final class UnixDomainSocketConnection: DeviceConnection {
+public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveDeviceConnection {
     private let fileDescriptor: Int32
     private let condition = NSCondition()
     private var closed = false
@@ -127,6 +127,35 @@ public final class UnixDomainSocketConnection: DeviceConnection {
                         received += result
                     }
                 }
+                return data
+            }
+        }.value
+    }
+
+    /// Receives one socket read containing at least one byte and at most `count`.
+    func receive(upTo count: Int) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try self.withOpenSocket { fd in
+                guard count > 0 else {
+                    return Data()
+                }
+
+                var data = Data(count: count)
+                let received = try data.withUnsafeMutableBytes { rawBuffer in
+                    guard let base = rawBuffer.baseAddress else {
+                        return 0
+                    }
+
+                    let result = systemUnixRecv(fd, base, count, 0)
+                    if result == 0 {
+                        throw RorkDeviceError.transport("Connection closed while reading up to \(count) bytes.")
+                    }
+                    if result < 0 {
+                        throw RorkDeviceError.transport(lastUnixErrnoMessage("recv"))
+                    }
+                    return result
+                }
+                data.removeSubrange(received..<data.count)
                 return data
             }
         }.value
