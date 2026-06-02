@@ -23,7 +23,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "RorkDevice"
+            name: "RorkDevice",
+            resources: [
+                .process("Resources"),
+            ]
         ),
         .executableTarget(
             name: "RorkDeviceCLI",
