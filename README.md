@@ -13,36 +13,39 @@ and a matching `rorkdevice` CLI.
 The project is intentionally built as independent Swift code with protocol-level
 tests and clear public API boundaries.
 
-## Goals
+## Features
 
-- Swift-native library APIs for iOS device services.
-- A practical CLI for app installation and device inspection.
-- Cross-platform architecture for direct/tunnel transports and local usbmuxd.
-- Strong docstrings, protocol fixtures, and opt-in physical-device tests.
-- Clean, maintainable implementations of the device protocols we support.
+- **Swift-first library** - the `RorkDevice` module exposes device discovery,
+  Lockdown sessions, service startup, and app-management APIs directly to Swift
+  applications.
+- **Command-line tools** - the `rorkdevice` CLI supports device inspection,
+  app listing, provisioning-profile management, IPA installation, and app
+  removal.
+- **Pairing records** - parse existing Lockdown pairing-record plists and
+  preserve unknown fields for diagnostics.
+- **Device transports** - connect through local `usbmuxd` or a known direct
+  Lockdown endpoint for tunnel-based workflows.
+- **Secure sessions** - upgrade Lockdown and secure service connections through
+  a public `SecureSessionUpgrader` protocol, with an Apple Security.framework
+  backend enabled by default on Apple platforms.
+- **Lockdown values** - query common device identity and OS metadata through a
+  typed `DeviceInfo` summary.
+- **AFC staging** - create `/PublicStaging` and upload IPA files or in-memory
+  IPA bytes before installation.
+- **Provisioning profiles** - install, remove, and copy CMS-wrapped
+  `.mobileprovision` payloads through MISAgent.
+- **Application management** - browse installed apps, install staged IPA
+  packages, and uninstall apps through InstallationProxy.
+- **Structured progress** - expose InstallationProxy progress events and typed
+  protocol errors for application workflows.
+- **Protocol test harness** - validate usbmux, Lockdown, AFC, MISAgent, and
+  InstallationProxy behavior with fake service peers and protocol fixtures.
+- **Physical-device smoke tests** - provide an opt-in release check for list,
+  info, provisioning-profile install/copy, IPA install, and IPA uninstall.
 
-## 0.1.0 Scope
-
-The first milestone focuses on device sessions and app installation:
-
-- Parse existing Lockdown pairing records.
-- Connect through local `usbmuxd` or a direct Lockdown endpoint.
-- Query basic device information.
-- Start Lockdown services.
-- Stage IPA files through AFC.
-- Install, remove, and copy provisioning profiles through MISAgent.
-- List, install, and uninstall applications through InstallationProxy.
-- Expose structured errors and install progress.
-
-Pairing creation, device event streams, syslog, crash reports, debugserver,
-developer image mounting, backup, and restore are planned for later milestones.
-
-Secure Lockdown/session upgrades are modeled through `SecureSessionUpgrader` so
-apps can supply the TLS backend that matches their platform. On Apple
-platforms, `DeviceClient` uses the built-in Security.framework backend by
-default for Lockdown and secure service connections.
-
-See [Docs/Roadmap.md](Docs/Roadmap.md) for the release roadmap.
+See [Docs/Roadmap.md](Docs/Roadmap.md) for release scope, current limitations,
+and planned services such as pairing creation, device events, syslog, crash
+reports, debugserver, developer image mounting, backup, and restore.
 
 ## Library Example
 
