@@ -1,33 +1,62 @@
 import Foundation
 import NIOCore
 import NIOFoundationCompat
-import NIOPosix
 
 /// SwiftNIO-backed byte stream used by concrete device transports.
 ///
-/// Device protocols in this package are framed above a reliable byte stream,
-/// while SwiftNIO delivers inbound data as arbitrary `ByteBuffer` chunks. This
-/// adapter bridges those models by accumulating inbound bytes, fulfilling exact
-/// reads for protocol parsers, and fulfilling short reads for SecureTransport.
+/// Device protocols in this package read from a reliable byte stream. SwiftNIO
+/// delivers that stream as arbitrary `ByteBuffer` chunks.
+///
+/// This adapter uses `NIOAsyncChannel` to bridge those models. A long-lived pump
+/// task drains the inbound async sequence with NIO back pressure, then fulfills
+/// the imperative `receive(exactly:)` and `receive(upTo:)` calls used by protocol
+/// parsers.
+///
+/// Writes go directly to the channel, so `send` completes only after the bytes
+/// have been flushed to the socket.
 final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
-    /// Open NIO channel carrying the device byte stream.
+    /// Error reported to callers once the owner closes the stream locally.
+    static let closedError = RorkDeviceError.transport("Connection is closed.")
+
+    /// Error reported when the peer closes before a read can be satisfied.
+    static let peerClosedError = RorkDeviceError.transport("Connection closed.")
+
+    /// Channel handle retained for outbound writes and prompt close.
     private let channel: Channel
 
-    /// Inbound handler that buffers channel reads for protocol consumers.
-    private let handler: NIOByteStreamHandler
+    /// Serializes inbound reads and owns terminal close state for reads.
+    private let coordinator: InboundReadCoordinator
 
-    /// Creates a connection around an initialized NIO channel.
+    /// Long-lived task draining the channel's inbound async sequence.
     ///
-    /// - Parameters:
-    ///   - channel: Open channel whose pipeline contains `handler`.
-    ///   - handler: Inbound byte accumulator installed in the channel pipeline.
-    init(channel: Channel, handler: NIOByteStreamHandler) {
-        self.channel = channel
-        self.handler = handler
+    /// The task is retained so `close()` can cancel the pump immediately after
+    /// marking the stream closed, instead of waiting for the channel teardown to
+    /// wake the inbound iterator.
+    private let pumpTask: Task<Void, Never>
+
+    /// Guards `closedLocally` so close is observable from any thread.
+    private let stateLock = NSLock()
+
+    /// Tracks local close so it is rejected synchronously before `close()`
+    /// returns, preventing late reads from draining still-buffered bytes.
+    private var closedLocally = false
+
+    /// Creates a connection around an async-wrapped NIO channel.
+    ///
+    /// - Parameter asyncChannel: Channel already wrapped with `NIOAsyncChannel`
+    ///   on its event loop.
+    init(asyncChannel: NIOAsyncChannel<ByteBuffer, ByteBuffer>) {
+        let coordinator = InboundReadCoordinator()
+        channel = asyncChannel.channel
+        self.coordinator = coordinator
+        pumpTask = Task {
+            await runInboundPump(coordinator: coordinator, asyncChannel: asyncChannel)
+        }
     }
 
     /// Writes the complete buffer through the NIO channel.
     func send(_ data: Data) async throws {
+        try ensureOpen()
         guard !data.isEmpty else {
             return
         }
@@ -36,8 +65,8 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         buffer.writeBytes(data)
         do {
             try await channel.writeAndFlush(buffer).get()
-        } catch ChannelError.ioOnClosedChannel {
-            throw RorkDeviceError.transport("Connection is closed.")
+        } catch {
+            throw normalizedStreamError(error)
         }
     }
 
@@ -49,7 +78,8 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         guard byteCount > 0 else {
             return Data()
         }
-        return try await handler.read(exactly: byteCount)
+        try ensureOpen()
+        return try await coordinator.read(.exact(byteCount))
     }
 
     /// Receives the currently available inbound bytes up to `byteCount`.
@@ -60,266 +90,224 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         guard byteCount > 0 else {
             return Data()
         }
-        return try await handler.read(upTo: byteCount)
+        try ensureOpen()
+        return try await coordinator.read(.upTo(byteCount))
     }
 
-    /// Closes the channel and releases connection-owned stream state.
+    /// Closes the channel and fails any in-flight or future reads.
     func close() {
-        guard handler.beginClose() else {
+        stateLock.lock()
+        let alreadyClosed = closedLocally
+        closedLocally = true
+        stateLock.unlock()
+
+        guard !alreadyClosed else {
             return
         }
 
-        closeChannel()
+        channel.close(promise: nil)
+        pumpTask.cancel()
+        let coordinator = self.coordinator
+        Task { await coordinator.finishClosing(with: NIODeviceConnection.closedError) }
     }
 
     deinit {
         close()
     }
 
-    /// Closes the NIO channel without shutting down the shared runtime.
-    private func closeChannel() {
-        if channel.eventLoop.inEventLoop {
-            channel.close(promise: nil)
-        } else {
-            _ = try? channel.close().wait()
+    /// Ensures the owner has not already closed the stream.
+    private func ensureOpen() throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if closedLocally {
+            throw NIODeviceConnection.closedError
         }
     }
 }
 
-/// Inbound handler that turns arbitrary NIO reads into awaitable byte requests.
+/// Shape of a pending read request handed to the inbound pump.
+private enum ByteStreamReadKind: Sendable {
+    /// Read must wait for exactly this many bytes.
+    case exact(Int)
+
+    /// Read may return any non-empty byte count up to this limit.
+    case upTo(Int)
+}
+
+/// A suspended `receive` waiting for the pump to deliver bytes or an error.
+private struct ByteStreamReadDemand {
+    /// Read shape requested by the caller.
+    let kind: ByteStreamReadKind
+
+    /// Continuation resumed with bytes or a stream error.
+    let continuation: CheckedContinuation<Data, Error>
+}
+
+/// Serializes imperative reads onto the channel's inbound async sequence.
 ///
-/// The handler keeps one FIFO queue of pending reads. Exact reads wait until the
-/// requested count is buffered, while short reads complete as soon as at least
-/// one byte is available.
-final class NIOByteStreamHandler: ChannelDuplexHandler, @unchecked Sendable {
-    typealias InboundIn = ByteBuffer
-    typealias OutboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
+/// Callers enqueue read demands here; the pump's reader loop pulls one demand at
+/// a time, so the single inbound iterator is consumed in order. All terminal
+/// state lives behind the actor so close, peer EOF, and transport failures
+/// resolve every outstanding and future read exactly once.
+private actor InboundReadCoordinator {
+    /// Reads waiting for the reader loop to pick them up.
+    private var readQueue: [ByteStreamReadDemand] = []
 
-    /// Shape of a pending read request.
-    private enum ReadMode {
-        /// Read must wait for exactly this many bytes.
-        case exact(Int)
+    /// Reader loop parked because no read demand was queued.
+    private var readWaiter: CheckedContinuation<ByteStreamReadDemand?, Never>?
 
-        /// Read may return any non-empty byte count up to this limit.
-        case upTo(Int)
-    }
+    /// Terminal error once the stream is closed locally, by EOF, or by NIO.
+    private var closeError: Error?
 
-    /// Continuation waiting for buffered inbound data.
-    private struct PendingRead {
-        /// Read shape requested by the caller.
-        let mode: ReadMode
-
-        /// Suspended caller to resume once bytes or an error are available.
-        let continuation: CheckedContinuation<Data, Error>
-    }
-
-    /// Deferred continuation result that should be resumed outside the lock.
-    private enum Completion {
-        /// Resume a read continuation with bytes.
-        case success(CheckedContinuation<Data, Error>, Data)
-
-        /// Resume a read continuation with an error.
-        case failure(CheckedContinuation<Data, Error>, Error)
-    }
-
-    /// Protects buffered bytes, pending continuations, and terminal state.
-    private let lock = NSLock()
-
-    /// Accumulates inbound channel bytes until protocol reads consume them.
-    private var buffer = ByteBufferAllocator().buffer(capacity: 0)
-
-    /// FIFO queue of reads waiting for more inbound bytes.
-    private var pendingReads: [PendingRead] = []
-
-    /// Terminal stream error reported by close, channel inactivity, or NIO.
-    private var terminalError: Error?
-
-    /// Tracks local close so future reads cannot drain stale buffered bytes.
-    private var explicitlyClosed = false
-
-    /// Waits for exactly `byteCount` buffered bytes.
-    func read(exactly byteCount: Int) async throws -> Data {
-        try await read(.exact(byteCount))
-    }
-
-    /// Waits for one or more buffered bytes, capped at `byteCount`.
-    func read(upTo byteCount: Int) async throws -> Data {
-        try await read(.upTo(byteCount))
-    }
-
-    /// Fails pending reads because the owning connection is closing explicitly.
-    @discardableResult
-    func beginClose() -> Bool {
-        closeExplicitly(with: RorkDeviceError.transport("Connection is closed."))
-    }
-
-    /// Appends inbound bytes and resumes any reads that can now complete.
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        var inbound = unwrapInboundIn(data)
-        let completions: [Completion]
-
-        lock.lock()
-        buffer.writeBuffer(&inbound)
-        completions = fulfillPendingReadsLocked()
-        lock.unlock()
-
-        resume(completions)
-    }
-
-    /// Fails outstanding reads when NIO reports a transport error.
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        failPendingReads(with: RorkDeviceError.transport(error.localizedDescription))
-        context.close(promise: nil)
-    }
-
-    /// Fails outstanding reads when the peer closes before their buffers fill.
-    func channelInactive(context: ChannelHandlerContext) {
-        failPendingReads(with: RorkDeviceError.transport("Connection closed."))
-    }
-
-    /// Rejects writes that arrive after explicit owner shutdown has started.
-    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-        guard let error = explicitCloseError else {
-            context.write(data, promise: promise)
-            return
+    /// Enqueues a read and suspends until bytes or a terminal error arrive.
+    func read(_ kind: ByteStreamReadKind) async throws -> Data {
+        if let closeError {
+            throw closeError
         }
-
-        promise?.fail(error)
-    }
-
-    /// Marks local close before forwarding the close event through the pipeline.
-    func close(context: ChannelHandlerContext, mode: CloseMode, promise: EventLoopPromise<Void>?) {
-        _ = beginClose()
-        context.close(mode: mode, promise: promise)
-    }
-
-    /// Registers a read request or fulfills it immediately from buffered bytes.
-    private func read(_ mode: ReadMode) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            let completion: Completion?
-
-            lock.lock()
-            if explicitlyClosed, let terminalError {
-                completion = .failure(continuation, terminalError)
-            } else if let data = readBufferedDataLocked(for: mode) {
-                compactBufferLocked()
-                completion = .success(continuation, data)
-            } else if let terminalError {
-                completion = .failure(continuation, terminalError)
+        return try await withCheckedThrowingContinuation { continuation in
+            let demand = ByteStreamReadDemand(kind: kind, continuation: continuation)
+            if let waiter = readWaiter {
+                readWaiter = nil
+                waiter.resume(returning: demand)
             } else {
-                pendingReads.append(PendingRead(mode: mode, continuation: continuation))
-                completion = nil
-            }
-            lock.unlock()
-
-            if let completion {
-                resume([completion])
+                readQueue.append(demand)
             }
         }
     }
 
-    /// Error returned to outbound writes once local close has started.
-    private var explicitCloseError: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard explicitlyClosed else {
+    /// Returns the next queued read, or `nil` once the stream is terminal.
+    func nextRead() async -> ByteStreamReadDemand? {
+        if closeError != nil {
             return nil
         }
-        return terminalError ?? RorkDeviceError.transport("Connection is closed.")
+        if !readQueue.isEmpty {
+            return readQueue.removeFirst()
+        }
+        return await withCheckedContinuation { continuation in
+            readWaiter = continuation
+        }
     }
 
-    /// Closes the stream locally and prevents future reads from draining stale bytes.
-    private func closeExplicitly(with error: Error) -> Bool {
-        let completions: [Completion]
-
-        lock.lock()
-        guard !explicitlyClosed else {
-            lock.unlock()
-            return false
+    /// Marks the stream terminal and resolves every queued read and the waiter.
+    ///
+    /// A read already handed to the reader loop is resolved by that loop when
+    /// the inbound iterator ends, so this only drains reads still owned here.
+    func finishClosing(with error: Error) {
+        guard closeError == nil else {
+            return
         }
-        if terminalError == nil {
-            terminalError = error
-        }
-        explicitlyClosed = true
-        resetBufferLocked()
-        completions = pendingReads.map { .failure($0.continuation, error) }
-        pendingReads.removeAll()
-        lock.unlock()
+        closeError = error
 
-        resume(completions)
-        return true
+        let pendingReads = readQueue
+        let parkedReader = readWaiter
+        readQueue.removeAll()
+        readWaiter = nil
+
+        for demand in pendingReads {
+            demand.continuation.resume(throwing: error)
+        }
+        parkedReader?.resume(returning: nil)
+    }
+}
+
+/// Bridges the channel's inbound async sequence to the read coordinator.
+///
+/// `executeThenClose` keeps scoped ownership of the inbound stream and
+/// guarantees the channel is closed once the reader loop finishes. When the loop
+/// hits a terminal condition it closes the coordinator, and the trailing close
+/// covers the case where the loop exits because the coordinator was closed.
+private func runInboundPump(
+    coordinator: InboundReadCoordinator,
+    asyncChannel: NIOAsyncChannel<ByteBuffer, ByteBuffer>
+) async {
+    do {
+        try await asyncChannel.executeThenClose { inbound, _ in
+            await runInboundReader(coordinator: coordinator, inbound: inbound)
+        }
+    } catch {
+        await coordinator.finishClosing(with: normalizedStreamError(error))
+        return
     }
 
-    /// Marks the stream failed and drains all queued continuations.
-    private func failPendingReads(with error: Error) {
-        let completions: [Completion]
+    await coordinator.finishClosing(with: NIODeviceConnection.closedError)
+}
 
-        lock.lock()
-        if terminalError == nil {
-            terminalError = error
+/// Drains inbound chunks on demand, fulfilling reads from a leftover buffer.
+private func runInboundReader(
+    coordinator: InboundReadCoordinator,
+    inbound: NIOAsyncChannelInboundStream<ByteBuffer>
+) async {
+    var iterator = inbound.makeAsyncIterator()
+    var leftover = ByteBufferAllocator().buffer(capacity: 0)
+
+    while let demand = await coordinator.nextRead() {
+        do {
+            let data = try await readData(for: demand.kind, leftover: &leftover, iterator: &iterator)
+            demand.continuation.resume(returning: data)
+        } catch {
+            demand.continuation.resume(throwing: error)
+            await coordinator.finishClosing(with: error)
+            break
         }
-        completions = pendingReads.map { .failure($0.continuation, error) }
-        pendingReads.removeAll()
-        lock.unlock()
-
-        resume(completions)
     }
+}
 
-    /// Reads bytes for the first queued waiters while enough data is buffered.
-    private func fulfillPendingReadsLocked() -> [Completion] {
-        var completions: [Completion] = []
-
-        while let pendingRead = pendingReads.first,
-              let data = readBufferedDataLocked(for: pendingRead.mode) {
-            pendingReads.removeFirst()
-            completions.append(.success(pendingRead.continuation, data))
-        }
-        compactBufferLocked()
-
-        return completions
-    }
-
-    /// Returns buffered data for a read mode when the mode can be satisfied.
-    private func readBufferedDataLocked(for mode: ReadMode) -> Data? {
-        switch mode {
-        case let .exact(byteCount):
-            guard buffer.readableBytes >= byteCount else {
-                return nil
+/// Reads bytes for a single demand, pulling more chunks only when required.
+private func readData(
+    for kind: ByteStreamReadKind,
+    leftover: inout ByteBuffer,
+    iterator: inout NIOAsyncChannelInboundStream<ByteBuffer>.AsyncIterator
+) async throws -> Data {
+    switch kind {
+    case let .exact(byteCount):
+        while leftover.readableBytes < byteCount {
+            guard let chunk = try await iterator.next() else {
+                throw NIODeviceConnection.peerClosedError
             }
-            return buffer.readData(length: byteCount)
-        case let .upTo(byteCount):
-            guard buffer.readableBytes > 0 else {
-                return nil
+            leftover.writeImmutableBuffer(chunk)
+        }
+        let data = leftover.readData(length: byteCount) ?? Data()
+        compact(&leftover)
+        return data
+
+    case let .upTo(byteCount):
+        if leftover.readableBytes == 0 {
+            guard let chunk = try await iterator.next() else {
+                throw NIODeviceConnection.peerClosedError
             }
-            return buffer.readData(length: min(byteCount, buffer.readableBytes))
+            leftover.writeImmutableBuffer(chunk)
         }
+        let count = min(byteCount, leftover.readableBytes)
+        let data = leftover.readData(length: count) ?? Data()
+        compact(&leftover)
+        return data
     }
+}
 
-    /// Compacts consumed bytes so long-lived streams do not retain stale slices.
-    private func compactBufferLocked() {
-        if buffer.readableBytes == 0 {
-            resetBufferLocked()
-        } else if buffer.readerIndex > 0 {
-            buffer.discardReadBytes()
-        }
-    }
-
-    /// Replaces the buffer with fresh zero-capacity storage.
-    private func resetBufferLocked() {
+/// Reclaims consumed storage so long-lived streams do not retain stale bytes.
+private func compact(_ buffer: inout ByteBuffer) {
+    if buffer.readableBytes == 0 {
         buffer = ByteBufferAllocator().buffer(capacity: 0)
+    } else {
+        buffer.discardReadBytes()
     }
+}
 
-    /// Resumes continuations outside the lock to avoid re-entrancy deadlocks.
-    private func resume(_ completions: [Completion]) {
-        for completion in completions {
-            switch completion {
-            case let .success(continuation, data):
-                continuation.resume(returning: data)
-            case let .failure(continuation, error):
-                continuation.resume(throwing: error)
-            }
+/// Converts framework-level stream failures into the package transport error surface.
+private func normalizedStreamError(_ error: Error) -> Error {
+    if error is CancellationError {
+        return NIODeviceConnection.closedError
+    }
+    if let channelError = error as? ChannelError {
+        switch channelError {
+        case .ioOnClosedChannel:
+            return NIODeviceConnection.closedError
+        default:
+            break
         }
     }
+    if error is RorkDeviceError {
+        return error
+    }
+    return RorkDeviceError.transport(describeTransportError(error))
 }

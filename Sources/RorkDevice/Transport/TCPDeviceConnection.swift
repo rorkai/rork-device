@@ -29,22 +29,18 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         port: UInt16,
         timeout: Duration? = nil
     ) async throws -> TCPDeviceConnection {
-        let handler = NIOByteStreamHandler()
         var bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
-            .channelInitializer { channel in
-                channel.pipeline.addHandler(handler)
-            }
-
         if let timeout {
             bootstrap = bootstrap.connectTimeout(timeout.nioTimeAmount)
         }
 
         do {
-            let channel = try await bootstrap.connect(host: host, port: Int(port)).get()
-            let connection = NIODeviceConnection(
-                channel: channel,
-                handler: handler
-            )
+            let asyncChannel = try await bootstrap.connect(host: host, port: Int(port)) { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
+                }
+            }
+            let connection = NIODeviceConnection(asyncChannel: asyncChannel)
             return TCPDeviceConnection(connection: connection)
         } catch {
             throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")

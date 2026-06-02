@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 import NIOPosix
 
 /// Unix-domain socket implementation of `DeviceConnection` backed by SwiftNIO.
@@ -21,18 +22,15 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
     ///   `/var/run/usbmuxd`.
     /// - Returns: An open byte-stream connection.
     public static func connect(toSocketAt path: String) async throws -> UnixDomainSocketConnection {
-        let handler = NIOByteStreamHandler()
         let bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
-            .channelInitializer { channel in
-                channel.pipeline.addHandler(handler)
-            }
 
         do {
-            let channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
-            let connection = NIODeviceConnection(
-                channel: channel,
-                handler: handler
-            )
+            let asyncChannel = try await bootstrap.connect(unixDomainSocketPath: path) { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
+                }
+            }
+            let connection = NIODeviceConnection(asyncChannel: asyncChannel)
             return UnixDomainSocketConnection(connection: connection)
         } catch {
             throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")
