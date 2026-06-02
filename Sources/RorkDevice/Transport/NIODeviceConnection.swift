@@ -116,6 +116,10 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
     }
 
     /// Ensures the owner has not already closed the stream.
+    ///
+    /// `close()` is a hard boundary for this adapter. Once local shutdown
+    /// starts, new reads must not drain buffered bytes and new writes must not
+    /// enter the NIO channel.
     private func ensureOpen() throws {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -245,8 +249,9 @@ private func runInboundReader(
             let data = try await readData(for: demand.kind, leftover: &leftover, iterator: &iterator)
             demand.continuation.resume(returning: data)
         } catch {
-            demand.continuation.resume(throwing: error)
-            await coordinator.finishClosing(with: error)
+            let streamError = normalizedStreamError(error)
+            demand.continuation.resume(throwing: streamError)
+            await coordinator.finishClosing(with: streamError)
             break
         }
     }

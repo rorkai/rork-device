@@ -88,6 +88,29 @@ final class PartialReceiveConnectionTests: XCTestCase {
         }
     }
 
+    /// Verifies explicit close fails a read that is already waiting for bytes.
+    func testClosedConnectionRejectsPendingExactReceive() async throws {
+        let server = try TCPScriptedServer(chunks: [], closeDelayMicros: 200_000)
+        defer { server.stop() }
+
+        let connection = try await TCPDeviceConnection.connect(to: "127.0.0.1", port: server.port)
+        defer { connection.close() }
+
+        let pendingRead = Task {
+            try await connection.receive(exactly: 1)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        connection.close()
+
+        await XCTAssertThrowsErrorAsync({ _ = try await pendingRead.value }) { error in
+            guard case let RorkDeviceError.transport(message) = error else {
+                XCTFail("Expected transport error, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("closed"))
+        }
+    }
+
     /// Verifies exact reads accumulate bytes delivered across multiple chunks.
     func testExactReceiveAccumulatesBytesDeliveredAcrossChunks() async throws {
         let server = try TCPScriptedServer(
@@ -371,6 +394,9 @@ private final class TCPScriptedServer {
     /// Delay inserted before every chunk after the first.
     private let interChunkDelayMicros: useconds_t
 
+    /// Delay inserted before closing the accepted client socket.
+    private let closeDelayMicros: useconds_t
+
     /// Protects recorded request bytes and idempotent shutdown state.
     private let lock = NSLock()
 
@@ -388,10 +414,16 @@ private final class TCPScriptedServer {
     }
 
     /// Starts a loopback TCP server that records a request and streams chunks.
-    init(prefixReadLength: Int = 0, chunks: [Data], interChunkDelayMicros: useconds_t = 0) throws {
+    init(
+        prefixReadLength: Int = 0,
+        chunks: [Data],
+        interChunkDelayMicros: useconds_t = 0,
+        closeDelayMicros: useconds_t = 0
+    ) throws {
         self.prefixReadLength = prefixReadLength
         self.chunks = chunks
         self.interChunkDelayMicros = interChunkDelayMicros
+        self.closeDelayMicros = closeDelayMicros
 
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
         guard socketFD >= 0 else {
@@ -478,6 +510,9 @@ private final class TCPScriptedServer {
                 usleep(interChunkDelayMicros)
             }
             sendAll(chunk, to: clientFD)
+        }
+        if closeDelayMicros > 0 {
+            usleep(closeDelayMicros)
         }
     }
 }
