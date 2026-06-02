@@ -188,11 +188,8 @@ public final class AFCClient {
         packet.appendLittleEndian(packetNumber)
         packet.appendLittleEndian(operation.rawValue)
         packet.append(headerPayload)
+        packet.append(bodyPayload)
         try await connection.send(packet)
-
-        if !bodyPayload.isEmpty {
-            try await connection.send(bodyPayload)
-        }
     }
 
     /// Receives an AFC status packet and returns the numeric status value.
@@ -265,12 +262,7 @@ public final class AFCClient {
 /// Constants and validation for AFC public staging uploads.
 private enum AFCStaging {
     static let directory = "./PublicStaging"
-
-    /// File-write body size used for AFC staging uploads.
-    ///
-    /// Keeping each body at a TLS-plaintext-sized chunk avoids forcing a
-    /// service write to span several TLS records on device tunnel transports.
-    static let chunkSize = 16 * 1024
+    static let chunkSize = 64 * 1024
     static let maxFilenameLength = 255
 
     static func safeFilename(bundleIdentifier: String) throws -> String {
