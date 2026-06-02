@@ -25,14 +25,14 @@ public final class AFCClient {
     /// upload so repeated installs do not reuse stale data.
     ///
     /// - Parameters:
-    ///   - url: Local IPA file.
+    ///   - fileURL: Local IPA file.
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
-    public func uploadIPA(at url: URL, bundleIdentifier: String) async throws -> String {
+    public func uploadIPA(at fileURL: URL, bundleIdentifier: String) async throws -> String {
         let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
         try await makeDirectory(AFCStaging.directory)
         try await removePath(stagedPath, ignoreMissing: true)
-        try await uploadFile(localURL: url, remotePath: stagedPath)
+        try await uploadFile(at: fileURL, to: stagedPath)
         return stagedPath
     }
 
@@ -50,7 +50,7 @@ public final class AFCClient {
         let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
         try await makeDirectory(AFCStaging.directory)
         try await removePath(stagedPath, ignoreMissing: true)
-        try await uploadFile(data, remotePath: stagedPath)
+        try await uploadFile(data, to: stagedPath)
         return stagedPath
     }
 
@@ -77,10 +77,13 @@ public final class AFCClient {
     ///
     /// The file is streamed in fixed-size chunks so callers can stage large
     /// archives without needing a service-specific helper.
-    public func uploadFile(localURL: URL, remotePath: String) async throws {
-        let handle = try await openFile(remotePath, mode: .writeOnly)
+    /// - Parameters:
+    ///   - fileURL: Local file to stream into AFC.
+    ///   - destinationPath: Destination path in the AFC service root.
+    public func uploadFile(at fileURL: URL, to destinationPath: String) async throws {
+        let handle = try await openFile(destinationPath, mode: .writeOnly)
         do {
-            let file = try FileHandle(forReadingFrom: localURL)
+            let file = try FileHandle(forReadingFrom: fileURL)
             defer { try? file.close() }
             while true {
                 let chunk = try file.read(upToCount: AFCStaging.chunkSize) ?? Data()
@@ -99,10 +102,14 @@ public final class AFCClient {
     /// Uploads data to a remote AFC path.
     ///
     /// The payload is streamed in fixed-size chunks to match the behavior of
-    /// `uploadFile(localURL:remotePath:)` while avoiding temporary files in
+    /// `uploadFile(at:to:)` while avoiding temporary files in
     /// callers that already own the bytes.
-    public func uploadFile(_ data: Data, remotePath: String) async throws {
-        let handle = try await openFile(remotePath, mode: .writeOnly)
+    ///
+    /// - Parameters:
+    ///   - data: Bytes to stream into AFC.
+    ///   - destinationPath: Destination path in the AFC service root.
+    public func uploadFile(_ data: Data, to destinationPath: String) async throws {
+        let handle = try await openFile(destinationPath, mode: .writeOnly)
         do {
             var offset = 0
             while offset < data.count {

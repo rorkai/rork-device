@@ -42,11 +42,11 @@ public struct PairingRecord: Equatable, Sendable {
 
     /// Loads a pairing record from a plist file.
     ///
-    /// - Parameter url: File URL containing a standard pairing-record plist.
+    /// - Parameter fileURL: File URL containing a standard pairing-record plist.
     /// - Throws: `RorkDeviceError.invalidPairingRecord` when required fields
     ///   are missing or empty.
-    public static func load(from url: URL) throws -> PairingRecord {
-        try parse(Data(contentsOf: url))
+    public static func load(from fileURL: URL) throws -> PairingRecord {
+        try parse(Data(contentsOf: fileURL))
     }
 
     /// Parses a pairing record from plist data.

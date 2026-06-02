@@ -3,7 +3,7 @@ import Foundation
 /// Device record returned by the local usbmux daemon.
 ///
 /// This is the raw discovery form used by `USBMuxClient`. Higher-level callers
-/// usually receive `Device` values from `DeviceClient.devices()` instead.
+/// usually receive `Device` values from `DeviceClient.discoverDevices()` instead.
 public struct USBMuxDevice: Equatable, Sendable {
     /// Numeric id assigned by usbmux for the current attachment.
     public let deviceID: UInt32

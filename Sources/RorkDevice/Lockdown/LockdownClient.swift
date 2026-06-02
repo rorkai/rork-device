@@ -53,7 +53,7 @@ public final class LockdownClient {
     /// use newer device domains without waiting for wrapper APIs.
     ///
     /// - Returns: The decoded plist value from the `Value` field.
-    public func getValue(domain: String?, key: String?) async throws -> Any {
+    public func value(domain: String?, key: String?) async throws -> Any {
         var request: [String: Any] = [
             "Label": label,
             "Request": "GetValue",

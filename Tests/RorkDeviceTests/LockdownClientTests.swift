@@ -24,7 +24,7 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertEqual(request["SystemBUID"] as? String, "system-1")
     }
 
-    func testGetValueSendsLockdownRequestAndReturnsValue() async throws {
+    func testValueSendsLockdownRequestAndReturnsValue() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Result": "Success",
             "Value": [
@@ -35,7 +35,7 @@ final class LockdownClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = LockdownClient(connection: connection, label: "tests")
 
-        let value = try await client.getValue(domain: nil, key: nil)
+        let value = try await client.value(domain: nil, key: nil)
 
         let dictionary = try XCTUnwrap(value as? [String: Any])
         XCTAssertEqual(dictionary["DeviceName"] as? String, "Test Phone")
@@ -88,7 +88,7 @@ final class LockdownClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = LockdownClient(connection: connection)
 
-        await XCTAssertThrowsErrorAsync({ try await client.getValue(domain: nil, key: nil) }) { error in
+        await XCTAssertThrowsErrorAsync({ try await client.value(domain: nil, key: nil) }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .lockdown("GetValue failed: InvalidHostID"))
         }
     }

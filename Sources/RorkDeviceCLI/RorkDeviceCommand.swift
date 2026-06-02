@@ -53,10 +53,10 @@ struct ConnectionOptions: ParsableArguments {
         let client = DeviceClient()
         let pairing = try pairingRecordValue()
         if let host {
-            return try await client.directSession(host: host, port: port, pairingRecord: pairing, label: label)
+            return try await client.connect(host: host, port: port, using: pairing, label: label)
         }
 
-        let devices = try await client.devices()
+        let devices = try await client.discoverDevices()
         let selected: Device?
         if let udid {
             selected = devices.first { $0.identifier == udid }
@@ -66,7 +66,7 @@ struct ConnectionOptions: ParsableArguments {
         guard let selected else {
             throw ValidationError("No matching device found.")
         }
-        return try await client.session(for: selected, pairingRecord: pairing, label: label)
+        return try await client.connect(to: selected, using: pairing, label: label)
     }
 
     /// Shared implementation for parse-time and runtime connection validation.
@@ -88,7 +88,7 @@ struct List: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let devices = try await DeviceClient().devices()
+        let devices = try await DeviceClient().discoverDevices()
         if devices.isEmpty {
             print("No devices found.")
             return
@@ -110,7 +110,7 @@ struct Info: AsyncParsableCommand {
 
     func run() async throws {
         let session = try await connection.session()
-        let info = try await session.deviceInfo()
+        let info = try await session.fetchDeviceInfo()
         print("UDID: \(info.uniqueDeviceID ?? "-")")
         print("Name: \(info.deviceName ?? "-")")
         print("Product: \(info.productType ?? "-")")
@@ -142,10 +142,10 @@ struct AppsList: AsyncParsableCommand {
 
     func run() async throws {
         let session = try await connection.session()
-        let apps = try await session.applications(type: type)
+        let apps = try await session.installedApplications(matching: type)
         for app in apps {
-            let identifier = app["CFBundleIdentifier"] as? String ?? "-"
-            let name = app["CFBundleDisplayName"] as? String ?? app["CFBundleName"] as? String ?? "-"
+            let identifier = app.bundleIdentifier ?? "-"
+            let name = app.displayName ?? "-"
             print("\(identifier)\t\(name)")
         }
     }
@@ -169,7 +169,7 @@ struct Install: AsyncParsableCommand {
     func run() async throws {
         let session = try await connection.session()
         try await session.installApplication(
-            ipaURL: URL(fileURLWithPath: ipaPath),
+            at: URL(fileURLWithPath: ipaPath),
             bundleIdentifier: bundleIdentifier
         ) { event in
             if let percent = event.percentComplete {
@@ -228,7 +228,7 @@ struct ProfilesInstall: AsyncParsableCommand {
 
     func run() async throws {
         let session = try await connection.session()
-        try await session.installProvisioningProfile(at: URL(fileURLWithPath: profilePath))
+        try await session.installProvisioningProfile(contentsOf: URL(fileURLWithPath: profilePath))
     }
 }
 

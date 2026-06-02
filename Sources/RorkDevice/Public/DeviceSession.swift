@@ -44,8 +44,8 @@ public final class DeviceSession {
     /// - Returns: Common identity and OS fields from Lockdown.
     /// - Throws: `RorkDeviceError.protocolViolation` when the response does
     ///   not contain a dictionary, plus lower-level transport errors.
-    public func deviceInfo() async throws -> DeviceInfo {
-        let values = try await lockdown.getValue(domain: nil, key: nil)
+    public func fetchDeviceInfo() async throws -> DeviceInfo {
+        let values = try await lockdown.value(domain: nil, key: nil)
         guard let dictionary = values as? [String: Any] else {
             throw RorkDeviceError.protocolViolation("Lockdown GetValue did not return a dictionary.")
         }
@@ -72,9 +72,9 @@ public final class DeviceSession {
 
     /// Reads and installs a provisioning profile through MISAgent.
     ///
-    /// - Parameter url: Local path to a `.mobileprovision` payload.
-    public func installProvisioningProfile(at url: URL) async throws {
-        let data = try Data(contentsOf: url)
+    /// - Parameter fileURL: Local path to a `.mobileprovision` payload.
+    public func installProvisioningProfile(contentsOf fileURL: URL) async throws {
+        let data = try Data(contentsOf: fileURL)
         try await installProvisioningProfile(data)
     }
 
@@ -118,11 +118,22 @@ public final class DeviceSession {
         return try await client.copyProvisioningProfiles(mode: mode)
     }
 
-    /// Lists applications through InstallationProxy.
+    /// Lists installed applications through InstallationProxy.
+    ///
+    /// - Parameter type: Application class to browse. Defaults to user apps.
+    /// - Returns: Typed application metadata values.
+    public func installedApplications(matching type: ApplicationType = .user) async throws -> [InstalledApplication] {
+        try await rawApplications(matching: type).map(InstalledApplication.init(values:))
+    }
+
+    /// Lists raw InstallationProxy application dictionaries.
+    ///
+    /// Use this escape hatch when a workflow needs fields not yet modeled by
+    /// `InstalledApplication`.
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Raw application dictionaries returned by the device.
-    public func applications(type: ApplicationType = .user) async throws -> [[String: Any]] {
+    public func rawApplications(matching type: ApplicationType = .user) async throws -> [[String: Any]] {
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         return try await client.browse(applicationType: type)
@@ -152,16 +163,16 @@ public final class DeviceSession {
     /// staged package path.
     ///
     /// - Parameters:
-    ///   - ipaURL: Local path to the IPA archive.
+    ///   - fileURL: Local path to the IPA archive.
     ///   - bundleIdentifier: Expected application bundle identifier. The value
     ///     is forwarded in InstallationProxy client options when supplied.
     ///   - progress: Optional callback for InstallationProxy status events.
     public func installApplication(
-        ipaURL: URL,
+        at fileURL: URL,
         bundleIdentifier: String,
         progress: InstallationProgressHandler? = nil
     ) async throws {
-        let stagedPath = try await stageApplication(ipaURL: ipaURL, bundleIdentifier: bundleIdentifier)
+        let stagedPath = try await stageApplication(at: fileURL, bundleIdentifier: bundleIdentifier)
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         try await client.install(packagePath: stagedPath, bundleIdentifier: bundleIdentifier, progress: progress)
@@ -169,7 +180,7 @@ public final class DeviceSession {
 
     /// Stages and installs in-memory IPA data through AFC and InstallationProxy.
     ///
-    /// This is equivalent to `installApplication(ipaURL:bundleIdentifier:)`
+    /// This is equivalent to `installApplication(at:bundleIdentifier:)`
     /// except the IPA bytes are supplied directly by the caller.
     ///
     /// - Parameters:
@@ -178,11 +189,11 @@ public final class DeviceSession {
     ///     is forwarded in InstallationProxy client options when supplied.
     ///   - progress: Optional callback for InstallationProxy status events.
     public func installApplication(
-        ipaData: Data,
+        _ ipaData: Data,
         bundleIdentifier: String,
         progress: InstallationProgressHandler? = nil
     ) async throws {
-        let stagedPath = try await stageApplication(ipaData: ipaData, bundleIdentifier: bundleIdentifier)
+        let stagedPath = try await stageApplication(ipaData, bundleIdentifier: bundleIdentifier)
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         try await client.install(packagePath: stagedPath, bundleIdentifier: bundleIdentifier, progress: progress)
@@ -195,10 +206,10 @@ public final class DeviceSession {
     /// `InstallationProxyClient` command.
     ///
     /// - Returns: Device path suitable for InstallationProxy `Install`.
-    public func stageApplication(ipaURL: URL, bundleIdentifier: String) async throws -> String {
+    public func stageApplication(at fileURL: URL, bundleIdentifier: String) async throws -> String {
         let connection = try await startService(.afc)
         let afc = AFCClient(connection: connection)
-        return try await afc.uploadIPA(at: ipaURL, bundleIdentifier: bundleIdentifier)
+        return try await afc.uploadIPA(at: fileURL, bundleIdentifier: bundleIdentifier)
     }
 
     /// Uploads in-memory IPA data to AFC public staging.
@@ -207,7 +218,7 @@ public final class DeviceSession {
     ///   - ipaData: IPA archive bytes.
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
-    public func stageApplication(ipaData: Data, bundleIdentifier: String) async throws -> String {
+    public func stageApplication(_ ipaData: Data, bundleIdentifier: String) async throws -> String {
         let connection = try await startService(.afc)
         let afc = AFCClient(connection: connection)
         return try await afc.uploadIPA(ipaData, bundleIdentifier: bundleIdentifier)

@@ -54,19 +54,19 @@ import Foundation
 import RorkDevice
 
 let client = DeviceClient()
-let devices = try await client.devices()
+let devices = try await client.discoverDevices()
 let pairing = try PairingRecord.load(from: URL(fileURLWithPath: "pairing.plist"))
 
 guard let device = devices.first else {
     throw RorkDeviceError.invalidInput("No device found.")
 }
 
-let session = try await client.session(for: device, pairingRecord: pairing)
-let info = try await session.deviceInfo()
+let session = try await client.connect(to: device, using: pairing)
+let info = try await session.fetchDeviceInfo()
 print(info.deviceName ?? "Unnamed device")
 
 try await session.installApplication(
-    ipaURL: URL(fileURLWithPath: "App.ipa"),
+    at: URL(fileURLWithPath: "App.ipa"),
     bundleIdentifier: "com.example.app"
 ) { progress in
     print(progress.status, progress.percentComplete ?? -1)

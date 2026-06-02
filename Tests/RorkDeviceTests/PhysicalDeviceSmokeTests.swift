@@ -24,16 +24,16 @@ final class PhysicalDeviceSmokeTests: XCTestCase {
         let requestedUDID = ProcessInfo.processInfo.environment["RORK_DEVICE_UDID"]
 
         let client = DeviceClient()
-        let devices = try await client.devices()
+        let devices = try await client.discoverDevices()
         let device = try selectDevice(from: devices, requestedUDID: requestedUDID)
         let pairingRecord = try PairingRecord.load(from: pairingRecordURL)
-        let session = try await client.session(for: device, pairingRecord: pairingRecord)
+        let session = try await client.connect(to: device, using: pairingRecord)
 
-        _ = try await session.deviceInfo()
-        try await session.installProvisioningProfile(at: provisioningProfileURL)
+        _ = try await session.fetchDeviceInfo()
+        try await session.installProvisioningProfile(contentsOf: provisioningProfileURL)
         let profiles = try await session.copyProvisioningProfiles()
         XCTAssertFalse(profiles.isEmpty)
-        try await session.installApplication(ipaURL: ipaURL, bundleIdentifier: bundleIdentifier)
+        try await session.installApplication(at: ipaURL, bundleIdentifier: bundleIdentifier)
         try await session.uninstallApplication(bundleIdentifier: bundleIdentifier)
     }
 }

@@ -60,14 +60,14 @@ final class InstallationProxyClientTests: XCTestCase {
         ]))
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
-        var events: [InstallationProgress] = []
+        let events = EventRecorder<InstallationProgress>()
 
         try await client.install(packagePath: "/PublicStaging/App.ipa", bundleIdentifier: "app.example") {
             events.append($0)
         }
 
-        XCTAssertEqual(events.map(\.status), ["Installing", "Complete"])
-        XCTAssertEqual(events.first?.percentComplete, 50)
+        XCTAssertEqual(events.values.map(\.status), ["Installing", "Complete"])
+        XCTAssertEqual(events.values.first?.percentComplete, 50)
     }
 
     func testInstallThrowsDeviceError() async throws {
@@ -104,13 +104,13 @@ final class InstallationProxyClientTests: XCTestCase {
         let inbound = try PropertyListMessageFramer.encode(["Status": "Complete"])
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
-        var events: [InstallationProgress] = []
+        let events = EventRecorder<InstallationProgress>()
 
         try await client.uninstall(bundleIdentifier: "com.example.app") {
             events.append($0)
         }
 
-        XCTAssertEqual(events.map(\.status), ["Complete"])
+        XCTAssertEqual(events.values.map(\.status), ["Complete"])
         let request = try XCTUnwrap(decodedProxyMessage(connection.sent[0]))
         XCTAssertEqual(request["Command"] as? String, "Uninstall")
         XCTAssertEqual(request["ApplicationIdentifier"] as? String, "com.example.app")

@@ -53,4 +53,4 @@ public struct InstallationProgress: Equatable, Sendable {
 /// The callback is executed on the task that is reading the device connection.
 /// Keep work in the callback lightweight and dispatch elsewhere for UI updates
 /// or expensive logging.
-public typealias InstallationProgressHandler = (InstallationProgress) -> Void
+public typealias InstallationProgressHandler = @Sendable (InstallationProgress) -> Void

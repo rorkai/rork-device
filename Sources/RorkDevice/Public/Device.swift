@@ -3,7 +3,7 @@ import Foundation
 /// Device identity and connection route discovered by a transport.
 ///
 /// A `Device` is intentionally lightweight. It is safe to store, display, and
-/// pass back into `DeviceClient.session(for:pairingRecord:label:)`; it does not
+/// pass back into `DeviceClient.connect(to:using:label:)`; it does not
 /// keep sockets open and does not prove that the device is still attached.
 public struct Device: Equatable, Sendable {
     /// Stable device identifier, normally the device UDID.
@@ -89,5 +89,41 @@ public struct DeviceInfo: Equatable, Sendable {
                 return nil
             }
         }
+    }
+}
+
+/// Installed application metadata returned by InstallationProxy.
+///
+/// InstallationProxy exposes app records as property-list dictionaries. This
+/// value provides typed access to the fields most callers need while retaining
+/// scalar raw values for diagnostics and custom workflows.
+public struct InstalledApplication: Equatable, Sendable {
+    /// Bundle identifier, such as `com.example.app`.
+    public let bundleIdentifier: String?
+
+    /// Human-readable display name from `CFBundleDisplayName` or
+    /// `CFBundleName`.
+    public let displayName: String?
+
+    /// Marketing version from `CFBundleShortVersionString`.
+    public let version: String?
+
+    /// Build version from `CFBundleVersion`.
+    public let buildVersion: String?
+
+    /// Application type reported by InstallationProxy.
+    public let applicationType: String?
+
+    /// Scalar record values converted to sendable diagnostic descriptions.
+    public let rawValues: [String: AnySendableValue]
+
+    /// Creates typed application metadata from a raw InstallationProxy record.
+    public init(values: [String: Any]) {
+        bundleIdentifier = values["CFBundleIdentifier"] as? String
+        displayName = values["CFBundleDisplayName"] as? String ?? values["CFBundleName"] as? String
+        version = values["CFBundleShortVersionString"] as? String
+        buildVersion = values["CFBundleVersion"] as? String
+        applicationType = values["ApplicationType"] as? String
+        rawValues = values.mapValues(AnySendableValue.init)
     }
 }

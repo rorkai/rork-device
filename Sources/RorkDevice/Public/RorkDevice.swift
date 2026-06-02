@@ -52,7 +52,7 @@ public final class DeviceClient {
     /// - Throws: `RorkDeviceError.transport` when the usbmux socket cannot be
     ///   opened, or `RorkDeviceError.protocolViolation` when the daemon returns
     ///   malformed plist data.
-    public func devices() async throws -> [Device] {
+    public func discoverDevices() async throws -> [Device] {
         try await usbmuxClient.devices().map { device in
             Device(
                 identifier: device.serialNumber,
@@ -69,7 +69,7 @@ public final class DeviceClient {
     /// `SecureSessionUpgrader` before returning the session.
     ///
     /// - Parameters:
-    ///   - device: Device returned from `devices()` or created by a caller.
+    ///   - device: Device returned from `discoverDevices()` or created by a caller.
     ///   - pairingRecord: Existing Lockdown pairing record for the device.
     ///   - label: Client label sent in Lockdown requests for diagnostics.
     /// - Returns: A session that can query device information and start
@@ -77,9 +77,9 @@ public final class DeviceClient {
     /// - Throws: `RorkDeviceError.invalidPairingRecord`,
     ///   `RorkDeviceError.lockdown`, `RorkDeviceError.secureSessionUnsupported`,
     ///   or lower-level transport/protocol errors.
-    public func session(
-        for device: Device,
-        pairingRecord: PairingRecord,
+    public func connect(
+        to device: Device,
+        using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
     ) async throws -> DeviceSession {
         switch device.connection {
@@ -87,7 +87,7 @@ public final class DeviceClient {
             let transport = USBMuxDeviceTransport(deviceID: deviceID, usbmuxClient: usbmuxClient)
             return try await openSession(transport: transport, pairingRecord: pairingRecord, label: label)
         case let .direct(host, port):
-            return try await directSession(host: host, port: port, pairingRecord: pairingRecord, label: label)
+            return try await connect(host: host, port: port, using: pairingRecord, label: label)
         }
     }
 
@@ -103,10 +103,10 @@ public final class DeviceClient {
     ///   - pairingRecord: Existing pairing record for the target device.
     ///   - label: Client label sent in Lockdown requests.
     /// - Returns: A `DeviceSession` backed by direct TCP connections.
-    public func directSession(
+    public func connect(
         host: String,
         port: UInt16 = 62078,
-        pairingRecord: PairingRecord,
+        using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
     ) async throws -> DeviceSession {
         let transport = DirectLockdownTransport(host: host, lockdownPort: port)

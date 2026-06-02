@@ -21,4 +21,22 @@ final class DeviceInfoTests: XCTestCase {
         XCTAssertEqual(info.rawValues["Number"], "7")
         XCTAssertNil(info.rawValues["Nested"])
     }
+
+    func testInstalledApplicationExtractsCommonFieldsAndRawValues() {
+        let app = InstalledApplication(values: [
+            "CFBundleIdentifier": "com.example.app",
+            "CFBundleDisplayName": "Example",
+            "CFBundleShortVersionString": "1.2.3",
+            "CFBundleVersion": "45",
+            "ApplicationType": "User",
+            "Number": NSNumber(value: 7),
+        ])
+
+        XCTAssertEqual(app.bundleIdentifier, "com.example.app")
+        XCTAssertEqual(app.displayName, "Example")
+        XCTAssertEqual(app.version, "1.2.3")
+        XCTAssertEqual(app.buildVersion, "45")
+        XCTAssertEqual(app.applicationType, "User")
+        XCTAssertEqual(app.rawValues["Number"]?.description, "7")
+    }
 }

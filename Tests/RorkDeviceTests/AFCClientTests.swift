@@ -94,7 +94,7 @@ final class AFCClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = AFCClient(connection: connection)
 
-        try await client.uploadFile(localURL: fileURL, remotePath: "/PublicStaging/App.ipa")
+        try await client.uploadFile(at: fileURL, to: "/PublicStaging/App.ipa")
 
         XCTAssertEqual(connection.sent.count, 3)
         XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
@@ -109,7 +109,7 @@ final class AFCClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = AFCClient(connection: connection)
 
-        try await client.uploadFile(Data("hello".utf8), remotePath: "/PublicStaging/App.ipa")
+        try await client.uploadFile(Data("hello".utf8), to: "/PublicStaging/App.ipa")
 
         XCTAssertEqual(connection.sent.count, 3)
         XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
@@ -151,7 +151,7 @@ final class AFCClientTests: XCTestCase {
         let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 5))
         let client = AFCClient(connection: connection)
 
-        await XCTAssertThrowsErrorAsync({ try await client.uploadFile(localURL: fileURL, remotePath: "/PublicStaging/App.ipa") }) { error in
+        await XCTAssertThrowsErrorAsync({ try await client.uploadFile(at: fileURL, to: "/PublicStaging/App.ipa") }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .afcStatus(5))
         }
     }
