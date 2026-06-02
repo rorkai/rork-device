@@ -58,7 +58,10 @@ public final class DeviceSession {
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
     public func startService(_ serviceName: LockdownServiceName) async throws -> DeviceConnection {
-        let service = try await lockdown.startService(serviceName.rawValue)
+        let service = try await lockdown.startService(
+            serviceName.rawValue,
+            escrowBag: serviceName.requiresPairingEscrow ? pairingRecord.escrowBag : nil
+        )
         var connection = try await transport.connect(to: service.port)
         if service.requiresSecureConnection {
             connection = try await secureSessionUpgrader.upgrade(connection, pairingRecord: pairingRecord)
@@ -233,4 +236,21 @@ public enum LockdownServiceName: String, Sendable {
 
     /// MISAgent, used to install and remove provisioning profiles.
     case misagent = "com.apple.misagent"
+}
+
+private extension LockdownServiceName {
+    /// Whether this service should receive the pairing record's escrow bag when
+    /// it is started through Lockdown.
+    ///
+    /// AFC is the service used for app-install staging. On tunnel-backed paired
+    /// connections, including escrow material keeps service authorization tied
+    /// to the pairing record that opened the Lockdown session.
+    var requiresPairingEscrow: Bool {
+        switch self {
+        case .afc:
+            return true
+        case .installationProxy, .misagent:
+            return false
+        }
+    }
 }

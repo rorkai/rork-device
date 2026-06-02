@@ -80,6 +80,23 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertTrue(service.requiresSecureConnection)
     }
 
+    func testStartServiceCanSendEscrowBag() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Result": "Success",
+            "Port": 12345,
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection, label: "tests")
+        let escrowBag = Data([1, 2, 3])
+
+        _ = try await client.startService("com.apple.afc", escrowBag: escrowBag)
+
+        let request = try XCTUnwrap(decodedSentPlist(connection.sent[0]))
+        XCTAssertEqual(request["Request"] as? String, "StartService")
+        XCTAssertEqual(request["Service"] as? String, "com.apple.afc")
+        XCTAssertEqual(request["EscrowBag"] as? Data, escrowBag)
+    }
+
     func testStartServiceRejectsOutOfRangePort() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Result": "Success",

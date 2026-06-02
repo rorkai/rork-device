@@ -14,6 +14,7 @@ final class FakeUSBMuxDaemon {
     private var _afcOperations: [UInt64] = []
     private var _installedPackagePaths: [String] = []
     private var _misagentMessageTypes: [String] = []
+    private var _servicesStartedWithEscrow: [String] = []
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -37,6 +38,12 @@ final class FakeUSBMuxDaemon {
         lock.lock()
         defer { lock.unlock() }
         return _misagentMessageTypes
+    }
+
+    var servicesStartedWithEscrow: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _servicesStartedWithEscrow
     }
 
     init(secureLockdown: Bool = false, secureServices: Set<String> = []) throws {
@@ -185,6 +192,9 @@ final class FakeUSBMuxDaemon {
                 ], to: fd)
             case "StartService":
                 let service = request["Service"] as? String ?? ""
+                if request["EscrowBag"] is Data {
+                    recordServiceStartedWithEscrow(service)
+                }
                 let port: Int
                 switch service {
                 case LockdownServiceName.afc.rawValue:
@@ -312,6 +322,12 @@ final class FakeUSBMuxDaemon {
     private func recordMISAgentMessageType(_ messageType: String) {
         lock.lock()
         _misagentMessageTypes.append(messageType)
+        lock.unlock()
+    }
+
+    private func recordServiceStartedWithEscrow(_ service: String) {
+        lock.lock()
+        _servicesStartedWithEscrow.append(service)
         lock.unlock()
     }
 }

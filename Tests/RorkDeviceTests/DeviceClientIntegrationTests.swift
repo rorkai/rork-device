@@ -55,6 +55,23 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.memory.ipa"])
     }
 
+    func testStagesApplicationWithEscrowBagForAFCService() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(to: device, using: try testPairingRecord(escrowBag: Data([8])))
+        let stagedPath = try await session.stageApplication(
+            Data("fake ipa".utf8),
+            bundleIdentifier: "com.example.escrow"
+        )
+
+        XCTAssertEqual(stagedPath, "/PublicStaging/com.example.escrow.ipa")
+        XCTAssertEqual(daemon.servicesStartedWithEscrow, [LockdownServiceName.afc.rawValue])
+    }
+
     func testManagesProvisioningProfilesThroughFakeUSBMuxDeviceStack() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
@@ -117,14 +134,19 @@ private final class RecordingSecureSessionUpgrader: SecureSessionUpgrader {
     }
 }
 
-private func testPairingRecord() throws -> PairingRecord {
-    try PairingRecord.parse(
+private func testPairingRecord(escrowBag: Data? = nil) throws -> PairingRecord {
+    var plist: [String: Any] = [
+        "UDID": "fake-device-1",
+        "HostID": "host-1",
+        "SystemBUID": "system-1",
+    ]
+    if let escrowBag {
+        plist["EscrowBag"] = escrowBag
+    }
+
+    return try PairingRecord.parse(
         PropertyListSerialization.data(
-            fromPropertyList: [
-                "UDID": "fake-device-1",
-                "HostID": "host-1",
-                "SystemBUID": "system-1",
-            ],
+            fromPropertyList: plist,
             format: .xml,
             options: 0
         )

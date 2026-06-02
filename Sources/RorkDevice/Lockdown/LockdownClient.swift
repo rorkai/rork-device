@@ -92,13 +92,25 @@ public final class LockdownClient {
     ///
     /// After a successful response, open a new transport connection to the
     /// returned port. If `requiresSecureConnection` is true, upgrade that
-    /// service connection before speaking the service protocol.
-    public func startService(_ serviceName: String) async throws -> LockdownService {
-        let response = try await request([
+    /// service connection before speaking the service protocol. Some paired
+    /// service flows can also include escrow material from the pairing record
+    /// so the device can authorize the service start without another trust
+    /// exchange.
+    ///
+    /// - Parameters:
+    ///   - serviceName: Lockdown service identifier.
+    ///   - escrowBag: Optional `EscrowBag` bytes from the pairing record.
+    public func startService(_ serviceName: String, escrowBag: Data? = nil) async throws -> LockdownService {
+        var serviceRequest: [String: Any] = [
             "Label": label,
             "Request": "StartService",
             "Service": serviceName,
-        ])
+        ]
+        if let escrowBag {
+            serviceRequest["EscrowBag"] = escrowBag
+        }
+
+        let response = try await request(serviceRequest)
         try checkResult(response, request: "StartService")
         guard let port = response.int("Port") else {
             throw RorkDeviceError.protocolViolation("Lockdown StartService response is missing Port.")
