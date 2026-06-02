@@ -24,8 +24,26 @@ let package = Package(
     targets: [
         .target(
             name: "RorkDevice",
+            path: ".",
+            exclude: [
+                ".DS_Store",
+                ".gitignore",
+                ".swiftpm",
+                ".vscode",
+                "Artifacts",
+                "Docs",
+                "LICENSE",
+                "Package.resolved",
+                "Package.swift",
+                "README.md",
+                "Sources/RorkDeviceCLI",
+                "Tests",
+            ],
+            sources: [
+                "Sources/RorkDevice",
+            ],
             resources: [
-                .process("Resources"),
+                .process("VERSION"),
             ]
         ),
         .executableTarget(
