@@ -6,8 +6,8 @@ import Foundation
 /// high-level entry point for discovery, Lockdown sessions, and app-install
 /// workflows.
 public enum RorkDevice {
-    /// Development version reported by APIs and command-line diagnostics.
-    public static let version = "0.1.0-dev"
+    /// Package version reported by APIs and command-line diagnostics.
+    public static let version = "0.1.0"
 }
 
 /// High-level entry point for device discovery and authenticated sessions.
