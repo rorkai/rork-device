@@ -21,7 +21,7 @@ final class FakeConnection: DeviceConnection {
         sent.append(data)
     }
 
-    func receive(count: Int) async throws -> Data {
+    func receive(exactly count: Int) async throws -> Data {
         guard !isClosed else {
             throw RorkDeviceError.transport("Fake connection is closed.")
         }

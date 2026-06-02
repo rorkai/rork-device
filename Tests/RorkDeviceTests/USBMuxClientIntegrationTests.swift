@@ -20,7 +20,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         defer { daemon.stop() }
         let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
 
-        let connection = try await client.connect(deviceID: 1, port: 62078)
+        let connection = try await client.connect(toDeviceID: 1, port: 62078)
         connection.close()
 
         XCTAssertEqual(daemon.connectedPorts, [62078])

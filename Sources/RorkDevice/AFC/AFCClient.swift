@@ -210,7 +210,7 @@ public final class AFCClient {
 
     /// Receives and validates one AFC packet.
     private func receivePacket() async throws -> AFCPacketResponse {
-        let header = try await connection.receive(count: 40)
+        let header = try await connection.receive(exactly: 40)
         guard header.prefix(8) == Data(AFCMagic.bytes) else {
             throw RorkDeviceError.protocolViolation("Invalid AFC magic.")
         }
@@ -227,7 +227,7 @@ public final class AFCClient {
 
         let operationValue: UInt64 = try header.littleEndianInteger(at: 32)
         let payloadLength = Int(entireLength - 40)
-        let payload = payloadLength == 0 ? Data() : try await connection.receive(count: payloadLength)
+        let payload = payloadLength == 0 ? Data() : try await connection.receive(exactly: payloadLength)
         return AFCPacketResponse(
             operation: AFCOperation(rawValue: operationValue) ?? .invalid,
             payload: payload

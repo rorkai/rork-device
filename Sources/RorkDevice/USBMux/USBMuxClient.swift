@@ -73,7 +73,7 @@ public final class USBMuxClient {
     /// - Parameters:
     ///   - deviceID: Numeric id returned by `devices()`.
     ///   - port: Device-side service port, in host byte order.
-    public func connect(deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
+    public func connect(toDeviceID deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
         let connection = try await openConnection()
         do {
             let response = try await request([
@@ -105,9 +105,9 @@ public final class USBMuxClient {
     private func openConnection() async throws -> DeviceConnection {
         switch endpoint {
         case let .unixSocket(path):
-            return try await UnixDomainSocketConnection.connect(path: path)
+            return try await UnixDomainSocketConnection.connect(toSocketAt: path)
         case let .tcp(host, port):
-            return try await TCPDeviceConnection.connect(host: host, port: port)
+            return try await TCPDeviceConnection.connect(to: host, port: port)
         }
     }
 
@@ -117,14 +117,14 @@ public final class USBMuxClient {
         let payload = try PropertyListCodec.encode(dictionary, format: .xml)
         try await connection.send(try USBMuxPacket(tag: tag, payload: payload).encoded())
 
-        let header = try await connection.receive(count: USBMuxPacket.headerLength)
+        let header = try await connection.receive(exactly: USBMuxPacket.headerLength)
         let length = try Int(header.littleEndianInteger(at: 0, as: UInt32.self))
         guard length >= USBMuxPacket.headerLength else {
             throw RorkDeviceError.protocolViolation("Invalid usbmux response length \(length).")
         }
 
         let payloadLength = length - USBMuxPacket.headerLength
-        let responsePayload = try await connection.receive(count: payloadLength)
+        let responsePayload = try await connection.receive(exactly: payloadLength)
         let responsePacket = try USBMuxPacket.decode(header: header, payload: responsePayload)
         guard responsePacket.messageType == USBMuxPacket.plistMessageType else {
             throw RorkDeviceError.protocolViolation("Unsupported usbmux response message type \(responsePacket.messageType).")
@@ -176,7 +176,7 @@ public struct USBMuxDeviceTransport: DeviceTransport {
 
     /// Opens a usbmux-forwarded connection to a device port.
     public func connect(to port: UInt16) async throws -> DeviceConnection {
-        try await usbmuxClient.connect(deviceID: deviceID, port: port)
+        try await usbmuxClient.connect(toDeviceID: deviceID, port: port)
     }
 }
 

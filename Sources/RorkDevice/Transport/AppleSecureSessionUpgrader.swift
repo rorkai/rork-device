@@ -96,7 +96,7 @@ final class SecureTransportDeviceConnection: DeviceConnection {
     }
 
     /// Receives exactly `count` decrypted bytes from the TLS session.
-    func receive(count: Int) async throws -> Data {
+    func receive(exactly count: Int) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
             try self.withOpenContext {
                 var data = Data(count: count)
@@ -251,7 +251,7 @@ private func secureTransportRead(
         .takeUnretainedValue()
     do {
         let bytes = try waitForSecureTransportIO {
-            try await box.base.receive(count: requested)
+            try await box.base.receive(exactly: requested)
         }
         bytes.withUnsafeBytes { buffer in
             if let source = buffer.baseAddress {

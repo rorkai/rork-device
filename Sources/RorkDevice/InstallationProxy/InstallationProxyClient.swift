@@ -20,14 +20,24 @@ public final class InstallationProxyClient {
 
     /// Lists applications matching an application type.
     ///
-    /// - Parameter applicationType: Application class to request from the
-    ///   device.
+    /// - Parameter type: Application class to request from the device.
+    /// - Returns: Typed application metadata values.
+    public func applications(matching type: ApplicationType = .user) async throws -> [InstalledApplication] {
+        try await rawApplications(matching: type).map(InstalledApplication.init(values:))
+    }
+
+    /// Lists raw application records matching an application type.
+    ///
+    /// Use this escape hatch when a workflow needs fields not yet modeled by
+    /// `InstalledApplication`.
+    ///
+    /// - Parameter type: Application class to request from the device.
     /// - Returns: Raw application dictionaries returned in `CurrentList`.
-    public func browse(applicationType: ApplicationType = .user) async throws -> [[String: Any]] {
+    public func rawApplications(matching type: ApplicationType = .user) async throws -> [[String: Any]] {
         try await PropertyListMessageFramer.send([
             "Command": "Browse",
             "ClientOptions": [
-                "ApplicationType": applicationType.rawValue,
+                "ApplicationType": type.rawValue,
             ],
         ], to: connection)
         let response = try await PropertyListMessageFramer.receive(from: connection)

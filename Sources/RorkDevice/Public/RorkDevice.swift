@@ -87,7 +87,7 @@ public final class DeviceClient {
             let transport = USBMuxDeviceTransport(deviceID: deviceID, usbmuxClient: usbmuxClient)
             return try await openSession(transport: transport, pairingRecord: pairingRecord, label: label)
         case let .direct(host, port):
-            return try await connect(host: host, port: port, using: pairingRecord, label: label)
+            return try await connect(to: host, port: port, using: pairingRecord, label: label)
         }
     }
 
@@ -104,7 +104,7 @@ public final class DeviceClient {
     ///   - label: Client label sent in Lockdown requests.
     /// - Returns: A `DeviceSession` backed by direct TCP connections.
     public func connect(
-        host: String,
+        to host: String,
         port: UInt16 = 62078,
         using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
@@ -121,7 +121,7 @@ public final class DeviceClient {
     ) async throws -> DeviceSession {
         var connection = try await transport.connect(to: 62078)
         let lockdown = LockdownClient(connection: connection, label: label)
-        let session = try await lockdown.startSession(pairingRecord: pairingRecord)
+        let session = try await lockdown.startSession(using: pairingRecord)
         if session.requiresSecureConnection {
             connection = try await secureSessionUpgrader.upgrade(connection, pairingRecord: pairingRecord)
         }

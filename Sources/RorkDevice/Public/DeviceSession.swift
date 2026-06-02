@@ -45,11 +45,7 @@ public final class DeviceSession {
     /// - Throws: `RorkDeviceError.protocolViolation` when the response does
     ///   not contain a dictionary, plus lower-level transport errors.
     public func fetchDeviceInfo() async throws -> DeviceInfo {
-        let values = try await lockdown.value(domain: nil, key: nil)
-        guard let dictionary = values as? [String: Any] else {
-            throw RorkDeviceError.protocolViolation("Lockdown GetValue did not return a dictionary.")
-        }
-        return DeviceInfo(values: dictionary)
+        DeviceInfo(values: try await lockdown.deviceValues())
     }
 
     /// Starts a supported Lockdown service and opens its service connection.
@@ -123,7 +119,9 @@ public final class DeviceSession {
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Typed application metadata values.
     public func installedApplications(matching type: ApplicationType = .user) async throws -> [InstalledApplication] {
-        try await rawApplications(matching: type).map(InstalledApplication.init(values:))
+        let connection = try await startService(.installationProxy)
+        let client = InstallationProxyClient(connection: connection)
+        return try await client.applications(matching: type)
     }
 
     /// Lists raw InstallationProxy application dictionaries.
@@ -136,7 +134,7 @@ public final class DeviceSession {
     public func rawApplications(matching type: ApplicationType = .user) async throws -> [[String: Any]] {
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
-        return try await client.browse(applicationType: type)
+        return try await client.rawApplications(matching: type)
     }
 
     /// Uninstalls an application through InstallationProxy.

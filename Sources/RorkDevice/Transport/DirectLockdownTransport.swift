@@ -22,6 +22,6 @@ public struct DirectLockdownTransport: DeviceTransport {
 
     /// Opens a connection to the requested service port on the direct host.
     public func connect(to port: UInt16) async throws -> DeviceConnection {
-        try await TCPDeviceConnection.connect(host: host, port: port == 62078 ? lockdownPort : port)
+        try await TCPDeviceConnection.connect(to: host, port: port == 62078 ? lockdownPort : port)
     }
 }

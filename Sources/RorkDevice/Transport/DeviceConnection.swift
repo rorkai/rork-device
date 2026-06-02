@@ -12,11 +12,11 @@ public protocol DeviceConnection: AnyObject {
     /// or an error has been thrown.
     func send(_ data: Data) async throws
 
-    /// Receives exactly `count` bytes unless the connection fails or closes.
+    /// Receives exactly `byteCount` bytes unless the connection fails or closes.
     ///
     /// Returning fewer bytes is treated as a protocol error by higher-level
     /// clients, so implementations should accumulate reads internally.
-    func receive(count: Int) async throws -> Data
+    func receive(exactly byteCount: Int) async throws -> Data
 
     /// Closes the connection and releases any underlying resources.
     func close()

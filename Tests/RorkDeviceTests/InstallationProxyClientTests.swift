@@ -3,7 +3,32 @@ import XCTest
 @testable import RorkDevice
 
 final class InstallationProxyClientTests: XCTestCase {
-    func testBrowseReturnsCurrentList() async throws {
+    func testApplicationsReturnTypedCurrentList() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "CurrentList": [
+                [
+                    "CFBundleIdentifier": "com.example.app",
+                    "CFBundleDisplayName": "Example App",
+                    "CFBundleName": "Example",
+                ],
+            ],
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = InstallationProxyClient(connection: connection)
+
+        let apps = try await client.applications(matching: .user)
+
+        XCTAssertEqual(apps.count, 1)
+        XCTAssertEqual(apps.first?.bundleIdentifier, "com.example.app")
+        XCTAssertEqual(apps.first?.displayName, "Example App")
+
+        let request = try XCTUnwrap(decodedProxyMessage(connection.sent[0]))
+        XCTAssertEqual(request["Command"] as? String, "Browse")
+        let options = try XCTUnwrap(request["ClientOptions"] as? [String: Any])
+        XCTAssertEqual(options["ApplicationType"] as? String, "User")
+    }
+
+    func testRawApplicationsReturnCurrentList() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "CurrentList": [
                 [
@@ -15,33 +40,28 @@ final class InstallationProxyClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
 
-        let apps = try await client.browse(applicationType: .user)
+        let apps = try await client.rawApplications(matching: .user)
 
         XCTAssertEqual(apps.count, 1)
         XCTAssertEqual(apps.first?["CFBundleIdentifier"] as? String, "com.example.app")
-
-        let request = try XCTUnwrap(decodedProxyMessage(connection.sent[0]))
-        XCTAssertEqual(request["Command"] as? String, "Browse")
-        let options = try XCTUnwrap(request["ClientOptions"] as? [String: Any])
-        XCTAssertEqual(options["ApplicationType"] as? String, "User")
     }
 
-    func testBrowseReturnsEmptyListWhenCurrentAmountIsZero() async throws {
+    func testApplicationsReturnEmptyListWhenCurrentAmountIsZero() async throws {
         let inbound = try PropertyListMessageFramer.encode(["CurrentAmount": 0])
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
 
-        let apps = try await client.browse(applicationType: .any)
+        let apps = try await client.applications(matching: .any)
 
         XCTAssertEqual(apps.count, 0)
     }
 
-    func testBrowseRejectsMalformedResponse() async throws {
+    func testApplicationsRejectMalformedResponse() async throws {
         let inbound = try PropertyListMessageFramer.encode(["Status": "Complete"])
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
 
-        await XCTAssertThrowsErrorAsync({ try await client.browse(applicationType: .user) }) { error in
+        await XCTAssertThrowsErrorAsync({ try await client.applications(matching: .user) }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
                 .protocolViolation("InstallationProxy Browse response did not include CurrentList.")

@@ -13,7 +13,7 @@ final class LockdownClientTests: XCTestCase {
         let client = LockdownClient(connection: connection, label: "tests")
         let pairing = try PairingRecord.parse(pairingRecordData())
 
-        let session = try await client.startSession(pairingRecord: pairing)
+        let session = try await client.startSession(using: pairing)
 
         XCTAssertEqual(session.sessionID, "session-1")
         XCTAssertTrue(session.requiresSecureConnection)
@@ -46,6 +46,22 @@ final class LockdownClientTests: XCTestCase {
         let request = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(sentPayload), options: [], format: nil) as? [String: Any])
         XCTAssertEqual(request["Request"] as? String, "GetValue")
         XCTAssertEqual(request["Label"] as? String, "tests")
+    }
+
+    func testDeviceValuesReturnsDefaultLockdownDictionary() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Result": "Success",
+            "Value": [
+                "DeviceName": "Test Phone",
+                "ProductVersion": "18.0",
+            ],
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection, label: "tests")
+
+        let values = try await client.deviceValues()
+
+        XCTAssertEqual(values["DeviceName"] as? String, "Test Phone")
     }
 
     func testStartServiceParsesServiceDescriptor() async throws {

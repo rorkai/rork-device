@@ -32,7 +32,7 @@ public final class LockdownClient {
     ///
     /// - Returns: Session metadata, including whether secure traffic is
     ///   required.
-    public func startSession(pairingRecord: PairingRecord) async throws -> LockdownSessionStart {
+    public func startSession(using pairingRecord: PairingRecord) async throws -> LockdownSessionStart {
         let response = try await request([
             "Label": label,
             "Request": "StartSession",
@@ -46,11 +46,26 @@ public final class LockdownClient {
         )
     }
 
+    /// Queries the default Lockdown value domain.
+    ///
+    /// This is the common form used for device identity and OS information.
+    /// Use `value(domain:key:)` when a workflow needs a specific Lockdown
+    /// domain or key.
+    ///
+    /// - Returns: The decoded top-level device information dictionary.
+    public func deviceValues() async throws -> [String: Any] {
+        let values = try await value(domain: nil, key: nil)
+        guard let dictionary = values as? [String: Any] else {
+            throw RorkDeviceError.protocolViolation("Lockdown GetValue did not return a dictionary.")
+        }
+        return dictionary
+    }
+
     /// Queries a Lockdown value by optional domain and key.
     ///
-    /// Passing `nil` for both arguments requests the default top-level device
-    /// information dictionary. Domain/key values are sent as-is so callers can
-    /// use newer device domains without waiting for wrapper APIs.
+    /// Use `deviceValues()` for the default top-level device information
+    /// dictionary. Domain/key values are sent as-is here so callers can use
+    /// newer device domains without waiting for wrapper APIs.
     ///
     /// - Returns: The decoded plist value from the `Value` field.
     public func value(domain: String?, key: String?) async throws -> Any {

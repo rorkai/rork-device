@@ -53,7 +53,7 @@ struct ConnectionOptions: ParsableArguments {
         let client = DeviceClient()
         let pairing = try pairingRecordValue()
         if let host {
-            return try await client.connect(host: host, port: port, using: pairing, label: label)
+            return try await client.connect(to: host, port: port, using: pairing, label: label)
         }
 
         let devices = try await client.discoverDevices()

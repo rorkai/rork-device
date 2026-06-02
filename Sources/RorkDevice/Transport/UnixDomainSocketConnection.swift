@@ -26,7 +26,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     /// - Parameter path: Filesystem path to the socket, usually
     ///   `/var/run/usbmuxd`.
     /// - Returns: An open byte-stream connection.
-    public static func connect(path: String) async throws -> UnixDomainSocketConnection {
+    public static func connect(toSocketAt path: String) async throws -> UnixDomainSocketConnection {
         try await Task.detached(priority: .userInitiated) {
             let fd = socket(AF_UNIX, unixSocketType, 0)
             guard fd >= 0 else {
@@ -101,7 +101,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     ///
     /// - Throws: `RorkDeviceError.transport` if the daemon closes early or the
     ///   socket read fails.
-    public func receive(count: Int) async throws -> Data {
+    public func receive(exactly count: Int) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
             try self.withOpenSocket { fd in
                 var data = Data(count: count)

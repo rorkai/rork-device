@@ -14,7 +14,7 @@ final class FakeConnectionTests: XCTestCase {
             XCTAssertEqual(error as? RorkDeviceError, .transport("Fake connection is closed."))
         }
         await XCTAssertThrowsErrorAsync({
-            _ = try await connection.receive(count: 1)
+            _ = try await connection.receive(exactly: 1)
         }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .transport("Fake connection is closed."))
         }

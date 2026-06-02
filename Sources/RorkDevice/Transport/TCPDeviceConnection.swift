@@ -27,7 +27,7 @@ public final class TCPDeviceConnection: DeviceConnection {
     ///   - host: Hostname or IP address to resolve.
     ///   - port: TCP port in host byte order.
     /// - Returns: An open connection that reads and writes exact byte buffers.
-    public static func connect(host: String, port: UInt16) async throws -> TCPDeviceConnection {
+    public static func connect(to host: String, port: UInt16) async throws -> TCPDeviceConnection {
         try await Task.detached(priority: .userInitiated) {
             try open(host: host, port: port)
         }.value
@@ -67,7 +67,7 @@ public final class TCPDeviceConnection: DeviceConnection {
     ///
     /// - Throws: `RorkDeviceError.transport` if the peer closes early or a
     ///   socket read fails.
-    public func receive(count: Int) async throws -> Data {
+    public func receive(exactly count: Int) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
             try self.withOpenSocket { fd in
                 var data = Data(count: count)
