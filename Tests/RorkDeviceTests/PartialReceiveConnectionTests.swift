@@ -407,7 +407,18 @@ private final class TCPScriptedServer {
         return _received
     }
 
-    /// Starts a loopback TCP server that records a request and streams chunks.
+    /// Starts a loopback TCP server for deterministic stream-shape tests.
+    ///
+    /// The server accepts one client. When `prefixReadLength` is greater than
+    /// zero, it first reads and records that many request bytes from the client.
+    /// It then writes each entry in `chunks` as a separate blocking send, which
+    /// lets tests verify that `receive(exactly:)` accumulates multiple inbound
+    /// chunks correctly.
+    ///
+    /// `interChunkDelayMicros` spaces out response chunks. `closeDelayMicros`
+    /// keeps the accepted socket open after all chunks are sent, which lets
+    /// explicit-close tests close the client side while a read is still pending
+    /// instead of racing the server EOF path.
     init(
         prefixReadLength: Int = 0,
         chunks: [Data],
