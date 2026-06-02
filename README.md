@@ -23,8 +23,8 @@ tests and clear public API boundaries.
   removal.
 - **Pairing records** - parse existing Lockdown pairing-record plists and
   preserve unknown fields for diagnostics.
-- **Device transports** - connect through local `usbmuxd` or a known direct
-  Lockdown endpoint for tunnel-based workflows.
+- **SwiftNIO transports** - connect through local `usbmuxd` or a known direct
+  Lockdown endpoint with non-blocking TCP and Unix-domain socket streams.
 - **Secure sessions** - upgrade Lockdown and secure service connections through
   a public `SecureSessionUpgrader` protocol, with an Apple Security.framework
   backend enabled by default on Apple platforms.
