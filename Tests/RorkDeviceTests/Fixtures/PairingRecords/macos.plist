@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>UDID</key>
+    <string>00008110-001234560123401E</string>
+    <key>HostID</key>
+    <string>11111111-2222-3333-4444-555555555555</string>
+    <key>SystemBUID</key>
+    <string>AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE</string>
+    <key>DeviceCertificate</key>
+    <data>AQIDBA==</data>
+    <key>HostCertificate</key>
+    <data>BQYHCA==</data>
+    <key>HostPrivateKey</key>
+    <data>CQoLDA==</data>
+    <key>RootCertificate</key>
+    <data>DQ4PEA==</data>
+    <key>RootPrivateKey</key>
+    <data>ERITFA==</data>
+    <key>EscrowBag</key>
+    <data>FRYXGA==</data>
+</dict>
+</plist>
