@@ -7,6 +7,7 @@ import NIOPosix
 /// macOS and Linux. This wrapper keeps that transport available while sharing
 /// the same NIO byte-stream adapter used by TCP connections.
 public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveDeviceConnection {
+    /// Shared NIO byte stream used by the public connection wrapper.
     private let connection: NIODeviceConnection
 
     /// Creates a Unix-domain wrapper around an initialized NIO byte stream.
@@ -37,7 +38,7 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
             return UnixDomainSocketConnection(connection: connection)
         } catch {
             try? await eventLoopGroup.shutdownGracefully()
-            throw RorkDeviceError.transport("connect failed: \(describeUnixTransportError(error))")
+            throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")
         }
     }
 
@@ -60,12 +61,4 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
     public func close() {
         connection.close()
     }
-}
-
-/// Formats Unix-domain transport errors for package-level diagnostics.
-private func describeUnixTransportError(_ error: Error) -> String {
-    if let deviceError = error as? RorkDeviceError {
-        return deviceError.description
-    }
-    return error.localizedDescription
 }

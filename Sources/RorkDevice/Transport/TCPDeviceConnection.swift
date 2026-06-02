@@ -8,6 +8,7 @@ import NIOPosix
 /// test daemons. The public API remains a small async byte stream while NIO
 /// handles DNS resolution, non-blocking connect, read readiness, and writes.
 public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
+    /// Shared NIO byte stream used by the public connection wrapper.
     private let connection: NIODeviceConnection
 
     /// Creates a TCP wrapper around an initialized NIO byte stream.
@@ -84,12 +85,4 @@ private extension Duration {
         let clampedNanoseconds = max(1, min(nanoseconds, Double(Int64.max)))
         return .nanoseconds(Int64(clampedNanoseconds))
     }
-}
-
-/// Formats NIO and POSIX transport errors for package-level diagnostics.
-private func describeTransportError(_ error: Error) -> String {
-    if let deviceError = error as? RorkDeviceError {
-        return deviceError.description
-    }
-    return error.localizedDescription
 }

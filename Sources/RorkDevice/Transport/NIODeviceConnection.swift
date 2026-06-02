@@ -10,10 +10,19 @@ import NIOPosix
 /// adapter bridges those models by accumulating inbound bytes, fulfilling exact
 /// reads for protocol parsers, and fulfilling short reads for SecureTransport.
 final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
+    /// Open NIO channel carrying the device byte stream.
     private let channel: Channel
+
+    /// Event loop group created for this connection.
     private let eventLoopGroup: MultiThreadedEventLoopGroup
+
+    /// Inbound handler that buffers channel reads for protocol consumers.
     private let handler: NIOByteStreamHandler
+
+    /// Protects idempotent shutdown state.
     private let lock = NSLock()
+
+    /// Tracks whether `close()` has already started shutdown.
     private var closed = false
 
     /// Creates a connection around an initialized NIO channel.
@@ -105,25 +114,47 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
 final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
+    /// Shape of a pending read request.
     private enum ReadMode {
+        /// Read must wait for exactly this many bytes.
         case exact(Int)
+
+        /// Read may return any non-empty byte count up to this limit.
         case upTo(Int)
     }
 
+    /// Continuation waiting for buffered inbound data.
     private struct PendingRead {
+        /// Read shape requested by the caller.
         let mode: ReadMode
+
+        /// Suspended caller to resume once bytes or an error are available.
         let continuation: CheckedContinuation<Data, Error>
     }
 
+    /// Deferred continuation result that should be resumed outside the lock.
     private enum Completion {
+        /// Resume a read continuation with bytes.
         case success(CheckedContinuation<Data, Error>, Data)
+
+        /// Resume a read continuation with an error.
         case failure(CheckedContinuation<Data, Error>, Error)
     }
 
+    /// Protects buffered bytes, pending continuations, and terminal state.
     private let lock = NSLock()
+
+    /// Accumulates inbound channel bytes until protocol reads consume them.
     private var buffer = ByteBufferAllocator().buffer(capacity: 0)
+
+    /// FIFO queue of reads waiting for more inbound bytes.
     private var pendingReads: [PendingRead] = []
+
+    /// Terminal stream error reported by close, channel inactivity, or NIO.
     private var terminalError: Error?
+
+    /// Tracks local close so future reads cannot drain stale buffered bytes.
+    private var explicitlyClosed = false
 
     /// Waits for exactly `byteCount` buffered bytes.
     func read(exactly byteCount: Int) async throws -> Data {
@@ -137,7 +168,7 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
 
     /// Fails pending reads because the owning connection is closing explicitly.
     func close() {
-        failPendingReads(with: RorkDeviceError.transport("Connection is closed."))
+        closeExplicitly(with: RorkDeviceError.transport("Connection is closed."))
     }
 
     /// Appends inbound bytes and resumes any reads that can now complete.
@@ -170,7 +201,10 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
             let completion: Completion?
 
             lock.lock()
-            if let data = readBufferedDataLocked(for: mode) {
+            if explicitlyClosed, let terminalError {
+                completion = .failure(continuation, terminalError)
+            } else if let data = readBufferedDataLocked(for: mode) {
+                compactBufferLocked()
                 completion = .success(continuation, data)
             } else if let terminalError {
                 completion = .failure(continuation, terminalError)
@@ -184,6 +218,23 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
                 resume([completion])
             }
         }
+    }
+
+    /// Closes the stream locally and prevents future reads from draining stale bytes.
+    private func closeExplicitly(with error: Error) {
+        let completions: [Completion]
+
+        lock.lock()
+        if terminalError == nil {
+            terminalError = error
+        }
+        explicitlyClosed = true
+        resetBufferLocked()
+        completions = pendingReads.map { .failure($0.continuation, error) }
+        pendingReads.removeAll()
+        lock.unlock()
+
+        resume(completions)
     }
 
     /// Marks the stream failed and drains all queued continuations.
@@ -210,6 +261,7 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
             pendingReads.removeFirst()
             completions.append(.success(pendingRead.continuation, data))
         }
+        compactBufferLocked()
 
         return completions
     }
@@ -228,6 +280,20 @@ final class NIOByteStreamHandler: ChannelInboundHandler, @unchecked Sendable {
             }
             return buffer.readData(length: min(byteCount, buffer.readableBytes))
         }
+    }
+
+    /// Compacts consumed bytes so long-lived streams do not retain stale slices.
+    private func compactBufferLocked() {
+        if buffer.readableBytes == 0 {
+            resetBufferLocked()
+        } else if buffer.readerIndex > 0 {
+            buffer.discardReadBytes()
+        }
+    }
+
+    /// Replaces the buffer with fresh zero-capacity storage.
+    private func resetBufferLocked() {
+        buffer = ByteBufferAllocator().buffer(capacity: 0)
     }
 
     /// Resumes continuations outside the lock to avoid re-entrancy deadlocks.
