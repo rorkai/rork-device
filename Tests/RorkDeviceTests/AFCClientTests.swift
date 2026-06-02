@@ -140,6 +140,7 @@ final class AFCClientTests: XCTestCase {
         await XCTAssertThrowsErrorAsync({ try await client.uploadIPA(Data(), bundleIdentifier: "../App") }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .invalidInput("Bundle identifier is not safe for AFC staging."))
         }
+        XCTAssertTrue(connection.sent.isEmpty)
     }
 
     func testUploadFileThrowsWhenOpenReturnsStatusFailure() async throws {

@@ -170,7 +170,7 @@ final class SecureTransportDeviceConnection: DeviceConnection {
             switch status {
             case errSecSuccess:
                 return
-            case errSSLPeerAuthCompleted:
+            case secureTransportServerAuthCompletedStatus:
                 try evaluatePeerTrust()
                 continue
             case errSSLWouldBlock:
@@ -224,6 +224,10 @@ private final class SecureTransportCallbackBox {
         self.base = base
     }
 }
+
+/// Swift imports SecureTransport's canonical peer-auth status, while the C
+/// headers document the server-auth break as a deprecated macro alias.
+private let secureTransportServerAuthCompletedStatus = errSSLPeerAuthCompleted
 
 /// Transfer box used to bridge async transport calls into callbacks.
 private final class SecureTransportAsyncResultBox<T>: @unchecked Sendable {
