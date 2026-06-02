@@ -50,7 +50,7 @@ public final class TCPDeviceConnection: DeviceConnection {
                             self.fileDescriptor,
                             base.advanced(by: sent),
                             data.count - sent,
-                            0
+                            socketSendFlags
                         )
                         if result <= 0 {
                             throw RorkDeviceError.transport(lastErrnoMessage("send"))
@@ -149,10 +149,15 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     while let candidate = cursor {
         let fd = socket(candidate.pointee.ai_family, candidate.pointee.ai_socktype, candidate.pointee.ai_protocol)
         if fd >= 0 {
-            if systemConnect(fd, candidate.pointee.ai_addr, candidate.pointee.ai_addrlen) == 0 {
-                return TCPDeviceConnection(fileDescriptor: fd)
+            do {
+                try disableSIGPIPE(for: fd)
+                if systemConnect(fd, candidate.pointee.ai_addr, candidate.pointee.ai_addrlen) == 0 {
+                    return TCPDeviceConnection(fileDescriptor: fd)
+                }
+                lastError = lastErrnoMessage("connect")
+            } catch {
+                lastError = String(describing: error)
             }
-            lastError = lastErrnoMessage("connect")
             _ = systemClose(fd)
         }
         cursor = candidate.pointee.ai_next
@@ -164,6 +169,34 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
 /// Formats the current POSIX `errno` for diagnostics.
 private func lastErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
+}
+
+/// Flags used for writes to avoid process-level SIGPIPE on closed sockets.
+private var socketSendFlags: Int32 {
+    #if canImport(Darwin)
+    0
+    #else
+    Int32(MSG_NOSIGNAL)
+    #endif
+}
+
+/// Configures Darwin sockets to report broken pipes through `send` errors.
+private func disableSIGPIPE(for fd: Int32) throws {
+    #if canImport(Darwin)
+    var value: Int32 = 1
+    let result = setsockopt(
+        fd,
+        SOL_SOCKET,
+        SO_NOSIGPIPE,
+        &value,
+        socklen_t(MemoryLayout.size(ofValue: value))
+    )
+    guard result == 0 else {
+        throw RorkDeviceError.transport(lastErrnoMessage("setsockopt(SO_NOSIGPIPE)"))
+    }
+    #else
+    _ = fd
+    #endif
 }
 
 /// Platform wrapper for `send`.

@@ -33,6 +33,8 @@ public final class UnixDomainSocketConnection: DeviceConnection {
             }
 
             do {
+                try disableUnixSIGPIPE(for: fd)
+
                 var address = sockaddr_un()
                 address.sun_family = sa_family_t(AF_UNIX)
                 let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
@@ -82,7 +84,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
                             self.fileDescriptor,
                             base.advanced(by: sent),
                             data.count - sent,
-                            0
+                            unixSocketSendFlags
                         )
                         if result <= 0 {
                             throw RorkDeviceError.transport(lastUnixErrnoMessage("send"))
@@ -160,6 +162,34 @@ public final class UnixDomainSocketConnection: DeviceConnection {
 /// Formats the current POSIX `errno` for Unix-socket diagnostics.
 private func lastUnixErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
+}
+
+/// Flags used for writes to avoid process-level SIGPIPE on closed sockets.
+private var unixSocketSendFlags: Int32 {
+    #if canImport(Darwin)
+    0
+    #else
+    Int32(MSG_NOSIGNAL)
+    #endif
+}
+
+/// Configures Darwin sockets to report broken pipes through `send` errors.
+private func disableUnixSIGPIPE(for fd: Int32) throws {
+    #if canImport(Darwin)
+    var value: Int32 = 1
+    let result = setsockopt(
+        fd,
+        SOL_SOCKET,
+        SO_NOSIGPIPE,
+        &value,
+        socklen_t(MemoryLayout.size(ofValue: value))
+    )
+    guard result == 0 else {
+        throw RorkDeviceError.transport(lastUnixErrnoMessage("setsockopt(SO_NOSIGPIPE)"))
+    }
+    #else
+    _ = fd
+    #endif
 }
 
 /// Platform wrapper for `send`.
