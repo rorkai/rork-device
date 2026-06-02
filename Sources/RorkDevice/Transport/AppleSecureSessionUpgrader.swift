@@ -516,6 +516,11 @@ private func encodeOID(_ components: [Int]) -> Data {
 }
 
 /// Applies broad protocol bounds for older Lockdown implementations.
+///
+/// TLS 1.0 compatibility is intentional here: Lockdown runs over a local
+/// usbmux-forwarded channel and the server certificate is pinned to the pairing
+/// record, so this is an old-device compatibility setting rather than a
+/// public-network trust downgrade.
 private func configureProtocolBounds(_ context: SSLContext) throws {
     _ = SSLSetProtocolVersionMin(context, .tlsProtocol1)
 }
