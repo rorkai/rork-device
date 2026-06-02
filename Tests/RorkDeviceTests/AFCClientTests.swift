@@ -96,9 +96,10 @@ final class AFCClientTests: XCTestCase {
 
         try await client.uploadFile(at: fileURL, to: "/PublicStaging/App.ipa")
 
-        XCTAssertEqual(connection.sent.count, 3)
-        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
-        XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
+        XCTAssertEqual(connection.sent.count, 4)
+        XCTAssertEqual(try afcPackets(connection.sent).map(afcOperation), [13, 16, 20])
+        XCTAssertFalse(connection.sent[1].contains(Data("hello".utf8)))
+        XCTAssertEqual(connection.sent[2], Data("hello".utf8))
     }
 
     func testUploadFileCanUseInMemoryData() async throws {
@@ -111,9 +112,10 @@ final class AFCClientTests: XCTestCase {
 
         try await client.uploadFile(Data("hello".utf8), to: "/PublicStaging/App.ipa")
 
-        XCTAssertEqual(connection.sent.count, 3)
-        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
-        XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
+        XCTAssertEqual(connection.sent.count, 4)
+        XCTAssertEqual(try afcPackets(connection.sent).map(afcOperation), [13, 16, 20])
+        XCTAssertFalse(connection.sent[1].contains(Data("hello".utf8)))
+        XCTAssertEqual(connection.sent[2], Data("hello".utf8))
     }
 
     func testUploadIPAStagesInMemoryDataAtBundlePath() async throws {
@@ -130,8 +132,9 @@ final class AFCClientTests: XCTestCase {
         let path = try await client.uploadIPA(Data("ipa".utf8), bundleIdentifier: "com.example.app")
 
         XCTAssertEqual(path, "./PublicStaging/com.example.app/app.ipa")
-        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 9, 13, 16, 20])
-        XCTAssertTrue(connection.sent[4].contains(Data("ipa".utf8)))
+        XCTAssertEqual(try afcPackets(connection.sent).map(afcOperation), [9, 8, 9, 13, 16, 20])
+        XCTAssertFalse(connection.sent[4].contains(Data("ipa".utf8)))
+        XCTAssertEqual(connection.sent[5], Data("ipa".utf8))
     }
 
     func testUploadIPAIgnoresExistingStagingDirectories() async throws {
@@ -148,7 +151,7 @@ final class AFCClientTests: XCTestCase {
         let path = try await client.uploadIPA(Data("ipa".utf8), bundleIdentifier: "com.example.app")
 
         XCTAssertEqual(path, "./PublicStaging/com.example.app/app.ipa")
-        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 9, 13, 16, 20])
+        XCTAssertEqual(try afcPackets(connection.sent).map(afcOperation), [9, 8, 9, 13, 16, 20])
     }
 
     func testUploadIPARejectsUnsafeBundleIdentifier() async throws {
@@ -177,6 +180,11 @@ final class AFCClientTests: XCTestCase {
 
 private func afcOperation(_ packet: Data) throws -> UInt64 {
     try packet.littleEndianInteger(at: 32, as: UInt64.self)
+}
+
+private func afcPackets(_ sent: [Data]) -> [Data] {
+    let magic = Data("CFA6LPAA".utf8)
+    return sent.filter { $0.prefix(magic.count) == magic }
 }
 
 private func afcStatusResponse(packetNumber: UInt64, status: UInt64) -> Data {
