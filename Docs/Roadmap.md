@@ -48,7 +48,8 @@ API boundaries:
 
 ## Compatibility Strategy
 
-The implementation is independent Swift code. Existing open tools and device
-protocol traces are useful compatibility oracles, but source should not be
-ported file-by-file from other implementations. Tests should prefer protocol
-fixtures, fake service peers, and opt-in physical-device checks.
+The implementation is independent Swift code built around observed protocol
+behavior, stable public API boundaries, and tests. Compatibility should be
+validated with protocol fixtures, fake service peers, and opt-in physical-device
+checks. Do not copy external project source, comments, structure, or test
+fixtures into this codebase.
