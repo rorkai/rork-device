@@ -85,16 +85,16 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             data.count - sent,
                             &processed
                         )
-                        if status == errSSLWouldBlock {
-                            continue
-                        }
+                        sent += processed
                         if status != errSecSuccess {
+                            if status == errSSLWouldBlock {
+                                continue
+                            }
                             throw RorkDeviceError.secureSession("SSLWrite failed with status \(status).")
                         }
                         guard processed > 0 else {
                             throw RorkDeviceError.secureSession("SSLWrite made no progress.")
                         }
-                        sent += processed
                     }
                 }
             }
@@ -119,16 +119,16 @@ final class SecureTransportDeviceConnection: DeviceConnection {
                             count - received,
                             &processed
                         )
-                        if status == errSSLWouldBlock {
-                            continue
-                        }
+                        received += processed
                         if status != errSecSuccess {
+                            if status == errSSLWouldBlock {
+                                continue
+                            }
                             throw RorkDeviceError.secureSession("SSLRead failed with status \(status).")
                         }
                         guard processed > 0 else {
                             throw RorkDeviceError.secureSession("SSLRead made no progress.")
                         }
-                        received += processed
                     }
                 }
                 return data
@@ -263,6 +263,9 @@ private func secureTransportRead(
             }
         }
         dataLength.pointee = bytes.count
+        if bytes.count < requested {
+            return errSSLWouldBlock
+        }
         return errSecSuccess
     } catch {
         dataLength.pointee = 0
