@@ -7,27 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = RorkDeviceVersion.current
-}
-
-/// Loads package metadata that is shipped as SwiftPM resources.
-private enum RorkDeviceVersion {
-    /// Version declared by the package's `VERSION` resource.
-    static let current = load()
-
-    /// Reads and trims the version resource.
-    private static func load() -> String {
-        guard let url = Bundle.module.url(forResource: "VERSION", withExtension: nil) else {
-            return "unknown"
-        }
-
-        let value = (try? String(contentsOf: url, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
-        guard !value.isEmpty else {
-            return "unknown"
-        }
-        return value
-    }
+    public static let version = "0.1.2"
 }
 
 /// High-level entry point for device discovery and authenticated sessions.
