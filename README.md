@@ -1,5 +1,9 @@
 # rork-device
 
+[![Swift](https://img.shields.io/badge/Swift-5.9-orange.svg)](Package.swift)
+[![SwiftPM](https://img.shields.io/badge/SwiftPM-supported-brightgreen.svg)](Package.swift)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 Modern Swift tools and libraries for iOS device communication.
 
 `rork-device` is an open source Swift package for developer workflows that
@@ -66,7 +70,10 @@ try await session.installApplication(
 }
 ```
 
-## CLI Examples
+## Usage
+
+`rorkdevice` uses Swift ArgumentParser. Commands are grouped by the device
+workflow they drive:
 
 ```bash
 rorkdevice list
@@ -83,6 +90,46 @@ Direct/tunnel Lockdown endpoints can be selected explicitly:
 
 ```bash
 rorkdevice info --host 10.7.0.1 --port 62078 --pairing-record pairing.plist
+```
+
+```text
+USAGE: rorkdevice <subcommand>
+
+OPTIONS:
+  --version               Show the version.
+  -h, --help              Show help information.
+
+SUBCOMMANDS:
+  list                    List devices reported by local usbmuxd.
+  info                    Print basic Lockdown device information.
+  apps                    Manage installed apps.
+  install                 Install an IPA.
+  uninstall               Uninstall an app by bundle identifier.
+  profiles                Manage provisioning profiles.
+
+  See 'rorkdevice help <subcommand>' for detailed help.
+```
+
+The install command stages an IPA with AFC and asks InstallationProxy to install
+the staged package:
+
+```text
+USAGE: rorkdevice install [--udid <udid>] [--host <host>] [--port <port>] [--pairing-record <pairing-record>] <ipa-path> --bundle-identifier <bundle-identifier>
+
+ARGUMENTS:
+  <ipa-path>              IPA path.
+
+OPTIONS:
+  --udid <udid>           Device UDID. Defaults to the first discovered device.
+  --host <host>           Direct Lockdown host. When provided, usbmuxd
+                          discovery is skipped.
+  --port <port>           Direct Lockdown port. (default: 62078)
+  --pairing-record <pairing-record>
+                          Existing Lockdown pairing record plist.
+  --bundle-identifier <bundle-identifier>
+                          Bundle identifier for the IPA.
+  --version               Show the version.
+  -h, --help              Show help information.
 ```
 
 ## Development
