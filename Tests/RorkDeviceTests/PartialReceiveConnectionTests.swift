@@ -46,11 +46,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(upTo: 1024) }) { error in
-            guard case let RorkDeviceError.transport(message) = error else {
-                XCTFail("Expected transport error, got \(error)")
-                return
-            }
-            XCTAssertTrue(message.contains("closed"))
+            assertTransportError(error, equals: "Connection is closed.")
         }
     }
 
@@ -63,11 +59,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ try await connection.send(Data([1])) }) { error in
-            guard case let RorkDeviceError.transport(message) = error else {
-                XCTFail("Expected transport error, got \(error)")
-                return
-            }
-            XCTAssertTrue(message.contains("closed"))
+            assertTransportError(error, equals: "Connection is closed.")
         }
     }
 
@@ -80,11 +72,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 1) }) { error in
-            guard case let RorkDeviceError.transport(message) = error else {
-                XCTFail("Expected transport error, got \(error)")
-                return
-            }
-            XCTAssertTrue(message.contains("closed"))
+            assertTransportError(error, equals: "Connection is closed.")
         }
     }
 
@@ -103,11 +91,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await pendingRead.value }) { error in
-            guard case let RorkDeviceError.transport(message) = error else {
-                XCTFail("Expected transport error, got \(error)")
-                return
-            }
-            XCTAssertTrue(message.contains("closed"))
+            assertTransportError(error, equals: "Connection is closed.")
         }
     }
 
@@ -136,11 +120,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         defer { connection.close() }
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 4) }) { error in
-            guard case let RorkDeviceError.transport(message) = error else {
-                XCTFail("Expected transport error, got \(error)")
-                return
-            }
-            XCTAssertTrue(message.contains("closed"))
+            assertTransportError(error, equals: "Connection closed.")
         }
     }
 
@@ -375,6 +355,20 @@ private func sendAll(_ data: Data, to fileDescriptor: Int32) {
 /// Formats `errno` for test helper failures.
 private func lastTestErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
+}
+
+/// Asserts that an error is the expected package transport failure.
+private func assertTransportError(
+    _ error: Error,
+    equals expectedMessage: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    guard case let RorkDeviceError.transport(message) = error else {
+        XCTFail("Expected transport error, got \(error)", file: file, line: line)
+        return
+    }
+    XCTAssertEqual(message, expectedMessage, file: file, line: line)
 }
 
 /// Scripted TCP server that optionally records a request, then streams chunks.
