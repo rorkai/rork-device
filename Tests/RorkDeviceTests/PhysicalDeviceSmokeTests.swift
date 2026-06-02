@@ -47,7 +47,7 @@ private func requiredEnvironment(_ name: String) throws -> String {
     return value
 }
 
-/// Reads a required environment variable as a file URL.
+/// Reads a required filesystem path environment variable as a file URL.
 private func requiredEnvironmentURL(_ name: String) throws -> URL {
     URL(fileURLWithPath: try requiredEnvironment(name))
 }

@@ -4,6 +4,7 @@ import Foundation
 final class FakeConnection: DeviceConnection {
     private(set) var sent: [Data] = []
     private var inbound: Data
+    private var isClosed = false
 
     init(inbound: Data = Data()) {
         self.inbound = inbound
@@ -14,10 +15,16 @@ final class FakeConnection: DeviceConnection {
     }
 
     func send(_ data: Data) async throws {
+        guard !isClosed else {
+            throw RorkDeviceError.transport("Fake connection is closed.")
+        }
         sent.append(data)
     }
 
     func receive(count: Int) async throws -> Data {
+        guard !isClosed else {
+            throw RorkDeviceError.transport("Fake connection is closed.")
+        }
         guard inbound.count >= count else {
             throw RorkDeviceError.transport("Fake connection underflow.")
         }
@@ -26,5 +33,7 @@ final class FakeConnection: DeviceConnection {
         return Data(prefix)
     }
 
-    func close() {}
+    func close() {
+        isClosed = true
+    }
 }

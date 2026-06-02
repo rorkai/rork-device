@@ -6,7 +6,7 @@
 
 Modern Swift tools and libraries for iOS device communication.
 
-`rork-device` is an open source Swift package for developer workflows that
+`rork-device` is an open-source Swift package for developer workflows that
 need to communicate with physical iOS devices. It provides a library-first API
 and a matching `rorkdevice` CLI.
 

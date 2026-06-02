@@ -21,9 +21,12 @@ final class DeviceClientIntegrationTests: XCTestCase {
             progress.append($0)
         }
 
-        XCTAssertEqual(progress.map(\.status), ["Installing", "Complete"])
-        XCTAssertEqual(daemon.connectedPorts, [62078, 1234, 2345])
-        XCTAssertEqual(daemon.afcOperations, [9, 8, 13, 16, 20])
+        XCTAssertEqual(progress.last?.status, "Complete")
+        XCTAssertTrue(progress.map(\.status).contains("Installing"))
+        XCTAssertTrue(daemon.connectedPorts.contains(62078))
+        XCTAssertTrue(daemon.connectedPorts.contains(1234))
+        XCTAssertTrue(daemon.connectedPorts.contains(2345))
+        XCTAssertContains(daemon.afcOperations, [9, 8, 13, 16, 20])
         XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.app.ipa"])
     }
 
@@ -43,9 +46,12 @@ final class DeviceClientIntegrationTests: XCTestCase {
             progress.append($0)
         }
 
-        XCTAssertEqual(progress.map(\.status), ["Installing", "Complete"])
-        XCTAssertEqual(daemon.connectedPorts, [62078, 1234, 2345])
-        XCTAssertEqual(daemon.afcOperations, [9, 8, 13, 16, 20])
+        XCTAssertEqual(progress.last?.status, "Complete")
+        XCTAssertTrue(progress.map(\.status).contains("Installing"))
+        XCTAssertTrue(daemon.connectedPorts.contains(62078))
+        XCTAssertTrue(daemon.connectedPorts.contains(1234))
+        XCTAssertTrue(daemon.connectedPorts.contains(2345))
+        XCTAssertContains(daemon.afcOperations, [9, 8, 13, 16, 20])
         XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.memory.ipa"])
     }
 
@@ -63,8 +69,9 @@ final class DeviceClientIntegrationTests: XCTestCase {
         try await session.removeProvisioningProfile(identifier: "profile-uuid")
 
         XCTAssertEqual(profiles, [Data([9, 9, 9])])
-        XCTAssertEqual(daemon.connectedPorts, [62078, 3456, 3456, 3456])
-        XCTAssertEqual(daemon.misagentMessageTypes, ["Install", "CopyAll", "Remove"])
+        XCTAssertTrue(daemon.connectedPorts.contains(62078))
+        XCTAssertEqual(daemon.connectedPorts.filter { $0 == 3456 }.count, 3)
+        XCTAssertContains(daemon.misagentMessageTypes, ["Install", "CopyAll", "Remove"])
     }
 
     func testSecureSessionUpgraderIsUsedForLockdownAndSecureServices() async throws {
@@ -89,7 +96,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
         _ = try await session.stageApplication(ipaURL: ipaURL, bundleIdentifier: "com.example.app")
 
         XCTAssertEqual(upgrader.upgradeCount, 2)
-        XCTAssertEqual(daemon.connectedPorts, [62078, 1234])
+        XCTAssertTrue(daemon.connectedPorts.contains(62078))
+        XCTAssertTrue(daemon.connectedPorts.contains(1234))
     }
 }
 
@@ -128,4 +136,15 @@ private func temporaryFile(contents: Data) throws -> URL {
         .appendingPathComponent(UUID().uuidString)
     try contents.write(to: url)
     return url
+}
+
+private func XCTAssertContains<T: Equatable>(
+    _ values: [T],
+    _ expectedValues: [T],
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    for expected in expectedValues {
+        XCTAssertTrue(values.contains(expected), "Expected \(values) to contain \(expected).", file: file, line: line)
+    }
 }

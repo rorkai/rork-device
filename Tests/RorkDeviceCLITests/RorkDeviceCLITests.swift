@@ -45,6 +45,21 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
     }
 
+    func testInfoCommandRejectsHostAndUDIDTogether() {
+        XCTAssertThrowsError(try Info.parse([
+            "--host", "127.0.0.1",
+            "--udid", "device-1",
+            "--pairing-record", "pairing.plist",
+        ]))
+    }
+
+    func testInfoCommandRejectsPortWithoutHost() {
+        XCTAssertThrowsError(try Info.parse([
+            "--port", "62079",
+            "--pairing-record", "pairing.plist",
+        ]))
+    }
+
     func testProfilesCopyCommandParsesOutputDirectoryAndLegacyMode() throws {
         let command = try ProfilesCopy.parse([
             "--pairing-record", "pairing.plist",

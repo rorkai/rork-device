@@ -34,6 +34,11 @@ struct ConnectionOptions: ParsableArguments {
     @Option(help: "Existing Lockdown pairing record plist.")
     var pairingRecord: String?
 
+    /// Rejects connection-option combinations that cannot be honored together.
+    func validate() throws {
+        try validateConnectionOptions()
+    }
+
     /// Loads and validates the pairing record option.
     func pairingRecordValue() throws -> PairingRecord {
         guard let pairingRecord else {
@@ -44,6 +49,7 @@ struct ConnectionOptions: ParsableArguments {
 
     /// Opens a direct or usbmux-backed session from parsed CLI options.
     func session(label: String = "rorkdevice") async throws -> DeviceSession {
+        try validateConnectionOptions()
         let client = DeviceClient()
         let pairing = try pairingRecordValue()
         if let host {
@@ -61,6 +67,16 @@ struct ConnectionOptions: ParsableArguments {
             throw ValidationError("No matching device found.")
         }
         return try await client.session(for: selected, pairingRecord: pairing, label: label)
+    }
+
+    /// Shared implementation for parse-time and runtime connection validation.
+    private func validateConnectionOptions() throws {
+        if host != nil, udid != nil {
+            throw ValidationError("--udid cannot be used with --host because direct Lockdown connections skip usbmux discovery.")
+        }
+        if host == nil, port != 62078 {
+            throw ValidationError("--port requires --host.")
+        }
     }
 }
 

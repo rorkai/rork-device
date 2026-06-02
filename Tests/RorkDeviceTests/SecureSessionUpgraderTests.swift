@@ -26,7 +26,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
             )
         }) { error in
             #if canImport(Security)
-            XCTAssertEqual(error as? RorkDeviceError, .invalidPairingRecord("Missing HostCertificate."))
+            XCTAssertEqual(error as? RorkDeviceError, .invalidPairingRecord("Missing DeviceCertificate."))
             #else
             XCTAssertEqual(error as? RorkDeviceError, .secureSessionUnsupported)
             #endif

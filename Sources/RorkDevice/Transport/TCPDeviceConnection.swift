@@ -13,8 +13,9 @@ import Glibc
 /// uniform async API without depending on Foundation networking APIs.
 public final class TCPDeviceConnection: DeviceConnection {
     private let fileDescriptor: Int32
-    private let lock = NSLock()
+    private let condition = NSCondition()
     private var closed = false
+    private var activeOperations = 0
 
     init(fileDescriptor: Int32) {
         self.fileDescriptor = fileDescriptor
@@ -38,7 +39,7 @@ public final class TCPDeviceConnection: DeviceConnection {
     /// underlying socket reports an error.
     public func send(_ data: Data) async throws {
         try await Task.detached(priority: .userInitiated) {
-            try self.withOpenSocket {
+            try self.withOpenSocket { fd in
                 try data.withUnsafeBytes { rawBuffer in
                     guard let base = rawBuffer.baseAddress else {
                         return
@@ -47,7 +48,7 @@ public final class TCPDeviceConnection: DeviceConnection {
                     var sent = 0
                     while sent < data.count {
                         let result = systemSend(
-                            self.fileDescriptor,
+                            fd,
                             base.advanced(by: sent),
                             data.count - sent,
                             socketSendFlags
@@ -68,7 +69,7 @@ public final class TCPDeviceConnection: DeviceConnection {
     ///   socket read fails.
     public func receive(count: Int) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
-            try self.withOpenSocket {
+            try self.withOpenSocket { fd in
                 var data = Data(count: count)
                 var received = 0
                 try data.withUnsafeMutableBytes { rawBuffer in
@@ -78,7 +79,7 @@ public final class TCPDeviceConnection: DeviceConnection {
 
                     while received < count {
                         let result = systemRecv(
-                            self.fileDescriptor,
+                            fd,
                             base.advanced(by: received),
                             count - received,
                             0
@@ -99,29 +100,46 @@ public final class TCPDeviceConnection: DeviceConnection {
 
     /// Closes the socket. Calling this more than once is safe.
     public func close() {
-        lock.lock()
-        let shouldClose = !closed
-        closed = true
-        lock.unlock()
-
-        if shouldClose {
-            _ = systemClose(fileDescriptor)
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
+            return
         }
+        closed = true
+        _ = systemShutdown(fileDescriptor)
+        while activeOperations > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+
+        _ = systemClose(fileDescriptor)
     }
 
     deinit {
         close()
     }
 
-    /// Runs a socket operation after checking that the descriptor is open.
-    private func withOpenSocket<T>(_ body: () throws -> T) throws -> T {
-        lock.lock()
-        let isClosed = closed
-        lock.unlock()
-        if isClosed {
+    /// Runs a socket operation while preventing concurrent descriptor closure.
+    private func withOpenSocket<T>(_ body: (Int32) throws -> T) throws -> T {
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
             throw RorkDeviceError.transport("Connection is closed.")
         }
-        return try body()
+        activeOperations += 1
+        let fd = fileDescriptor
+        condition.unlock()
+
+        defer {
+            condition.lock()
+            activeOperations -= 1
+            if activeOperations == 0 {
+                condition.broadcast()
+            }
+            condition.unlock()
+        }
+
+        return try body(fd)
     }
 }
 
@@ -130,7 +148,7 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     var hints = addrinfo(
         ai_flags: 0,
         ai_family: AF_UNSPEC,
-        ai_socktype: SOCK_STREAM,
+        ai_socktype: tcpSocketType,
         ai_protocol: IPPROTO_TCP,
         ai_addrlen: 0,
         ai_canonname: nil,
@@ -164,6 +182,15 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     }
 
     throw RorkDeviceError.transport(lastError)
+}
+
+/// Platform-normalized TCP socket type.
+private var tcpSocketType: Int32 {
+    #if canImport(Glibc)
+    Int32(SOCK_STREAM.rawValue)
+    #else
+    SOCK_STREAM
+    #endif
 }
 
 /// Formats the current POSIX `errno` for diagnostics.
@@ -236,5 +263,15 @@ private func systemClose(_ fd: Int32) -> Int32 {
     return Darwin.close(fd)
     #else
     return Glibc.close(fd)
+    #endif
+}
+
+/// Platform wrapper for `shutdown`.
+@discardableResult
+private func systemShutdown(_ fd: Int32) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.shutdown(fd, SHUT_RDWR)
+    #else
+    return Glibc.shutdown(fd, Int32(SHUT_RDWR))
     #endif
 }

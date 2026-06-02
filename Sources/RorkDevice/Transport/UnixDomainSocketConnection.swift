@@ -13,8 +13,9 @@ import Glibc
 /// higher-level protocol clients can use one async byte-stream interface.
 public final class UnixDomainSocketConnection: DeviceConnection {
     private let fileDescriptor: Int32
-    private let lock = NSLock()
+    private let condition = NSCondition()
     private var closed = false
+    private var activeOperations = 0
 
     init(fileDescriptor: Int32) {
         self.fileDescriptor = fileDescriptor
@@ -27,7 +28,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     /// - Returns: An open byte-stream connection.
     public static func connect(path: String) async throws -> UnixDomainSocketConnection {
         try await Task.detached(priority: .userInitiated) {
-            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            let fd = socket(AF_UNIX, unixSocketType, 0)
             guard fd >= 0 else {
                 throw RorkDeviceError.transport(lastUnixErrnoMessage("socket"))
             }
@@ -72,7 +73,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     /// The method returns only after the full buffer has been written.
     public func send(_ data: Data) async throws {
         try await Task.detached(priority: .userInitiated) {
-            try self.withOpenSocket {
+            try self.withOpenSocket { fd in
                 try data.withUnsafeBytes { rawBuffer in
                     guard let base = rawBuffer.baseAddress else {
                         return
@@ -81,7 +82,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
                     var sent = 0
                     while sent < data.count {
                         let result = systemUnixSend(
-                            self.fileDescriptor,
+                            fd,
                             base.advanced(by: sent),
                             data.count - sent,
                             unixSocketSendFlags
@@ -102,7 +103,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
     ///   socket read fails.
     public func receive(count: Int) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
-            try self.withOpenSocket {
+            try self.withOpenSocket { fd in
                 var data = Data(count: count)
                 var received = 0
                 try data.withUnsafeMutableBytes { rawBuffer in
@@ -112,7 +113,7 @@ public final class UnixDomainSocketConnection: DeviceConnection {
 
                     while received < count {
                         let result = systemUnixRecv(
-                            self.fileDescriptor,
+                            fd,
                             base.advanced(by: received),
                             count - received,
                             0
@@ -133,30 +134,56 @@ public final class UnixDomainSocketConnection: DeviceConnection {
 
     /// Closes the socket. Calling this more than once is safe.
     public func close() {
-        lock.lock()
-        let shouldClose = !closed
-        closed = true
-        lock.unlock()
-
-        if shouldClose {
-            _ = systemUnixClose(fileDescriptor)
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
+            return
         }
+        closed = true
+        _ = systemUnixShutdown(fileDescriptor)
+        while activeOperations > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+
+        _ = systemUnixClose(fileDescriptor)
     }
 
     deinit {
         close()
     }
 
-    /// Runs a socket operation after checking that the descriptor is open.
-    private func withOpenSocket<T>(_ body: () throws -> T) throws -> T {
-        lock.lock()
-        let isClosed = closed
-        lock.unlock()
-        if isClosed {
+    /// Runs a socket operation while preventing concurrent descriptor closure.
+    private func withOpenSocket<T>(_ body: (Int32) throws -> T) throws -> T {
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
             throw RorkDeviceError.transport("Connection is closed.")
         }
-        return try body()
+        activeOperations += 1
+        let fd = fileDescriptor
+        condition.unlock()
+
+        defer {
+            condition.lock()
+            activeOperations -= 1
+            if activeOperations == 0 {
+                condition.broadcast()
+            }
+            condition.unlock()
+        }
+
+        return try body(fd)
     }
+}
+
+/// Platform-normalized Unix socket type.
+private var unixSocketType: Int32 {
+    #if canImport(Glibc)
+    Int32(SOCK_STREAM.rawValue)
+    #else
+    SOCK_STREAM
+    #endif
 }
 
 /// Formats the current POSIX `errno` for Unix-socket diagnostics.
@@ -229,5 +256,15 @@ private func systemUnixClose(_ fd: Int32) -> Int32 {
     return Darwin.close(fd)
     #else
     return Glibc.close(fd)
+    #endif
+}
+
+/// Platform wrapper for `shutdown`.
+@discardableResult
+private func systemUnixShutdown(_ fd: Int32) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.shutdown(fd, SHUT_RDWR)
+    #else
+    return Glibc.shutdown(fd, Int32(SHUT_RDWR))
     #endif
 }

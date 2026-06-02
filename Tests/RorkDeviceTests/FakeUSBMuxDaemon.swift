@@ -122,6 +122,8 @@ final class FakeUSBMuxDaemon {
     }
 
     private func handleClient(_ fd: Int32) {
+        var noSIGPIPE: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
         defer { close(fd) }
         guard let request = readUSBMuxRequest(fd) else {
             return

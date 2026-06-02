@@ -15,6 +15,13 @@ enum PropertyListCodec {
 
 /// Big-endian length-prefixed plist framing used by Lockdown-style services.
 enum PropertyListMessageFramer {
+    /// Upper bound for peer-controlled plist frames.
+    ///
+    /// Device service messages are normally small plist dictionaries. This
+    /// limit is intentionally generous enough for large app lists while still
+    /// preventing a malformed length prefix from requesting unbounded memory.
+    static let maxPayloadLength = 64 * 1024 * 1024
+
     /// Encodes a dictionary as a length-prefixed plist message.
     static func encode(_ dictionary: [String: Any], format: PropertyListSerialization.PropertyListFormat = .xml) throws -> Data {
         let payload = try PropertyListCodec.encode(dictionary, format: format)
@@ -37,6 +44,12 @@ enum PropertyListMessageFramer {
     static func receive(from connection: DeviceConnection) async throws -> [String: Any] {
         let lengthData = try await connection.receive(count: 4)
         let length = try Int(lengthData.bigEndianInteger(at: 0, as: UInt32.self))
+        guard length > 0 else {
+            throw RorkDeviceError.protocolViolation("Property list message length was zero.")
+        }
+        guard length <= maxPayloadLength else {
+            throw RorkDeviceError.protocolViolation("Property list message length \(length) exceeds limit \(maxPayloadLength).")
+        }
         let payload = try await connection.receive(count: length)
         guard let dictionary = try PropertyListCodec.decode(payload) as? [String: Any] else {
             throw RorkDeviceError.protocolViolation("Expected property list dictionary response.")

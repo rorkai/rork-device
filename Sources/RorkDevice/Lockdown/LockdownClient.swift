@@ -88,9 +88,12 @@ public final class LockdownClient {
         guard let port = response.int("Port") else {
             throw RorkDeviceError.protocolViolation("Lockdown StartService response is missing Port.")
         }
+        guard let servicePort = UInt16(exactly: port) else {
+            throw RorkDeviceError.protocolViolation("Lockdown StartService response has invalid Port \(port).")
+        }
         return LockdownService(
             name: serviceName,
-            port: UInt16(port),
+            port: servicePort,
             requiresSecureConnection: response.bool("EnableServiceSSL") ?? false
         )
     }

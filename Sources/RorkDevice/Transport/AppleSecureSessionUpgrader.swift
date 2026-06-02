@@ -19,7 +19,8 @@ public struct AppleSecureSessionUpgrader: SecureSessionUpgrader {
             return try SecureTransportDeviceConnection(
                 base: connection,
                 identity: identity.identity,
-                certificateChain: identity.certificateChain
+                certificateChain: identity.certificateChain,
+                trustedServerCertificates: identity.trustedServerCertificates
             )
         }.value
     }
@@ -31,11 +32,20 @@ final class SecureTransportDeviceConnection: DeviceConnection {
     private let context: SSLContext
     private let callbackBox: SecureTransportCallbackBox
     private let callbackPointer: UnsafeMutableRawPointer
-    private let lock = NSLock()
+    private let trustedServerCertificates: [SecCertificate]
+    private let condition = NSCondition()
     private var closed = false
+    private var activeOperations = 0
+    private var serverTrustEvaluated = false
 
-    init(base: DeviceConnection, identity: SecIdentity, certificateChain: [SecCertificate]) throws {
+    init(
+        base: DeviceConnection,
+        identity: SecIdentity,
+        certificateChain: [SecCertificate],
+        trustedServerCertificates: [SecCertificate]
+    ) throws {
         self.base = base
+        self.trustedServerCertificates = trustedServerCertificates
         guard let context = SSLCreateContext(nil, .clientSide, .streamType) else {
             throw RorkDeviceError.secureSession("Could not create SSL context.")
         }
@@ -116,25 +126,40 @@ final class SecureTransportDeviceConnection: DeviceConnection {
 
     /// Closes the TLS session and underlying connection.
     func close() {
-        lock.lock()
-        let shouldClose = !closed
-        closed = true
-        lock.unlock()
-
-        if shouldClose {
-            _ = SSLClose(context)
-            base.close()
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
+            return
         }
+        closed = true
+        base.close()
+        while activeOperations > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+
+        _ = SSLClose(context)
     }
 
     /// Runs a TLS operation while the context is open.
     private func withOpenContext<T>(_ body: () throws -> T) throws -> T {
-        lock.lock()
-        let isClosed = closed
-        lock.unlock()
-        if isClosed {
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
             throw RorkDeviceError.transport("Connection is closed.")
         }
+        activeOperations += 1
+        condition.unlock()
+
+        defer {
+            condition.lock()
+            activeOperations -= 1
+            if activeOperations == 0 {
+                condition.broadcast()
+            }
+            condition.unlock()
+        }
+
         return try body()
     }
 
@@ -145,12 +170,49 @@ final class SecureTransportDeviceConnection: DeviceConnection {
             switch status {
             case errSecSuccess:
                 return
-            case errSSLWouldBlock, errSSLPeerAuthCompleted:
+            case errSSLPeerAuthCompleted:
+                try evaluatePeerTrust()
+                continue
+            case errSSLWouldBlock:
                 continue
             default:
                 throw RorkDeviceError.secureSession("SSLHandshake failed with status \(status).")
             }
         }
+    }
+
+    /// Evaluates the server certificate presented by the device.
+    private func evaluatePeerTrust() throws {
+        guard !serverTrustEvaluated else {
+            return
+        }
+
+        var trust: SecTrust?
+        try checkSSL(SSLCopyPeerTrust(context, &trust), "SSLCopyPeerTrust")
+        guard let trust else {
+            throw RorkDeviceError.secureSession("Device did not present server trust.")
+        }
+
+        if !trustedServerCertificates.isEmpty {
+            try checkSecurity(SecTrustSetAnchorCertificates(trust, trustedServerCertificates as CFArray), "SecTrustSetAnchorCertificates")
+            try checkSecurity(SecTrustSetAnchorCertificatesOnly(trust, true), "SecTrustSetAnchorCertificatesOnly")
+        }
+
+        if #available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *) {
+            var error: CFError?
+            guard SecTrustEvaluateWithError(trust, &error) else {
+                let message = error.map { CFErrorCopyDescription($0) as String }
+                throw RorkDeviceError.secureSession("Device server trust evaluation failed\(message.map { ": \($0)" } ?? ".")")
+            }
+        } else {
+            var result = SecTrustResultType.invalid
+            try checkSecurity(SecTrustEvaluate(trust, &result), "SecTrustEvaluate")
+            guard result == .unspecified || result == .proceed else {
+                throw RorkDeviceError.secureSession("Device server trust evaluation failed with result \(result.rawValue).")
+            }
+        }
+
+        serverTrustEvaluated = true
     }
 }
 
@@ -251,8 +313,12 @@ private func waitForSecureTransportIO<T>(_ operation: @escaping () async throws 
 private struct AppleSecureSessionIdentity {
     let identity: SecIdentity
     let certificateChain: [SecCertificate]
+    let trustedServerCertificates: [SecCertificate]
 
     init(pairingRecord: PairingRecord) throws {
+        guard let deviceCertificate = pairingRecord.deviceCertificate else {
+            throw RorkDeviceError.invalidPairingRecord("Missing DeviceCertificate.")
+        }
         guard let hostCertificate = pairingRecord.hostCertificate else {
             throw RorkDeviceError.invalidPairingRecord("Missing HostCertificate.")
         }
@@ -272,6 +338,8 @@ private struct AppleSecureSessionIdentity {
         } else {
             certificateChain = []
         }
+
+        trustedServerCertificates = [try makeCertificate(deviceCertificate, name: "DeviceCertificate")]
     }
 }
 
@@ -450,6 +518,13 @@ private func configureProtocolBounds(_ context: SSLContext) throws {
 
 /// Converts non-success SecureTransport status values to structured errors.
 private func checkSSL(_ status: OSStatus, _ operation: String) throws {
+    guard status == errSecSuccess else {
+        throw RorkDeviceError.secureSession("\(operation) failed with status \(status).")
+    }
+}
+
+/// Converts non-success Security.framework status values to structured errors.
+private func checkSecurity(_ status: OSStatus, _ operation: String) throws {
     guard status == errSecSuccess else {
         throw RorkDeviceError.secureSession("\(operation) failed with status \(status).")
     }

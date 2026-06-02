@@ -75,18 +75,23 @@ public final class USBMuxClient {
     ///   - port: Device-side service port, in host byte order.
     public func connect(deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
         let connection = try await openConnection()
-        let response = try await request([
-            "MessageType": "Connect",
-            "ClientVersionString": "rork-device",
-            "ProgName": "rorkdevice",
-            "DeviceID": deviceID,
-            "PortNumber": UInt32(port.bigEndian),
-        ], connection: connection)
+        do {
+            let response = try await request([
+                "MessageType": "Connect",
+                "ClientVersionString": "rork-device",
+                "ProgName": "rorkdevice",
+                "DeviceID": deviceID,
+                "PortNumber": UInt32(port.bigEndian),
+            ], connection: connection)
 
-        if let number = response["Number"] as? NSNumber, number.intValue != 0 {
-            throw RorkDeviceError.transport("usbmux Connect failed with code \(number.intValue).")
+            if let number = response["Number"] as? NSNumber, number.intValue != 0 {
+                throw RorkDeviceError.transport("usbmux Connect failed with code \(number.intValue).")
+            }
+            return connection
+        } catch {
+            connection.close()
+            throw error
         }
-        return connection
     }
 
     /// Sends a one-shot usbmux control request.

@@ -24,6 +24,15 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(try afcOperation(connection.sent[0]), 8)
     }
 
+    func testRemovePathDoesNotIgnoreOtherFailures() async throws {
+        let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 7))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.removePath("/busy", ignoreMissing: true) }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .afcStatus(7))
+        }
+    }
+
     func testMakeDirectoryThrowsNonZeroStatus() async throws {
         let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 7))
         let client = AFCClient(connection: connection)
@@ -60,6 +69,15 @@ final class AFCClientTests: XCTestCase {
 
         await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Invalid AFC packet lengths."))
+        }
+    }
+
+    func testRejectsTruncatedStatusPacket() async throws {
+        let connection = FakeConnection(inbound: afcResponse(packetNumber: 1, operation: 1, payload: Data([0, 0])))
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.makeDirectory("/PublicStaging") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("AFC status packet was truncated."))
         }
     }
 
@@ -113,6 +131,15 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(path, "/PublicStaging/com.example.app.ipa")
         XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 13, 16, 20])
         XCTAssertTrue(connection.sent[3].contains(Data("ipa".utf8)))
+    }
+
+    func testUploadIPARejectsUnsafeBundleIdentifier() async throws {
+        let connection = FakeConnection()
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.uploadIPA(Data(), bundleIdentifier: "../App") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .invalidInput("Bundle identifier is not safe for AFC staging."))
+        }
     }
 
     func testUploadFileThrowsWhenOpenReturnsStatusFailure() async throws {

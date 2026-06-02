@@ -29,7 +29,11 @@ public final class AFCClient {
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
     public func uploadIPA(at url: URL, bundleIdentifier: String) async throws -> String {
-        try await uploadIPA(Data(contentsOf: url), bundleIdentifier: bundleIdentifier)
+        let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
+        try await makeDirectory(AFCStaging.directory)
+        try await removePath(stagedPath, ignoreMissing: true)
+        try await uploadFile(localURL: url, remotePath: stagedPath)
+        return stagedPath
     }
 
     /// Uploads in-memory IPA data into `/PublicStaging`.
@@ -43,9 +47,8 @@ public final class AFCClient {
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
     public func uploadIPA(_ data: Data, bundleIdentifier: String) async throws -> String {
-        let stagedDirectory = "/PublicStaging"
-        let stagedPath = "\(stagedDirectory)/\(bundleIdentifier).ipa"
-        try await makeDirectory(stagedDirectory)
+        let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
+        try await makeDirectory(AFCStaging.directory)
         try await removePath(stagedPath, ignoreMissing: true)
         try await uploadFile(data, remotePath: stagedPath)
         return stagedPath
@@ -60,12 +63,12 @@ public final class AFCClient {
     ///
     /// - Parameters:
     ///   - path: AFC path to remove.
-    ///   - ignoreMissing: When true, non-zero AFC remove status is ignored so
-    ///     callers can implement idempotent cleanup.
+    ///   - ignoreMissing: When true, a missing path is ignored so callers can
+    ///     implement idempotent cleanup. Other AFC errors are still thrown.
     public func removePath(_ path: String, ignoreMissing: Bool = false) async throws {
         do {
             try await sendPathOperation(.removePath, path: path)
-        } catch RorkDeviceError.afcStatus where ignoreMissing {
+        } catch RorkDeviceError.afcStatus(let status) where ignoreMissing && status == AFCStatus.noSuchFile {
             return
         }
     }
@@ -75,7 +78,22 @@ public final class AFCClient {
     /// The file is streamed in fixed-size chunks so callers can stage large
     /// archives without needing a service-specific helper.
     public func uploadFile(localURL: URL, remotePath: String) async throws {
-        try await uploadFile(Data(contentsOf: localURL), remotePath: remotePath)
+        let handle = try await openFile(remotePath, mode: .writeOnly)
+        do {
+            let file = try FileHandle(forReadingFrom: localURL)
+            defer { try? file.close() }
+            while true {
+                let chunk = try file.read(upToCount: AFCStaging.chunkSize) ?? Data()
+                if chunk.isEmpty {
+                    break
+                }
+                try await write(handle: handle, data: chunk[...])
+            }
+        } catch {
+            try? await closeFile(handle)
+            throw error
+        }
+        try await closeFile(handle)
     }
 
     /// Uploads data to a remote AFC path.
@@ -87,9 +105,8 @@ public final class AFCClient {
         let handle = try await openFile(remotePath, mode: .writeOnly)
         do {
             var offset = 0
-            let chunkSize = 64 * 1024
             while offset < data.count {
-                let end = min(offset + chunkSize, data.count)
+                let end = min(offset + AFCStaging.chunkSize, data.count)
                 try await write(handle: handle, data: data[offset..<end])
                 offset = end
             }
@@ -158,19 +175,26 @@ public final class AFCClient {
     /// Receives an AFC status packet and returns the numeric status value.
     private func receiveStatus() async throws -> UInt64 {
         let response = try await receivePacket()
-        try handleStatus(response)
-        guard response.payload.count >= 8 else {
-            return 0
+        guard response.operation == .status else {
+            throw RorkDeviceError.protocolViolation("AFC response was not a status packet.")
         }
-        return try response.payload.littleEndianInteger(at: 0, as: UInt64.self)
+        guard response.payload.count >= 8 else {
+            throw RorkDeviceError.protocolViolation("AFC status packet was truncated.")
+        }
+        let status = try response.payload.littleEndianInteger(at: 0, as: UInt64.self)
+        if status != 0 {
+            throw RorkDeviceError.afcStatus(status)
+        }
+        return status
     }
 
     /// Throws when a response is an AFC status packet with a non-zero status.
     private func handleStatus(_ response: AFCPacketResponse) throws {
         if response.operation == .status {
-            let status = response.payload.count >= 8
-                ? (try response.payload.littleEndianInteger(at: 0, as: UInt64.self))
-                : 0
+            guard response.payload.count >= 8 else {
+                throw RorkDeviceError.protocolViolation("AFC status packet was truncated.")
+            }
+            let status = try response.payload.littleEndianInteger(at: 0, as: UInt64.self)
             if status != 0 {
                 throw RorkDeviceError.afcStatus(status)
             }
@@ -202,6 +226,43 @@ public final class AFCClient {
             payload: payload
         )
     }
+
+    /// Builds the safe `/PublicStaging` path used for one IPA upload.
+    private func stagedIPAPath(bundleIdentifier: String) throws -> String {
+        let filename = try AFCStaging.safeFilename(bundleIdentifier: bundleIdentifier)
+        return "\(AFCStaging.directory)/\(filename).ipa"
+    }
+}
+
+/// Constants and validation for AFC public staging uploads.
+private enum AFCStaging {
+    static let directory = "/PublicStaging"
+    static let chunkSize = 64 * 1024
+    static let maxFilenameLength = 255
+
+    static func safeFilename(bundleIdentifier: String) throws -> String {
+        let value = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            throw RorkDeviceError.invalidInput("Bundle identifier is empty.")
+        }
+        guard value.utf8.count <= maxFilenameLength else {
+            throw RorkDeviceError.invalidInput("Bundle identifier is too long for AFC staging.")
+        }
+        guard !value.contains("/"), !value.contains("\\"), !value.contains("..") else {
+            throw RorkDeviceError.invalidInput("Bundle identifier is not safe for AFC staging.")
+        }
+
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
+        guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw RorkDeviceError.invalidInput("Bundle identifier contains unsupported characters.")
+        }
+        return value
+    }
+}
+
+/// AFC status values used by the high-level staging workflow.
+private enum AFCStatus {
+    static let noSuchFile: UInt64 = 8
 }
 
 /// AFC magic bytes as they appear at the start of every packet.

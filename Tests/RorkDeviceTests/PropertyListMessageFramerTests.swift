@@ -33,6 +33,29 @@ final class PropertyListMessageFramerTests: XCTestCase {
         }
     }
 
+    func testReceiveRejectsZeroLengthPayload() async throws {
+        var inbound = Data()
+        inbound.appendBigEndian(UInt32(0))
+        let connection = FakeConnection(inbound: inbound)
+
+        await XCTAssertThrowsErrorAsync({ try await PropertyListMessageFramer.receive(from: connection) }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .protocolViolation("Property list message length was zero."))
+        }
+    }
+
+    func testReceiveRejectsOversizedPayloadBeforeReadingBody() async throws {
+        var inbound = Data()
+        inbound.appendBigEndian(UInt32(PropertyListMessageFramer.maxPayloadLength + 1))
+        let connection = FakeConnection(inbound: inbound)
+
+        await XCTAssertThrowsErrorAsync({ try await PropertyListMessageFramer.receive(from: connection) }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("Property list message length \(PropertyListMessageFramer.maxPayloadLength + 1) exceeds limit \(PropertyListMessageFramer.maxPayloadLength).")
+            )
+        }
+    }
+
     func testDictionaryHelpersCoerceNSNumberValues() {
         let dictionary: [String: Any] = [
             "String": "value",

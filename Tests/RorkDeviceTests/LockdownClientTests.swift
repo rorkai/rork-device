@@ -64,6 +64,22 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertTrue(service.requiresSecureConnection)
     }
 
+    func testStartServiceRejectsOutOfRangePort() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Result": "Success",
+            "Port": 70000,
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.startService("com.apple.afc") }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("Lockdown StartService response has invalid Port 70000.")
+            )
+        }
+    }
+
     func testLockdownErrorResponseThrowsStructuredError() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Result": "Failure",

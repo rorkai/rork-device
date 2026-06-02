@@ -72,25 +72,23 @@ public struct PairingRecord: Equatable, Sendable {
         )
     }
 
-    /// Names of secure-session fields missing from this record.
+    /// Names of fields missing for the built-in secure-session backend.
     ///
     /// `StartSession` itself only requires `HostID` and `SystemBUID`, but most
-    /// devices then request secure traffic. Use this list to produce actionable
-    /// diagnostics before attempting a TLS upgrade.
+    /// devices then request secure traffic. The Apple backend needs the device
+    /// certificate for server trust plus the host certificate and private key
+    /// for client identity.
     public var missingSecureSessionFields: [String] {
         [
             ("DeviceCertificate", deviceCertificate),
             ("HostCertificate", hostCertificate),
             ("HostPrivateKey", hostPrivateKey),
-            ("RootCertificate", rootCertificate),
-            ("RootPrivateKey", rootPrivateKey),
-            ("EscrowBag", escrowBag),
         ].compactMap { name, value in
             value == nil ? name : nil
         }
     }
 
-    /// Whether this record contains the usual secure-session material.
+    /// Whether this record contains material required by the built-in backend.
     ///
     /// This is a structural check only. It does not validate certificate chains
     /// or prove that the record still matches the connected device.

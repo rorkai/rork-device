@@ -35,8 +35,10 @@ final class PairingRecordTests: XCTestCase {
         let record = try PairingRecord.parse(data)
 
         XCTAssertFalse(record.hasSecureSessionMaterial)
+        XCTAssertTrue(record.missingSecureSessionFields.contains("DeviceCertificate"))
+        XCTAssertTrue(record.missingSecureSessionFields.contains("HostCertificate"))
         XCTAssertTrue(record.missingSecureSessionFields.contains("HostPrivateKey"))
-        XCTAssertTrue(record.missingSecureSessionFields.contains("EscrowBag"))
+        XCTAssertFalse(record.missingSecureSessionFields.contains("EscrowBag"))
     }
 
     func testRejectsMissingRequiredFields() throws {
