@@ -20,10 +20,16 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
+        .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.100.0")),
     ],
     targets: [
         .target(
-            name: "RorkDevice"
+            name: "RorkDevice",
+            dependencies: [
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
         ),
         .executableTarget(
             name: "RorkDeviceCLI",
