@@ -124,20 +124,20 @@ public final class DeviceSession {
         return try await client.copyProvisioningProfiles(mode: mode)
     }
 
-    /// Starts a heartbeat responder and waits for the first successful beat.
+    /// Starts a heartbeat responder and waits for the first device message.
     ///
     /// Some network/tunnel-backed device sessions require an active heartbeat
     /// connection before other service streams remain usable. The returned
     /// handle keeps responding until callers stop it or release it.
     ///
-    /// - Parameter firstBeatTimeout: Maximum time to wait for the first device
+    /// - Parameter firstMessageTimeout: Maximum time to wait for the first device
     ///   heartbeat message.
     /// - Returns: A handle that owns the heartbeat connection.
-    public func startHeartbeat(firstBeatTimeout: Duration = .seconds(12)) async throws -> DeviceHeartbeat {
+    public func startHeartbeat(firstMessageTimeout: Duration = .seconds(12)) async throws -> DeviceHeartbeat {
         let connection = try await startService(.heartbeat)
         let client = HeartbeatClient(connection: connection)
         let heartbeat = DeviceHeartbeat(client: client)
-        try await heartbeat.start(firstBeatTimeout: firstBeatTimeout)
+        try await heartbeat.start(firstMessageTimeout: firstMessageTimeout)
         return heartbeat
     }
 

@@ -94,7 +94,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
         let devices = try await client.discoverDevices()
         let device = try XCTUnwrap(devices.first)
         let session = try await client.connect(to: device, using: try testPairingRecord())
-        let heartbeat = try await session.startHeartbeat(firstBeatTimeout: .seconds(2))
+        let heartbeat = try await session.startHeartbeat(firstMessageTimeout: .seconds(2))
         defer { heartbeat.stop() }
 
         XCTAssertTrue(daemon.connectedPorts.contains(4567))

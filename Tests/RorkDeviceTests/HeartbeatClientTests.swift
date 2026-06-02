@@ -3,13 +3,13 @@ import XCTest
 @testable import RorkDevice
 
 final class HeartbeatClientTests: XCTestCase {
-    func testRespondOnceRepliesWithBinaryPolo() async throws {
+    func testRespondToNextMessageRepliesWithBinaryPolo() async throws {
         let connection = FakeConnection(inbound: try PropertyListMessageFramer.encode(["Interval": 2]))
         let client = HeartbeatClient(connection: connection)
 
-        let interval = try await client.respondOnce()
+        let interval = try await client.respondToNextMessage()
 
-        XCTAssertEqual(interval, 2)
+        XCTAssertEqual(interval, .seconds(2))
         let reply = try XCTUnwrap(connection.sent.first)
         let payload = try plistPayload(reply)
         XCTAssertTrue(payload.starts(with: Data("bplist".utf8)))
@@ -17,20 +17,20 @@ final class HeartbeatClientTests: XCTestCase {
         XCTAssertEqual(dictionary["Command"] as? String, "Polo")
     }
 
-    func testRespondOnceThrowsForSleepyTime() async throws {
+    func testRespondToNextMessageThrowsForSleepyTime() async throws {
         let connection = FakeConnection(inbound: try PropertyListMessageFramer.encode(["Command": "SleepyTime"]))
         let client = HeartbeatClient(connection: connection)
 
-        await XCTAssertThrowsErrorAsync({ try await client.respondOnce() }) { error in
+        await XCTAssertThrowsErrorAsync({ try await client.respondToNextMessage() }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .heartbeat("Device reported SleepyTime."))
         }
     }
 
-    func testRespondOnceRejectsMalformedHeartbeat() async throws {
+    func testRespondToNextMessageRejectsMalformedHeartbeat() async throws {
         let connection = FakeConnection(inbound: try PropertyListMessageFramer.encode(["Command": "Unexpected"]))
         let client = HeartbeatClient(connection: connection)
 
-        await XCTAssertThrowsErrorAsync({ try await client.respondOnce() }) { error in
+        await XCTAssertThrowsErrorAsync({ try await client.respondToNextMessage() }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .heartbeat("Response missing Interval."))
         }
     }
