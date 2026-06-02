@@ -97,7 +97,7 @@ public final class InstallationProxyClient {
         while true {
             let response = try await PropertyListMessageFramer.receive(from: connection)
             let event = InstallationProgress(
-                status: response.string("Status") ?? "Unknown",
+                status: InstallationStatus(rawValue: response.string("Status") ?? InstallationStatus.unknown.rawValue),
                 percentComplete: response.int("PercentComplete"),
                 errorName: response.string("Error"),
                 errorDescription: response.string("ErrorDescription")
@@ -107,7 +107,7 @@ public final class InstallationProxyClient {
             if let error = event.errorName {
                 throw RorkDeviceError.installationProxy(name: error, description: event.errorDescription)
             }
-            if event.status == "Complete" {
+            if event.status == .complete {
                 return
             }
         }

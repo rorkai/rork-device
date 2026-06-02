@@ -21,8 +21,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
             progress.append($0)
         }
 
-        XCTAssertEqual(progress.values.last?.status, "Complete")
-        XCTAssertTrue(progress.values.map(\.status).contains("Installing"))
+        XCTAssertEqual(progress.values.last?.status, .complete)
+        XCTAssertTrue(progress.values.map(\.status).contains(.installing))
         XCTAssertTrue(daemon.connectedPorts.contains(62078))
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
         XCTAssertTrue(daemon.connectedPorts.contains(2345))
@@ -46,8 +46,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
             progress.append($0)
         }
 
-        XCTAssertEqual(progress.values.last?.status, "Complete")
-        XCTAssertTrue(progress.values.map(\.status).contains("Installing"))
+        XCTAssertEqual(progress.values.last?.status, .complete)
+        XCTAssertTrue(progress.values.map(\.status).contains(.installing))
         XCTAssertTrue(daemon.connectedPorts.contains(62078))
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
         XCTAssertTrue(daemon.connectedPorts.contains(2345))

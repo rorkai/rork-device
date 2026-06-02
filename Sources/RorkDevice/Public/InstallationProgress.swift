@@ -18,6 +18,50 @@ public enum ApplicationType: String, Sendable {
     case any = "Any"
 }
 
+/// InstallationProxy operation status.
+///
+/// Status values are protocol strings and can vary across iOS versions. This
+/// type provides named constants for common values while preserving unknown
+/// statuses through `rawValue`.
+public struct InstallationStatus: RawRepresentable, Equatable, Hashable, Sendable, CustomStringConvertible {
+    /// Raw status string reported by InstallationProxy.
+    public let rawValue: String
+
+    /// Creates a status from a raw InstallationProxy string.
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    /// Printable status string.
+    public var description: String {
+        rawValue
+    }
+
+    /// InstallationProxy is creating the app-staging directory.
+    public static let creatingStagingDirectory = Self(rawValue: "CreatingStagingDirectory")
+
+    /// InstallationProxy is extracting the IPA package.
+    public static let extractingPackage = Self(rawValue: "ExtractingPackage")
+
+    /// InstallationProxy is inspecting package metadata.
+    public static let inspectingPackage = Self(rawValue: "InspectingPackage")
+
+    /// InstallationProxy is acquiring the install lock.
+    public static let takingInstallLock = Self(rawValue: "TakingInstallLock")
+
+    /// InstallationProxy is preflighting the app before install.
+    public static let preflightingApplication = Self(rawValue: "PreflightingApplication")
+
+    /// InstallationProxy is installing the app.
+    public static let installing = Self(rawValue: "Installing")
+
+    /// InstallationProxy completed the operation.
+    public static let complete = Self(rawValue: "Complete")
+
+    /// Status used when the device response does not include a status field.
+    public static let unknown = Self(rawValue: "Unknown")
+}
+
 /// Status event emitted while InstallationProxy performs an operation.
 ///
 /// InstallationProxy streams plist dictionaries until an operation completes or
@@ -26,7 +70,7 @@ public enum ApplicationType: String, Sendable {
 public struct InstallationProgress: Equatable, Sendable {
     /// Operation status reported by the device, such as `CreatingStagingDirectory`,
     /// `Installing`, or `Complete`.
-    public let status: String
+    public let status: InstallationStatus
 
     /// Optional completion percentage reported by newer InstallationProxy
     /// responses.
@@ -40,7 +84,7 @@ public struct InstallationProgress: Equatable, Sendable {
     public let errorDescription: String?
 
     /// Creates an installation progress event from decoded protocol fields.
-    public init(status: String, percentComplete: Int?, errorName: String?, errorDescription: String?) {
+    public init(status: InstallationStatus, percentComplete: Int?, errorName: String?, errorDescription: String?) {
         self.status = status
         self.percentComplete = percentComplete
         self.errorName = errorName
