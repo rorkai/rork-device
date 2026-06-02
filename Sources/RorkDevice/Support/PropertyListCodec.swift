@@ -36,8 +36,12 @@ enum PropertyListMessageFramer {
     }
 
     /// Sends one length-prefixed plist dictionary.
-    static func send(_ dictionary: [String: Any], to connection: DeviceConnection) async throws {
-        try await connection.send(encode(dictionary))
+    static func send(
+        _ dictionary: [String: Any],
+        to connection: DeviceConnection,
+        format: PropertyListSerialization.PropertyListFormat = .xml
+    ) async throws {
+        try await connection.send(encode(dictionary, format: format))
     }
 
     /// Receives one length-prefixed plist dictionary.
