@@ -7,7 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.1.3"
+    public static let version = "0.1.4"
 }
 
 /// High-level entry point for device discovery and authenticated sessions.
