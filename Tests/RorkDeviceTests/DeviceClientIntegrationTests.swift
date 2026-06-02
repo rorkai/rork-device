@@ -26,8 +26,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertTrue(daemon.connectedPorts.contains(62078))
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
         XCTAssertTrue(daemon.connectedPorts.contains(2345))
-        XCTAssertContains(daemon.afcOperations, [9, 8, 13, 16, 20])
-        XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.app.ipa"])
+        XCTAssertContains(daemon.afcOperations, [9, 8, 9, 13, 16, 20])
+        XCTAssertEqual(daemon.installedPackagePaths, ["./PublicStaging/com.example.app/app.ipa"])
     }
 
     func testInstallsInMemoryApplicationThroughFakeUSBMuxDeviceStack() async throws {
@@ -51,11 +51,11 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertTrue(daemon.connectedPorts.contains(62078))
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
         XCTAssertTrue(daemon.connectedPorts.contains(2345))
-        XCTAssertContains(daemon.afcOperations, [9, 8, 13, 16, 20])
-        XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.memory.ipa"])
+        XCTAssertContains(daemon.afcOperations, [9, 8, 9, 13, 16, 20])
+        XCTAssertEqual(daemon.installedPackagePaths, ["./PublicStaging/com.example.memory/app.ipa"])
     }
 
-    func testStagesApplicationWithEscrowBagForAFCService() async throws {
+    func testStagesApplicationDoesNotSendEscrowBagForAFCService() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
         let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
@@ -68,7 +68,21 @@ final class DeviceClientIntegrationTests: XCTestCase {
             bundleIdentifier: "com.example.escrow"
         )
 
-        XCTAssertEqual(stagedPath, "/PublicStaging/com.example.escrow.ipa")
+        XCTAssertEqual(stagedPath, "./PublicStaging/com.example.escrow/app.ipa")
+        XCTAssertTrue(daemon.servicesStartedWithEscrow.isEmpty)
+    }
+
+    func testStartServiceCanOptIntoEscrowBag() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(to: device, using: try testPairingRecord())
+        let connection = try await session.startService(.afc, escrowBag: Data([8]))
+        connection.close()
+
         XCTAssertEqual(daemon.servicesStartedWithEscrow, [LockdownServiceName.afc.rawValue])
     }
 

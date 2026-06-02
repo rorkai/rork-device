@@ -30,8 +30,10 @@ public final class AFCClient {
     /// - Returns: Device path suitable for InstallationProxy `Install`.
     public func uploadIPA(at fileURL: URL, bundleIdentifier: String) async throws -> String {
         let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
-        try await makeDirectory(AFCStaging.directory)
+        let stagedDirectory = try stagedDirectoryPath(bundleIdentifier: bundleIdentifier)
+        try await makeDirectoryIfNeeded(AFCStaging.directory)
         try await removePath(stagedPath, ignoreMissing: true)
+        try await makeDirectoryIfNeeded(stagedDirectory)
         try await uploadFile(at: fileURL, to: stagedPath)
         return stagedPath
     }
@@ -48,8 +50,10 @@ public final class AFCClient {
     /// - Returns: Device path suitable for InstallationProxy `Install`.
     public func uploadIPA(_ data: Data, bundleIdentifier: String) async throws -> String {
         let stagedPath = try stagedIPAPath(bundleIdentifier: bundleIdentifier)
-        try await makeDirectory(AFCStaging.directory)
+        let stagedDirectory = try stagedDirectoryPath(bundleIdentifier: bundleIdentifier)
+        try await makeDirectoryIfNeeded(AFCStaging.directory)
         try await removePath(stagedPath, ignoreMissing: true)
+        try await makeDirectoryIfNeeded(stagedDirectory)
         try await uploadFile(data, to: stagedPath)
         return stagedPath
     }
@@ -57,6 +61,15 @@ public final class AFCClient {
     /// Creates a directory in the AFC service root.
     public func makeDirectory(_ path: String) async throws {
         try await sendPathOperation(.makeDirectory, path: path)
+    }
+
+    /// Creates a directory if it does not already exist.
+    private func makeDirectoryIfNeeded(_ path: String) async throws {
+        do {
+            try await makeDirectory(path)
+        } catch RorkDeviceError.afcStatus(let status) where status == AFCStatus.objectExists {
+            return
+        }
     }
 
     /// Removes a file or directory in the AFC service root.
@@ -234,16 +247,21 @@ public final class AFCClient {
         )
     }
 
-    /// Builds the safe `/PublicStaging` path used for one IPA upload.
-    private func stagedIPAPath(bundleIdentifier: String) throws -> String {
+    /// Builds the safe `./PublicStaging/<bundle>` directory for one IPA upload.
+    private func stagedDirectoryPath(bundleIdentifier: String) throws -> String {
         let filename = try AFCStaging.safeFilename(bundleIdentifier: bundleIdentifier)
-        return "\(AFCStaging.directory)/\(filename).ipa"
+        return "\(AFCStaging.directory)/\(filename)"
+    }
+
+    /// Builds the safe `./PublicStaging/<bundle>/app.ipa` path used for one IPA upload.
+    private func stagedIPAPath(bundleIdentifier: String) throws -> String {
+        "\(try stagedDirectoryPath(bundleIdentifier: bundleIdentifier))/app.ipa"
     }
 }
 
 /// Constants and validation for AFC public staging uploads.
 private enum AFCStaging {
-    static let directory = "/PublicStaging"
+    static let directory = "./PublicStaging"
     static let chunkSize = 64 * 1024
     static let maxFilenameLength = 255
 
@@ -270,6 +288,7 @@ private enum AFCStaging {
 /// AFC status values used by the high-level staging workflow.
 private enum AFCStatus {
     static let noSuchFile: UInt64 = 8
+    static let objectExists: UInt64 = 16
 }
 
 /// AFC magic bytes as they appear at the start of every packet.

@@ -26,10 +26,15 @@ public final class TCPDeviceConnection: DeviceConnection {
     /// - Parameters:
     ///   - host: Hostname or IP address to resolve.
     ///   - port: TCP port in host byte order.
+    ///   - timeout: Optional connection timeout.
     /// - Returns: An open connection that reads and writes exact byte buffers.
-    public static func connect(to host: String, port: UInt16) async throws -> TCPDeviceConnection {
+    public static func connect(
+        to host: String,
+        port: UInt16,
+        timeout: Duration? = nil
+    ) async throws -> TCPDeviceConnection {
         try await Task.detached(priority: .userInitiated) {
-            try open(host: host, port: port)
+            try open(host: host, port: port, timeout: timeout)
         }.value
     }
 
@@ -144,7 +149,7 @@ public final class TCPDeviceConnection: DeviceConnection {
 }
 
 /// Resolves and opens a TCP socket.
-private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
+private func open(host: String, port: UInt16, timeout: Duration?) throws -> TCPDeviceConnection {
     var hints = addrinfo(
         ai_flags: 0,
         ai_family: AF_UNSPEC,
@@ -169,7 +174,12 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
         if fd >= 0 {
             do {
                 try disableSIGPIPE(for: fd)
-                if systemConnect(fd, candidate.pointee.ai_addr, candidate.pointee.ai_addrlen) == 0 {
+                if try connectSocket(
+                    fd,
+                    address: candidate.pointee.ai_addr,
+                    length: candidate.pointee.ai_addrlen,
+                    timeout: timeout
+                ) {
                     return TCPDeviceConnection(fileDescriptor: fd)
                 }
                 lastError = lastErrnoMessage("connect")
@@ -184,6 +194,84 @@ private func open(host: String, port: UInt16) throws -> TCPDeviceConnection {
     throw RorkDeviceError.transport(lastError)
 }
 
+/// Connects a socket, optionally using a non-blocking timeout.
+private func connectSocket(
+    _ fd: Int32,
+    address: UnsafePointer<sockaddr>?,
+    length: socklen_t,
+    timeout: Duration?
+) throws -> Bool {
+    guard let timeout else {
+        return systemConnect(fd, address, length) == 0
+    }
+
+    let originalFlags = systemFcntl(fd, F_GETFL, 0)
+    guard originalFlags >= 0 else {
+        throw RorkDeviceError.transport(lastErrnoMessage("fcntl(F_GETFL)"))
+    }
+    guard systemFcntl(fd, F_SETFL, originalFlags | nonBlockingFlag) == 0 else {
+        throw RorkDeviceError.transport(lastErrnoMessage("fcntl(F_SETFL)"))
+    }
+    defer {
+        _ = systemFcntl(fd, F_SETFL, originalFlags)
+    }
+
+    if systemConnect(fd, address, length) == 0 {
+        return true
+    }
+
+    guard errno == EINPROGRESS else {
+        return false
+    }
+
+    var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+    let timeoutMilliseconds = timeout.pollTimeoutMilliseconds
+    let pollResult = systemPoll(&descriptor, 1, timeoutMilliseconds)
+    if pollResult == 0 {
+        throw RorkDeviceError.transport("connect timed out after \(timeout.secondsDescription)s")
+    }
+    guard pollResult > 0 else {
+        throw RorkDeviceError.transport(lastErrnoMessage("poll"))
+    }
+
+    var socketError: Int32 = 0
+    var socketErrorLength = socklen_t(MemoryLayout.size(ofValue: socketError))
+    let result = systemGetsockopt(
+        fd,
+        SOL_SOCKET,
+        SO_ERROR,
+        &socketError,
+        &socketErrorLength
+    )
+    guard result == 0 else {
+        throw RorkDeviceError.transport(lastErrnoMessage("getsockopt(SO_ERROR)"))
+    }
+    guard socketError == 0 else {
+        errno = socketError
+        return false
+    }
+    return true
+}
+
+private extension Duration {
+    /// Approximate seconds, used only for POSIX timeout conversion and logs.
+    var secondsAsTimeInterval: TimeInterval {
+        let parts = components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    /// Milliseconds accepted by `poll`, clamped to the platform API range.
+    var pollTimeoutMilliseconds: Int32 {
+        let milliseconds = max(1, min(secondsAsTimeInterval * 1000, TimeInterval(Int32.max)))
+        return Int32(milliseconds)
+    }
+
+    /// Short timeout text for transport diagnostics.
+    var secondsDescription: String {
+        String(format: "%.1f", secondsAsTimeInterval)
+    }
+}
+
 /// Platform-normalized TCP socket type.
 private var tcpSocketType: Int32 {
     #if canImport(Glibc)
@@ -191,6 +279,11 @@ private var tcpSocketType: Int32 {
     #else
     SOCK_STREAM
     #endif
+}
+
+/// Platform-normalized non-blocking flag.
+private var nonBlockingFlag: Int32 {
+    O_NONBLOCK
 }
 
 /// Formats the current POSIX `errno` for diagnostics.
@@ -253,6 +346,42 @@ private func systemConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>?, _ l
     return Darwin.connect(fd, address, length)
     #else
     return Glibc.connect(fd, address, length)
+    #endif
+}
+
+/// Platform wrapper for `fcntl`.
+@discardableResult
+private func systemFcntl(_ fd: Int32, _ command: Int32, _ value: Int32) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.fcntl(fd, command, value)
+    #else
+    return Glibc.fcntl(fd, command, value)
+    #endif
+}
+
+/// Platform wrapper for `poll`.
+@discardableResult
+private func systemPoll(_ fds: UnsafeMutablePointer<pollfd>, _ count: nfds_t, _ timeout: Int32) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.poll(fds, count, timeout)
+    #else
+    return Glibc.poll(fds, count, timeout)
+    #endif
+}
+
+/// Platform wrapper for `getsockopt`.
+@discardableResult
+private func systemGetsockopt(
+    _ fd: Int32,
+    _ level: Int32,
+    _ optionName: Int32,
+    _ optionValue: UnsafeMutableRawPointer?,
+    _ optionLength: UnsafeMutablePointer<socklen_t>?
+) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.getsockopt(fd, level, optionName, optionValue, optionLength)
+    #else
+    return Glibc.getsockopt(fd, level, optionName, optionValue, optionLength)
     #endif
 }
 

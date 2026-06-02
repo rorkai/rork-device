@@ -125,6 +125,19 @@ public final class LockdownClient {
         )
     }
 
+    /// Starts one of the modeled Lockdown services.
+    ///
+    /// Use this overload when the service is one of the public modeled
+    /// services. The string overload remains available for custom or newly
+    /// discovered Lockdown service identifiers.
+    ///
+    /// - Parameters:
+    ///   - serviceName: Modeled Lockdown service identifier.
+    ///   - escrowBag: Optional `EscrowBag` bytes from the pairing record.
+    public func startService(_ serviceName: LockdownServiceName, escrowBag: Data? = nil) async throws -> LockdownService {
+        try await startService(serviceName.rawValue, escrowBag: escrowBag)
+    }
+
     /// Sends one Lockdown request and returns its decoded response dictionary.
     private func request(_ dictionary: [String: Any]) async throws -> [String: Any] {
         try await PropertyListMessageFramer.send(dictionary, to: connection)
