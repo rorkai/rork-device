@@ -120,17 +120,35 @@ final class AFCClientTests: XCTestCase {
         var inbound = Data()
         inbound.append(afcStatusResponse(packetNumber: 1, status: 0))
         inbound.append(afcStatusResponse(packetNumber: 2, status: 0))
-        inbound.append(afcFileOpenResponse(packetNumber: 3, handle: 99))
-        inbound.append(afcStatusResponse(packetNumber: 4, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 3, status: 0))
+        inbound.append(afcFileOpenResponse(packetNumber: 4, handle: 99))
         inbound.append(afcStatusResponse(packetNumber: 5, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 6, status: 0))
         let connection = FakeConnection(inbound: inbound)
         let client = AFCClient(connection: connection)
 
         let path = try await client.uploadIPA(Data("ipa".utf8), bundleIdentifier: "com.example.app")
 
-        XCTAssertEqual(path, "/PublicStaging/com.example.app.ipa")
-        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 13, 16, 20])
-        XCTAssertTrue(connection.sent[3].contains(Data("ipa".utf8)))
+        XCTAssertEqual(path, "./PublicStaging/com.example.app/app.ipa")
+        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 9, 13, 16, 20])
+        XCTAssertTrue(connection.sent[4].contains(Data("ipa".utf8)))
+    }
+
+    func testUploadIPAIgnoresExistingStagingDirectories() async throws {
+        var inbound = Data()
+        inbound.append(afcStatusResponse(packetNumber: 1, status: 16))
+        inbound.append(afcStatusResponse(packetNumber: 2, status: 8))
+        inbound.append(afcStatusResponse(packetNumber: 3, status: 16))
+        inbound.append(afcFileOpenResponse(packetNumber: 4, handle: 99))
+        inbound.append(afcStatusResponse(packetNumber: 5, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 6, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        let path = try await client.uploadIPA(Data("ipa".utf8), bundleIdentifier: "com.example.app")
+
+        XCTAssertEqual(path, "./PublicStaging/com.example.app/app.ipa")
+        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 9, 13, 16, 20])
     }
 
     func testUploadIPARejectsUnsafeBundleIdentifier() async throws {

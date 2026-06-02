@@ -54,15 +54,22 @@ public final class DeviceSession {
     /// returned service connection using the same `SecureSessionUpgrader` that
     /// was configured for the session.
     ///
-    /// - Parameter serviceName: Service needed by the app-install workflow.
+    /// - Parameters:
+    ///   - serviceName: Lockdown service identifier.
+    ///   - escrowBag: Optional escrow material from a pairing record. Leave
+    ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
-    public func startService(_ serviceName: LockdownServiceName) async throws -> DeviceConnection {
-        let service = try await lockdown.startService(
-            serviceName.rawValue,
-            escrowBag: serviceName.requiresPairingEscrow ? pairingRecord.escrowBag : nil
-        )
-        var connection = try await transport.connect(to: service.port)
+    public func startService(_ serviceName: LockdownServiceName, escrowBag: Data? = nil) async throws -> DeviceConnection {
+        let service = try await lockdown.startService(serviceName, escrowBag: escrowBag)
+        var connection: DeviceConnection
+        do {
+            connection = try await transport.connect(to: service.port)
+        } catch {
+            throw RorkDeviceError.transport(
+                "Failed to connect \(service.name) on service port \(service.port): \(describeDeviceSessionError(error))"
+            )
+        }
         if service.requiresSecureConnection {
             connection = try await secureSessionUpgrader.upgrade(connection, pairingRecord: pairingRecord)
         }
@@ -160,7 +167,7 @@ public final class DeviceSession {
     /// Stages and installs an IPA through the device services used by iOS.
     ///
     /// This combines two lower-level operations: upload the IPA to
-    /// `/PublicStaging` through AFC, then ask InstallationProxy to install that
+    /// `./PublicStaging` through AFC, then ask InstallationProxy to install that
     /// staged package path.
     ///
     /// - Parameters:
@@ -226,9 +233,16 @@ public final class DeviceSession {
     }
 }
 
-/// Lockdown services exposed by the high-level 0.1.0 install workflow.
+private func describeDeviceSessionError(_ error: Error) -> String {
+    if let deviceError = error as? RorkDeviceError {
+        return deviceError.description
+    }
+    return error.localizedDescription
+}
+
+/// Lockdown services exposed by the high-level install workflow.
 public enum LockdownServiceName: String, Sendable {
-    /// Apple File Conduit, used to create `/PublicStaging` and upload IPA data.
+    /// Apple File Conduit, used to create `./PublicStaging` and upload IPA data.
     case afc = "com.apple.afc"
 
     /// InstallationProxy, used to browse, install, and uninstall applications.
@@ -236,21 +250,4 @@ public enum LockdownServiceName: String, Sendable {
 
     /// MISAgent, used to install and remove provisioning profiles.
     case misagent = "com.apple.misagent"
-}
-
-private extension LockdownServiceName {
-    /// Whether this service should receive the pairing record's escrow bag when
-    /// it is started through Lockdown.
-    ///
-    /// AFC is the service used for app-install staging. On tunnel-backed paired
-    /// connections, including escrow material keeps service authorization tied
-    /// to the pairing record that opened the Lockdown session.
-    var requiresPairingEscrow: Bool {
-        switch self {
-        case .afc:
-            return true
-        case .installationProxy, .misagent:
-            return false
-        }
-    }
 }
