@@ -46,7 +46,7 @@ public final class USBMuxClient {
     /// - Returns: Raw usbmux device records.
     /// - Throws: Transport errors when the daemon is unavailable and protocol
     ///   errors when the response cannot be decoded.
-    public func devices() async throws -> [USBMuxDevice] {
+    public func listDevices() async throws -> [USBMuxDevice] {
         let response = try await request([
             "MessageType": "ListDevices",
             "ClientVersionString": "rork-device",
@@ -71,9 +71,14 @@ public final class USBMuxClient {
     /// this method returns.
     ///
     /// - Parameters:
-    ///   - deviceID: Numeric id returned by `devices()`.
+    ///   - device: Device record returned by `listDevices()`.
     ///   - port: Device-side service port, in host byte order.
-    public func connect(toDeviceID deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
+    public func connect(to device: USBMuxDevice, port: UInt16) async throws -> DeviceConnection {
+        try await connect(toDeviceID: device.deviceID, port: port)
+    }
+
+    /// Opens a forwarded connection to a device service port by numeric id.
+    func connect(toDeviceID deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
         let connection = try await openConnection()
         do {
             let response = try await request([
@@ -168,7 +173,7 @@ public struct USBMuxDeviceTransport: DeviceTransport {
 
     /// Creates a transport for a usbmux device id.
     ///
-    /// The device id should come from a recent `USBMuxClient.devices()` call.
+    /// The device id should come from a recent `USBMuxClient.listDevices()` call.
     public init(deviceID: UInt32, usbmuxClient: USBMuxClient = USBMuxClient()) {
         self.deviceID = deviceID
         self.usbmuxClient = usbmuxClient

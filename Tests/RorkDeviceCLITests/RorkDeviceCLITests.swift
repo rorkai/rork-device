@@ -26,11 +26,20 @@ final class RorkDeviceCLITests: XCTestCase {
     func testAppsListCommandParsesApplicationType() throws {
         let command = try AppsList.parse([
             "--pairing-record", "pairing.plist",
-            "--type", "Any",
+            "--type", "all",
         ])
 
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
-        XCTAssertEqual(command.type, .any)
+        XCTAssertEqual(command.type, .all)
+    }
+
+    func testAppsListCommandParsesProtocolApplicationType() throws {
+        let command = try AppsList.parse([
+            "--pairing-record", "pairing.plist",
+            "--type", "Any",
+        ])
+
+        XCTAssertEqual(command.type, .all)
     }
 
     func testInfoCommandParsesDirectEndpoint() throws {

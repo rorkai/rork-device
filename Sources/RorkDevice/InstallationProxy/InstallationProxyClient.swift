@@ -99,13 +99,17 @@ public final class InstallationProxyClient {
             let event = InstallationProgress(
                 status: InstallationStatus(rawValue: response.string("Status") ?? InstallationStatus.unknown.rawValue),
                 percentComplete: response.int("PercentComplete"),
-                errorName: response.string("Error"),
-                errorDescription: response.string("ErrorDescription")
+                error: response.string("Error").map {
+                    InstallationError(
+                        code: $0,
+                        message: response.string("ErrorDescription")
+                    )
+                }
             )
             progress?(event)
 
-            if let error = event.errorName {
-                throw RorkDeviceError.installationProxy(name: error, description: event.errorDescription)
+            if let error = event.error {
+                throw RorkDeviceError.installationProxy(error)
             }
             if event.status == .complete {
                 return

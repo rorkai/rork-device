@@ -5,7 +5,7 @@ import Foundation
 /// Errors are grouped by protocol layer so callers can decide whether a failure
 /// is user input, transport reachability, malformed peer data, or a device
 /// service rejection.
-public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Sendable {
+public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, LocalizedError, Sendable {
     /// A required user input or API argument was invalid before any device
     /// protocol request was sent.
     case invalidInput(String)
@@ -33,7 +33,7 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Sendable
     case afcStatus(UInt64)
 
     /// InstallationProxy returned an operation error.
-    case installationProxy(name: String, description: String?)
+    case installationProxy(InstallationError)
 
     /// MISAgent returned a non-zero status code.
     case misagentStatus(Int)
@@ -57,13 +57,16 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Sendable
             return "Secure session error: \(message)"
         case let .afcStatus(status):
             return "AFC returned status \(status)."
-        case let .installationProxy(name, description):
-            if let description, !description.isEmpty {
-                return "InstallationProxy \(name): \(description)"
-            }
-            return "InstallationProxy \(name)"
+        case let .installationProxy(error):
+            return "InstallationProxy \(error)"
         case let .misagentStatus(status):
             return "MISAgent returned status \(status)."
         }
+    }
+
+    /// Localized error text surfaced by Swift apps, Objective-C `NSError`
+    /// bridges, and command-line tools that use `localizedDescription`.
+    public var errorDescription: String? {
+        description
     }
 }

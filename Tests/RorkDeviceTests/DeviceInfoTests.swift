@@ -37,6 +37,6 @@ final class DeviceInfoTests: XCTestCase {
         XCTAssertEqual(app.version, "1.2.3")
         XCTAssertEqual(app.buildVersion, "45")
         XCTAssertEqual(app.applicationType, "User")
-        XCTAssertEqual(app.rawValues["Number"]?.description, "7")
+        XCTAssertEqual(app.rawValues["Number"], DiagnosticValue(description: "7"))
     }
 }

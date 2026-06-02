@@ -137,7 +137,7 @@ struct AppsList: AsyncParsableCommand {
 
     @OptionGroup var connection: ConnectionOptions
 
-    @Option(help: "Application type: User, System, Internal, or Any.")
+    @Option(help: "Application type: user, system, internal, or all.")
     var type: ApplicationType = .user
 
     func run() async throws {
@@ -283,6 +283,18 @@ struct ProfilesRemove: AsyncParsableCommand {
 extension ApplicationType: ExpressibleByArgument {
     /// Creates an application-type filter from the CLI argument value.
     public init?(argument: String) {
-        self.init(rawValue: argument)
+        let normalized = argument.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "user":
+            self = .user
+        case "system":
+            self = .system
+        case "internal", "internal-applications":
+            self = .internalApplications
+        case "any", "all":
+            self = .all
+        default:
+            self.init(rawValue: argument)
+        }
     }
 }

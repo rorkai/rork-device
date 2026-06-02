@@ -51,7 +51,7 @@ final class InstallationProxyClientTests: XCTestCase {
         let connection = FakeConnection(inbound: inbound)
         let client = InstallationProxyClient(connection: connection)
 
-        let apps = try await client.applications(matching: .any)
+        let apps = try await client.applications(matching: .all)
 
         XCTAssertEqual(apps.count, 0)
     }
@@ -123,7 +123,33 @@ final class InstallationProxyClientTests: XCTestCase {
             try await client.install(packagePath: "/PublicStaging/App.ipa")
             XCTFail("Expected install to throw.")
         } catch let error as RorkDeviceError {
-            XCTAssertEqual(error, .installationProxy(name: "ApplicationVerificationFailed", description: "Signature rejected"))
+            XCTAssertEqual(
+                error,
+                .installationProxy(InstallationError(code: .applicationVerificationFailed, message: "Signature rejected"))
+            )
+        }
+    }
+
+    func testInstallPreservesUnknownErrorCode() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Status": "Failed",
+            "Error": "SomethingNewFailed",
+            "ErrorDescription": "The device reported a new error.",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = InstallationProxyClient(connection: connection)
+
+        do {
+            try await client.install(packagePath: "/PublicStaging/App.ipa")
+            XCTFail("Expected install to throw.")
+        } catch let error as RorkDeviceError {
+            XCTAssertEqual(
+                error,
+                .installationProxy(InstallationError(
+                    code: "SomethingNewFailed",
+                    message: "The device reported a new error."
+                ))
+            )
         }
     }
 

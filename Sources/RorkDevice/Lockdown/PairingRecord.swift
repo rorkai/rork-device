@@ -38,7 +38,7 @@ public struct PairingRecord: Equatable, Sendable {
     public let escrowBag: Data?
 
     /// Raw plist values converted to stable diagnostic descriptions.
-    public let rawValues: [String: AnySendableValue]
+    public let rawValues: [String: DiagnosticValue]
 
     /// Loads a pairing record from a plist file.
     ///
@@ -68,7 +68,7 @@ public struct PairingRecord: Equatable, Sendable {
             rootCertificate: dataValue("RootCertificate", in: dictionary),
             rootPrivateKey: dataValue("RootPrivateKey", in: dictionary),
             escrowBag: dataValue("EscrowBag", in: dictionary),
-            rawValues: dictionary.mapValues(AnySendableValue.init)
+            rawValues: dictionary.mapValues(DiagnosticValue.init)
         )
     }
 
@@ -97,14 +97,19 @@ public struct PairingRecord: Equatable, Sendable {
     }
 }
 
-/// Sendable diagnostic wrapper for raw pairing-record values.
+/// Sendable diagnostic wrapper for raw plist values.
 ///
-/// Pairing records can contain arbitrary plist values. The public
-/// `PairingRecord` type is `Sendable`, so raw values are represented as stable
+/// Device services can return arbitrary plist values. Public value types in
+/// this package are `Sendable`, so raw values are represented as stable
 /// descriptions instead of exposing unconstrained `Any`.
-public struct AnySendableValue: Equatable, Sendable {
+public struct DiagnosticValue: Equatable, Sendable, CustomStringConvertible {
     /// String representation suitable for logs, CLI output, and tests.
     public let description: String
+
+    /// Creates a diagnostic value from an already-normalized description.
+    public init(description: String) {
+        self.description = description
+    }
 
     init(_ value: Any) {
         switch value {

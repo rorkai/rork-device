@@ -23,6 +23,7 @@ final class PairingRecordTests: XCTestCase {
         XCTAssertEqual(record.systemBUID, "system-1")
         XCTAssertTrue(record.hasSecureSessionMaterial)
         XCTAssertEqual(record.missingSecureSessionFields, [])
+        XCTAssertEqual(record.rawValues["UDID"], DiagnosticValue(description: "device-1"))
     }
 
     func testReportsMissingSecureSessionFields() throws {

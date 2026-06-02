@@ -7,7 +7,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         defer { daemon.stop() }
         let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
 
-        let devices = try await client.devices()
+        let devices = try await client.listDevices()
 
         XCTAssertEqual(devices.count, 1)
         XCTAssertEqual(devices.first?.deviceID, 1)
@@ -20,7 +20,8 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         defer { daemon.stop() }
         let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
 
-        let connection = try await client.connect(toDeviceID: 1, port: 62078)
+        let device = USBMuxDevice(deviceID: 1, serialNumber: "fake-device-1", properties: [:])
+        let connection = try await client.connect(to: device, port: 62078)
         connection.close()
 
         XCTAssertEqual(daemon.connectedPorts, [62078])

@@ -53,7 +53,7 @@ public final class DeviceClient {
     ///   opened, or `RorkDeviceError.protocolViolation` when the daemon returns
     ///   malformed plist data.
     public func discoverDevices() async throws -> [Device] {
-        try await usbmuxClient.devices().map { device in
+        try await usbmuxClient.listDevices().map { device in
             Device(
                 identifier: device.serialNumber,
                 connection: .usbmux(deviceID: device.deviceID),

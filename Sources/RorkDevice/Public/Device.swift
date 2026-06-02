@@ -115,7 +115,7 @@ public struct InstalledApplication: Equatable, Sendable {
     public let applicationType: String?
 
     /// Scalar record values converted to sendable diagnostic descriptions.
-    public let rawValues: [String: AnySendableValue]
+    public let rawValues: [String: DiagnosticValue]
 
     /// Creates typed application metadata from a raw InstallationProxy record.
     public init(values: [String: Any]) {
@@ -124,6 +124,6 @@ public struct InstalledApplication: Equatable, Sendable {
         version = values["CFBundleShortVersionString"] as? String
         buildVersion = values["CFBundleVersion"] as? String
         applicationType = values["ApplicationType"] as? String
-        rawValues = values.mapValues(AnySendableValue.init)
+        rawValues = values.mapValues(DiagnosticValue.init)
     }
 }
