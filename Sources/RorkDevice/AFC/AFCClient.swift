@@ -29,11 +29,25 @@ public final class AFCClient {
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
     public func uploadIPA(at url: URL, bundleIdentifier: String) async throws -> String {
+        try await uploadIPA(Data(contentsOf: url), bundleIdentifier: bundleIdentifier)
+    }
+
+    /// Uploads in-memory IPA data into `/PublicStaging`.
+    ///
+    /// This variant is useful for apps and services that already hold an IPA
+    /// archive in memory, for example after downloading or signing it. The
+    /// bytes are written to the same device-side staging path as `uploadIPA(at:)`.
+    ///
+    /// - Parameters:
+    ///   - data: IPA archive bytes.
+    ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
+    /// - Returns: Device path suitable for InstallationProxy `Install`.
+    public func uploadIPA(_ data: Data, bundleIdentifier: String) async throws -> String {
         let stagedDirectory = "/PublicStaging"
         let stagedPath = "\(stagedDirectory)/\(bundleIdentifier).ipa"
         try await makeDirectory(stagedDirectory)
         try await removePath(stagedPath, ignoreMissing: true)
-        try await uploadFile(localURL: url, remotePath: stagedPath)
+        try await uploadFile(data, remotePath: stagedPath)
         return stagedPath
     }
 
@@ -61,9 +75,17 @@ public final class AFCClient {
     /// The file is streamed in fixed-size chunks so callers can stage large
     /// archives without needing a service-specific helper.
     public func uploadFile(localURL: URL, remotePath: String) async throws {
+        try await uploadFile(Data(contentsOf: localURL), remotePath: remotePath)
+    }
+
+    /// Uploads data to a remote AFC path.
+    ///
+    /// The payload is streamed in fixed-size chunks to match the behavior of
+    /// `uploadFile(localURL:remotePath:)` while avoiding temporary files in
+    /// callers that already own the bytes.
+    public func uploadFile(_ data: Data, remotePath: String) async throws {
         let handle = try await openFile(remotePath, mode: .writeOnly)
         do {
-            let data = try Data(contentsOf: localURL)
             var offset = 0
             let chunkSize = 64 * 1024
             while offset < data.count {

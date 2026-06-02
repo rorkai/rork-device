@@ -27,6 +27,46 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.app.ipa"])
     }
 
+    func testInstallsInMemoryApplicationThroughFakeUSBMuxDeviceStack() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+        var progress: [InstallationProgress] = []
+
+        let devices = try await client.devices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.session(for: device, pairingRecord: try testPairingRecord())
+        try await session.installApplication(
+            ipaData: Data("fake ipa".utf8),
+            bundleIdentifier: "com.example.memory"
+        ) {
+            progress.append($0)
+        }
+
+        XCTAssertEqual(progress.map(\.status), ["Installing", "Complete"])
+        XCTAssertEqual(daemon.connectedPorts, [62078, 1234, 2345])
+        XCTAssertEqual(daemon.afcOperations, [9, 8, 13, 16, 20])
+        XCTAssertEqual(daemon.installedPackagePaths, ["/PublicStaging/com.example.memory.ipa"])
+    }
+
+    func testManagesProvisioningProfilesThroughFakeUSBMuxDeviceStack() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.devices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.session(for: device, pairingRecord: try testPairingRecord())
+
+        try await session.installProvisioningProfile(Data([1, 2, 3]))
+        let profiles = try await session.copyProvisioningProfiles()
+        try await session.removeProvisioningProfile(identifier: "profile-uuid")
+
+        XCTAssertEqual(profiles, [Data([9, 9, 9])])
+        XCTAssertEqual(daemon.connectedPorts, [62078, 3456, 3456, 3456])
+        XCTAssertEqual(daemon.misagentMessageTypes, ["Install", "CopyAll", "Remove"])
+    }
+
     func testSecureSessionUpgraderIsUsedForLockdownAndSecureServices() async throws {
         let daemon = try FakeUSBMuxDaemon(
             secureLockdown: true,

@@ -83,6 +83,38 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
 
+    func testUploadFileCanUseInMemoryData() async throws {
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        inbound.append(afcStatusResponse(packetNumber: 2, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 3, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        try await client.uploadFile(Data("hello".utf8), remotePath: "/PublicStaging/App.ipa")
+
+        XCTAssertEqual(connection.sent.count, 3)
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
+        XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
+    }
+
+    func testUploadIPAStagesInMemoryDataAtBundlePath() async throws {
+        var inbound = Data()
+        inbound.append(afcStatusResponse(packetNumber: 1, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 2, status: 0))
+        inbound.append(afcFileOpenResponse(packetNumber: 3, handle: 99))
+        inbound.append(afcStatusResponse(packetNumber: 4, status: 0))
+        inbound.append(afcStatusResponse(packetNumber: 5, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        let path = try await client.uploadIPA(Data("ipa".utf8), bundleIdentifier: "com.example.app")
+
+        XCTAssertEqual(path, "/PublicStaging/com.example.app.ipa")
+        XCTAssertEqual(try connection.sent.map(afcOperation), [9, 8, 13, 16, 20])
+        XCTAssertTrue(connection.sent[3].contains(Data("ipa".utf8)))
+    }
+
     func testUploadFileThrowsWhenOpenReturnsStatusFailure() async throws {
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(UUID().uuidString)

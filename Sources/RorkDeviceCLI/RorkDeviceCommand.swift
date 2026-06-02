@@ -190,7 +190,11 @@ struct Profiles: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "profiles",
         abstract: "Manage provisioning profiles.",
-        subcommands: [ProfilesInstall.self]
+        subcommands: [
+            ProfilesInstall.self,
+            ProfilesCopy.self,
+            ProfilesRemove.self,
+        ]
     )
 }
 
@@ -209,6 +213,54 @@ struct ProfilesInstall: AsyncParsableCommand {
     func run() async throws {
         let session = try await connection.session()
         try await session.installProvisioningProfile(at: URL(fileURLWithPath: profilePath))
+    }
+}
+
+/// Copies installed provisioning profiles from the device.
+struct ProfilesCopy: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "copy",
+        abstract: "Copy installed provisioning profiles."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Option(help: "Directory that will receive copied .mobileprovision files.")
+    var outputDirectory: String
+
+    @Flag(help: "Use the legacy MISAgent Copy command for iOS 9.2.1 and older.")
+    var legacy: Bool = false
+
+    func run() async throws {
+        let session = try await connection.session()
+        let mode: ProvisioningProfileCopyMode = legacy ? .legacy : .all
+        let profiles = try await session.copyProvisioningProfiles(mode: mode)
+        let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        for (index, profile) in profiles.enumerated() {
+            let url = directory.appendingPathComponent("profile-\(index + 1).mobileprovision")
+            try profile.write(to: url, options: .atomic)
+            print(url.path)
+        }
+    }
+}
+
+/// Removes a provisioning profile from the device.
+struct ProfilesRemove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Remove a provisioning profile by UUID."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "Provisioning profile UUID.")
+    var identifier: String
+
+    func run() async throws {
+        let session = try await connection.session()
+        try await session.removeProvisioningProfile(identifier: identifier)
     }
 }
 

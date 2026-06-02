@@ -90,6 +90,34 @@ public final class DeviceSession {
         try await client.installProvisioningProfile(profile)
     }
 
+    /// Removes a provisioning profile through MISAgent.
+    ///
+    /// The identifier is the profile UUID reported by provisioning-profile
+    /// tools and by decoded `.mobileprovision` payloads. This helper opens a
+    /// fresh MISAgent service connection for the operation.
+    ///
+    /// - Parameter identifier: Provisioning profile UUID to remove.
+    public func removeProvisioningProfile(identifier: String) async throws {
+        let connection = try await startService(.misagent)
+        let client = MISAgentClient(connection: connection)
+        try await client.removeProvisioningProfile(identifier: identifier)
+    }
+
+    /// Copies installed provisioning-profile payloads through MISAgent.
+    ///
+    /// The returned values are the original CMS-wrapped profile bytes. Callers
+    /// can write them to disk, pass them to a signing/profile parser, or inspect
+    /// them with their own tooling.
+    ///
+    /// - Parameter mode: MISAgent copy command variant. Defaults to `.all`,
+    ///   which is correct for iOS 9.3 and newer.
+    /// - Returns: Raw `.mobileprovision` payloads installed on the device.
+    public func copyProvisioningProfiles(mode: ProvisioningProfileCopyMode = .all) async throws -> [Data] {
+        let connection = try await startService(.misagent)
+        let client = MISAgentClient(connection: connection)
+        return try await client.copyProvisioningProfiles(mode: mode)
+    }
+
     /// Lists applications through InstallationProxy.
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
@@ -139,6 +167,27 @@ public final class DeviceSession {
         try await client.install(packagePath: stagedPath, bundleIdentifier: bundleIdentifier, progress: progress)
     }
 
+    /// Stages and installs in-memory IPA data through AFC and InstallationProxy.
+    ///
+    /// This is equivalent to `installApplication(ipaURL:bundleIdentifier:)`
+    /// except the IPA bytes are supplied directly by the caller.
+    ///
+    /// - Parameters:
+    ///   - ipaData: IPA archive bytes.
+    ///   - bundleIdentifier: Expected application bundle identifier. The value
+    ///     is forwarded in InstallationProxy client options when supplied.
+    ///   - progress: Optional callback for InstallationProxy status events.
+    public func installApplication(
+        ipaData: Data,
+        bundleIdentifier: String,
+        progress: InstallationProgressHandler? = nil
+    ) async throws {
+        let stagedPath = try await stageApplication(ipaData: ipaData, bundleIdentifier: bundleIdentifier)
+        let connection = try await startService(.installationProxy)
+        let client = InstallationProxyClient(connection: connection)
+        try await client.install(packagePath: stagedPath, bundleIdentifier: bundleIdentifier, progress: progress)
+    }
+
     /// Uploads an IPA to AFC public staging and returns the device path.
     ///
     /// Call this when you want to separate staging from installation, for
@@ -150,6 +199,18 @@ public final class DeviceSession {
         let connection = try await startService(.afc)
         let afc = AFCClient(connection: connection)
         return try await afc.uploadIPA(at: ipaURL, bundleIdentifier: bundleIdentifier)
+    }
+
+    /// Uploads in-memory IPA data to AFC public staging.
+    ///
+    /// - Parameters:
+    ///   - ipaData: IPA archive bytes.
+    ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
+    /// - Returns: Device path suitable for InstallationProxy `Install`.
+    public func stageApplication(ipaData: Data, bundleIdentifier: String) async throws -> String {
+        let connection = try await startService(.afc)
+        let afc = AFCClient(connection: connection)
+        return try await afc.uploadIPA(ipaData, bundleIdentifier: bundleIdentifier)
     }
 }
 

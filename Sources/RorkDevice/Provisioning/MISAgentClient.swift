@@ -49,4 +49,50 @@ public final class MISAgentClient {
             throw RorkDeviceError.misagentStatus(status)
         }
     }
+
+    /// Copies installed provisioning-profile payloads from the device.
+    ///
+    /// MISAgent returns CMS-wrapped `.mobileprovision` bytes, not decoded plist
+    /// dictionaries. Keeping the raw payloads lets callers choose their own
+    /// profile parser while preserving the exact data needed for backups,
+    /// diagnostics, or later removal decisions.
+    ///
+    /// - Parameter mode: MISAgent copy command variant. `.all` is the modern
+    ///   default for iOS 9.3 and newer; `.legacy` exists for older devices.
+    /// - Returns: Raw provisioning-profile payloads returned by the device.
+    public func copyProvisioningProfiles(mode: ProvisioningProfileCopyMode = .all) async throws -> [Data] {
+        try await PropertyListMessageFramer.send([
+            "MessageType": mode.messageType,
+            "ProfileType": "Provisioning",
+        ], to: connection)
+        let response = try await PropertyListMessageFramer.receive(from: connection)
+        let status = response.int("Status") ?? -1
+        guard status == 0 else {
+            throw RorkDeviceError.misagentStatus(status)
+        }
+
+        guard let payload = response["Payload"] as? [Data] else {
+            throw RorkDeviceError.protocolViolation("MISAgent Copy response did not include provisioning profile data.")
+        }
+        return payload
+    }
+}
+
+/// MISAgent copy command variant used when reading installed profiles.
+public enum ProvisioningProfileCopyMode: Sendable {
+    /// `CopyAll`, the command used by iOS 9.3 and newer.
+    case all
+
+    /// `Copy`, the command used by iOS 9.2.1 and older.
+    case legacy
+
+    /// Protocol message name sent to MISAgent.
+    var messageType: String {
+        switch self {
+        case .all:
+            return "CopyAll"
+        case .legacy:
+            return "Copy"
+        }
+    }
 }

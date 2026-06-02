@@ -26,7 +26,7 @@ The first milestone focuses on device sessions and app installation:
 - Query basic device information.
 - Start Lockdown services.
 - Stage IPA files through AFC.
-- Install and remove provisioning profiles through MISAgent.
+- Install, remove, and copy provisioning profiles through MISAgent.
 - List, install, and uninstall applications through InstallationProxy.
 - Expose structured errors and install progress.
 
@@ -73,6 +73,8 @@ rorkdevice list
 rorkdevice info --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist
 rorkdevice profiles install Profile.mobileprovision --pairing-record pairing.plist
+rorkdevice profiles copy --output-directory Profiles --pairing-record pairing.plist
+rorkdevice profiles remove PROFILE-UUID --pairing-record pairing.plist
 rorkdevice install App.ipa --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice uninstall com.example.app --pairing-record pairing.plist
 ```

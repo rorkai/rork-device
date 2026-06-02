@@ -6,11 +6,12 @@ import XCTest
 ///
 /// These tests intentionally do not run during normal CI. They exercise the
 /// release-critical vertical slice through the public API: device discovery,
-/// Lockdown info, provisioning-profile installation, IPA installation, and IPA
-/// uninstall.
+/// Lockdown info, provisioning-profile installation/copy, IPA installation, and
+/// IPA uninstall.
 final class PhysicalDeviceSmokeTests: XCTestCase {
     /// Lists a physical device, opens a secure session, installs a profile,
-    /// installs an IPA, and uninstalls the same bundle identifier.
+    /// verifies profile copy, installs an IPA, and uninstalls the same bundle
+    /// identifier.
     func testPhysicalDeviceInstallWorkflow() async throws {
         guard ProcessInfo.processInfo.environment["RORK_DEVICE_PHYSICAL_SMOKE"] == "1" else {
             throw XCTSkip("Set RORK_DEVICE_PHYSICAL_SMOKE=1 to run physical-device smoke tests.")
@@ -30,6 +31,8 @@ final class PhysicalDeviceSmokeTests: XCTestCase {
 
         _ = try await session.deviceInfo()
         try await session.installProvisioningProfile(at: provisioningProfileURL)
+        let profiles = try await session.copyProvisioningProfiles()
+        XCTAssertFalse(profiles.isEmpty)
         try await session.installApplication(ipaURL: ipaURL, bundleIdentifier: bundleIdentifier)
         try await session.uninstallApplication(bundleIdentifier: bundleIdentifier)
     }

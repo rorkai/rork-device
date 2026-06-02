@@ -44,4 +44,26 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.port, 62079)
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
     }
+
+    func testProfilesCopyCommandParsesOutputDirectoryAndLegacyMode() throws {
+        let command = try ProfilesCopy.parse([
+            "--pairing-record", "pairing.plist",
+            "--output-directory", "Profiles",
+            "--legacy",
+        ])
+
+        XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.outputDirectory, "Profiles")
+        XCTAssertTrue(command.legacy)
+    }
+
+    func testProfilesRemoveCommandParsesIdentifier() throws {
+        let command = try ProfilesRemove.parse([
+            "--pairing-record", "pairing.plist",
+            "profile-uuid",
+        ])
+
+        XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.identifier, "profile-uuid")
+    }
 }

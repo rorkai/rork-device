@@ -13,8 +13,8 @@ The first release focuses on the app-install workflows used by developer tools:
 - Connect through local `usbmuxd` or a direct Lockdown endpoint.
 - Query basic device information through Lockdown.
 - Start Lockdown services.
-- Upload IPA files through AFC staging.
-- Install and remove provisioning profiles through MISAgent.
+- Upload IPA files or in-memory IPA bytes through AFC staging.
+- Install, remove, and copy provisioning profiles through MISAgent.
 - List, install, and uninstall applications through InstallationProxy.
 - Expose structured progress and errors.
 - Upgrade secure Lockdown and service connections on Apple platforms.

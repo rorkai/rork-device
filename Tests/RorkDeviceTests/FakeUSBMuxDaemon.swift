@@ -13,6 +13,7 @@ final class FakeUSBMuxDaemon {
     private var _connectedPorts: [UInt16] = []
     private var _afcOperations: [UInt64] = []
     private var _installedPackagePaths: [String] = []
+    private var _misagentMessageTypes: [String] = []
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -30,6 +31,12 @@ final class FakeUSBMuxDaemon {
         lock.lock()
         defer { lock.unlock() }
         return _installedPackagePaths
+    }
+
+    var misagentMessageTypes: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _misagentMessageTypes
     }
 
     init(secureLockdown: Bool = false, secureServices: Set<String> = []) throws {
@@ -226,8 +233,19 @@ final class FakeUSBMuxDaemon {
     }
 
     private func handleMISAgent(_ fd: Int32) {
-        _ = readPlistMessage(fd)
-        sendPlistMessage(["Status": 0], to: fd)
+        guard let request = readPlistMessage(fd) else {
+            return
+        }
+        let messageType = request["MessageType"] as? String ?? ""
+        recordMISAgentMessageType(messageType)
+        if messageType == "CopyAll" || messageType == "Copy" {
+            sendPlistMessage([
+                "Status": 0,
+                "Payload": [Data([9, 9, 9])],
+            ], to: fd)
+        } else {
+            sendPlistMessage(["Status": 0], to: fd)
+        }
     }
 
     private func readUSBMuxRequest(_ fd: Int32) -> (packet: USBMuxPacket, dictionary: [String: Any])? {
@@ -286,6 +304,12 @@ final class FakeUSBMuxDaemon {
     private func recordInstalledPackage(_ packagePath: String) {
         lock.lock()
         _installedPackagePaths.append(packagePath)
+        lock.unlock()
+    }
+
+    private func recordMISAgentMessageType(_ messageType: String) {
+        lock.lock()
+        _misagentMessageTypes.append(messageType)
         lock.unlock()
     }
 }
