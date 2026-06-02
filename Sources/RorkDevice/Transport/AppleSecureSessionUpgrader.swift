@@ -20,7 +20,7 @@ public struct AppleSecureSessionUpgrader: SecureSessionUpgrader {
                 base: connection,
                 identity: identity.identity,
                 certificateChain: identity.certificateChain,
-                trustedServerCertificates: identity.trustedServerCertificates
+                trustedServerCertificateData: identity.trustedServerCertificateData
             )
         }.value
     }
@@ -32,7 +32,7 @@ final class SecureTransportDeviceConnection: DeviceConnection {
     private let context: SSLContext
     private let callbackBox: SecureTransportCallbackBox
     private let callbackPointer: UnsafeMutableRawPointer
-    private let trustedServerCertificates: [SecCertificate]
+    private let trustedServerCertificateData: [Data]
     private let condition = NSCondition()
     private var closed = false
     private var activeOperations = 0
@@ -42,10 +42,10 @@ final class SecureTransportDeviceConnection: DeviceConnection {
         base: DeviceConnection,
         identity: SecIdentity,
         certificateChain: [SecCertificate],
-        trustedServerCertificates: [SecCertificate]
+        trustedServerCertificateData: [Data]
     ) throws {
         self.base = base
-        self.trustedServerCertificates = trustedServerCertificates
+        self.trustedServerCertificateData = trustedServerCertificateData
         guard let context = SSLCreateContext(nil, .clientSide, .streamType) else {
             throw RorkDeviceError.secureSession("Could not create SSL context.")
         }
@@ -181,7 +181,7 @@ final class SecureTransportDeviceConnection: DeviceConnection {
         }
     }
 
-    /// Evaluates the server certificate presented by the device.
+    /// Verifies the server certificate presented by the device.
     private func evaluatePeerTrust() throws {
         guard !serverTrustEvaluated else {
             return
@@ -193,23 +193,12 @@ final class SecureTransportDeviceConnection: DeviceConnection {
             throw RorkDeviceError.secureSession("Device did not present server trust.")
         }
 
-        if !trustedServerCertificates.isEmpty {
-            try checkSecurity(SecTrustSetAnchorCertificates(trust, trustedServerCertificates as CFArray), "SecTrustSetAnchorCertificates")
-            try checkSecurity(SecTrustSetAnchorCertificatesOnly(trust, true), "SecTrustSetAnchorCertificatesOnly")
-        }
-
-        if #available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *) {
-            var error: CFError?
-            guard SecTrustEvaluateWithError(trust, &error) else {
-                let message = error.map { CFErrorCopyDescription($0) as String }
-                throw RorkDeviceError.secureSession("Device server trust evaluation failed\(message.map { ": \($0)" } ?? ".")")
-            }
-        } else {
-            var result = SecTrustResultType.invalid
-            try checkSecurity(SecTrustEvaluate(trust, &result), "SecTrustEvaluate")
-            guard result == .unspecified || result == .proceed else {
-                throw RorkDeviceError.secureSession("Device server trust evaluation failed with result \(result.rawValue).")
-            }
+        // Lockdown pairing records pin the device certificate directly.
+        // Platform trust evaluation can reject older pairing certificates for
+        // legacy digest algorithms before the pinning decision is reached.
+        let peerCertificateData = try peerLeafCertificateData(from: trust)
+        guard trustedServerCertificateData.contains(peerCertificateData) else {
+            throw RorkDeviceError.secureSession("Device server certificate did not match the pairing record.")
         }
 
         serverTrustEvaluated = true
@@ -317,7 +306,7 @@ private func waitForSecureTransportIO<T>(_ operation: @escaping () async throws 
 private struct AppleSecureSessionIdentity {
     let identity: SecIdentity
     let certificateChain: [SecCertificate]
-    let trustedServerCertificates: [SecCertificate]
+    let trustedServerCertificateData: [Data]
 
     init(pairingRecord: PairingRecord) throws {
         guard let deviceCertificate = pairingRecord.deviceCertificate else {
@@ -343,8 +332,19 @@ private struct AppleSecureSessionIdentity {
             certificateChain = []
         }
 
-        trustedServerCertificates = [try makeCertificate(deviceCertificate, name: "DeviceCertificate")]
+        let deviceCertificateDER = try derFromPEMOrRaw(deviceCertificate)
+        _ = try makeCertificate(deviceCertificateDER, name: "DeviceCertificate")
+        trustedServerCertificateData = [deviceCertificateDER]
     }
+}
+
+/// Returns the DER bytes for the peer leaf certificate presented by Lockdown.
+private func peerLeafCertificateData(from trust: SecTrust) throws -> Data {
+    guard let certificateChain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+          let leafCertificate = certificateChain.first else {
+        throw RorkDeviceError.secureSession("Device did not present a server certificate.")
+    }
+    return SecCertificateCopyData(leafCertificate) as Data
 }
 
 /// Creates a `SecCertificate` from DER or PEM certificate data.
@@ -527,10 +527,4 @@ private func checkSSL(_ status: OSStatus, _ operation: String) throws {
     }
 }
 
-/// Converts non-success Security.framework status values to structured errors.
-private func checkSecurity(_ status: OSStatus, _ operation: String) throws {
-    guard status == errSecSuccess else {
-        throw RorkDeviceError.secureSession("\(operation) failed with status \(status).")
-    }
-}
 #endif
