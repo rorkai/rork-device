@@ -3,9 +3,8 @@ import Foundation
 /// Client for the Apple File Conduit service.
 ///
 /// AFC provides filesystem-style access to service-specific roots exposed by
-/// the device. In the 0.1.0 install flow, this client is used to create
-/// `/PublicStaging` and upload IPA archives before InstallationProxy installs
-/// them.
+/// the device. The same protocol backs public staging during app installs and
+/// HouseArrest container access for app documents and sandboxes.
 public final class AFCClient {
     private let connection: DeviceConnection
     private var packetNumber: UInt64 = 0
@@ -63,6 +62,31 @@ public final class AFCClient {
         try await sendPathOperation(.makeDirectory, path: path)
     }
 
+    /// Lists entries in a directory.
+    ///
+    /// The returned names exclude empty trailing fields from the AFC payload but
+    /// otherwise preserve the device response. Callers can decide whether to
+    /// filter `"."` and `".."` for their own UI.
+    ///
+    /// - Parameter path: Directory path in the AFC service root.
+    /// - Returns: Entry names reported by the service.
+    public func directoryContents(at path: String) async throws -> [String] {
+        let response = try await sendDataPathOperation(.readDirectory, path: path)
+        return decodeNullTerminatedStrings(response.payload)
+    }
+
+    /// Reads metadata for a path in the AFC service root.
+    ///
+    /// AFC reports metadata as string key/value pairs. `AFCFileInfo` keeps the
+    /// original values and exposes common fields such as type and size.
+    ///
+    /// - Parameter path: File or directory path in the AFC service root.
+    /// - Returns: Parsed file metadata.
+    public func fileInfo(at path: String) async throws -> AFCFileInfo {
+        let response = try await sendDataPathOperation(.getFileInfo, path: path)
+        return AFCFileInfo(values: decodeNullTerminatedKeyValuePairs(response.payload))
+    }
+
     /// Creates a directory if it does not already exist.
     private func makeDirectoryIfNeeded(_ path: String) async throws {
         do {
@@ -84,6 +108,56 @@ public final class AFCClient {
         } catch RorkDeviceError.afcStatus(let status) where ignoreMissing && status == AFCStatus.noSuchFile {
             return
         }
+    }
+
+    /// Moves or renames a path in the AFC service root.
+    ///
+    /// - Parameters:
+    ///   - sourcePath: Existing path.
+    ///   - destinationPath: New path.
+    public func movePath(from sourcePath: String, to destinationPath: String) async throws {
+        var payload = Data(sourcePath.utf8)
+        payload.append(0)
+        payload.append(contentsOf: destinationPath.utf8)
+        payload.append(0)
+        try await sendPacket(operation: .renamePath, headerPayload: payload)
+        _ = try await receiveStatus()
+    }
+
+    /// Reads a remote file into memory.
+    ///
+    /// Use `downloadFile(from:to:)` for large files when writing directly to
+    /// disk is preferable.
+    ///
+    /// - Parameter path: Remote file path in the AFC service root.
+    /// - Returns: File contents.
+    public func contentsOfFile(at path: String) async throws -> Data {
+        let handle = try await openFile(path, mode: .readOnly)
+        var contents = Data()
+        do {
+            while true {
+                let chunk = try await read(handle: handle, length: AFCStaging.chunkSize)
+                if chunk.isEmpty {
+                    break
+                }
+                contents.append(chunk)
+            }
+        } catch {
+            try? await closeFile(handle)
+            throw error
+        }
+        try await closeFile(handle)
+        return contents
+    }
+
+    /// Downloads a remote file to a local URL.
+    ///
+    /// - Parameters:
+    ///   - remotePath: File path in the AFC service root.
+    ///   - localURL: Destination file URL on the host.
+    public func downloadFile(from remotePath: String, to localURL: URL) async throws {
+        let data = try await contentsOfFile(at: remotePath)
+        try data.write(to: localURL, options: .atomic)
     }
 
     /// Uploads a local file to a remote AFC path.
@@ -145,6 +219,19 @@ public final class AFCClient {
         _ = try await receiveStatus()
     }
 
+    /// Sends a path command that should return an AFC data payload.
+    private func sendDataPathOperation(_ operation: AFCOperation, path: String) async throws -> AFCPacketResponse {
+        var payload = Data(path.utf8)
+        payload.append(0)
+        try await sendPacket(operation: operation, headerPayload: payload)
+        let response = try await receivePacket()
+        if response.operation == .data {
+            return response
+        }
+        try handleStatus(response)
+        throw RorkDeviceError.protocolViolation("AFC response did not contain data.")
+    }
+
     /// Opens a remote file and returns the AFC file handle.
     private func openFile(_ path: String, mode: AFCFileOpenMode) async throws -> UInt64 {
         var payload = Data()
@@ -166,6 +253,20 @@ public final class AFCClient {
         header.appendLittleEndian(handle)
         try await sendPacket(operation: .fileWrite, headerPayload: header, bodyPayload: Data(data))
         _ = try await receiveStatus()
+    }
+
+    /// Reads one chunk from an open AFC file handle.
+    private func read(handle: UInt64, length: Int) async throws -> Data {
+        var header = Data()
+        header.appendLittleEndian(handle)
+        header.appendLittleEndian(UInt64(length))
+        try await sendPacket(operation: .fileRead, headerPayload: header)
+        let response = try await receivePacket()
+        if response.operation == .data {
+            return response.payload
+        }
+        try handleStatus(response)
+        throw RorkDeviceError.protocolViolation("AFC file read did not return data.")
     }
 
     /// Closes an AFC file handle.
@@ -300,16 +401,22 @@ private enum AFCMagic {
 private enum AFCOperation: UInt64 {
     case invalid = 0
     case status = 1
+    case data = 2
+    case readDirectory = 3
     case makeDirectory = 9
     case removePath = 8
+    case getFileInfo = 10
     case fileOpen = 13
     case fileOpenResult = 14
+    case fileRead = 15
     case fileWrite = 16
     case fileClose = 20
+    case renamePath = 24
 }
 
 /// AFC file-open modes used by this package.
 private enum AFCFileOpenMode: UInt64 {
+    case readOnly = 1
     case writeOnly = 3
 }
 
@@ -317,4 +424,74 @@ private enum AFCFileOpenMode: UInt64 {
 private struct AFCPacketResponse {
     let operation: AFCOperation
     let payload: Data
+}
+
+/// File type reported by AFC metadata.
+public struct AFCItemType: RawRepresentable, Equatable, Hashable, Sendable, CustomStringConvertible {
+    /// Raw `st_ifmt` value reported by AFC.
+    public let rawValue: String
+
+    /// Creates a file type from a raw AFC `st_ifmt` value.
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    /// Regular file.
+    public static let regularFile = AFCItemType(rawValue: "S_IFREG")
+
+    /// Directory.
+    public static let directory = AFCItemType(rawValue: "S_IFDIR")
+
+    /// Symbolic link.
+    public static let symbolicLink = AFCItemType(rawValue: "S_IFLNK")
+
+    /// Printable description used by CLI output.
+    public var description: String {
+        rawValue
+    }
+}
+
+/// Metadata returned by AFC for one file-system item.
+public struct AFCFileInfo: Equatable, Sendable {
+    /// Raw metadata values keyed by AFC field name.
+    public let values: [String: String]
+
+    /// File type derived from `st_ifmt` when present.
+    public var type: AFCItemType? {
+        values["st_ifmt"].map(AFCItemType.init(rawValue:))
+    }
+
+    /// File size in bytes derived from `st_size` when present.
+    public var size: UInt64? {
+        values["st_size"].flatMap(UInt64.init)
+    }
+
+    /// Link target reported by AFC for symbolic links.
+    public var linkTarget: String? {
+        values["LinkTarget"]
+    }
+
+    /// Creates metadata from raw AFC key/value fields.
+    public init(values: [String: String]) {
+        self.values = values
+    }
+}
+
+/// Splits AFC NUL-terminated string payloads into fields.
+private func decodeNullTerminatedStrings(_ data: Data) -> [String] {
+    String(decoding: data, as: UTF8.self)
+        .split(separator: "\0", omittingEmptySubsequences: true)
+        .map(String.init)
+}
+
+/// Parses AFC metadata payloads encoded as alternating key/value fields.
+private func decodeNullTerminatedKeyValuePairs(_ data: Data) -> [String: String] {
+    let fields = decodeNullTerminatedStrings(data)
+    var values: [String: String] = [:]
+    var index = 0
+    while index + 1 < fields.count {
+        values[fields[index]] = fields[index + 1]
+        index += 2
+    }
+    return values
 }

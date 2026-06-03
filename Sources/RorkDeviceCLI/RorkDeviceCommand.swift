@@ -11,8 +11,10 @@ struct RorkDeviceCommand: AsyncParsableCommand {
         version: RorkDevice.version,
         subcommands: [
             List.self,
+            Watch.self,
             Info.self,
             Apps.self,
+            Files.self,
             Install.self,
             Uninstall.self,
             Profiles.self,
@@ -80,6 +82,29 @@ struct ConnectionOptions: ParsableArguments {
     }
 }
 
+/// Opens AFC or HouseArrest-backed file access from parsed CLI options.
+struct FileAccessOptions: ParsableArguments {
+    @OptionGroup var connection: ConnectionOptions
+
+    @Option(help: "Application bundle identifier for HouseArrest access.")
+    var bundleIdentifier: String?
+
+    @Flag(help: "Request the full app container instead of Documents.")
+    var container: Bool = false
+
+    /// Opens the requested AFC view.
+    func afcClient() async throws -> AFCClient {
+        let session = try await connection.session()
+        guard let bundleIdentifier else {
+            return try await session.openAFC()
+        }
+        return try await session.openApplicationContainer(
+            bundleIdentifier: bundleIdentifier,
+            scope: container ? .container : .documents
+        )
+    }
+}
+
 /// Lists devices currently visible through local usbmux.
 struct List: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -95,6 +120,26 @@ struct List: AsyncParsableCommand {
         }
         for device in devices {
             print(device.identifier)
+        }
+    }
+}
+
+/// Streams device attach and detach events from local usbmux.
+struct Watch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "watch",
+        abstract: "Watch usbmux device attach and detach events."
+    )
+
+    func run() async throws {
+        for try await event in DeviceClient().deviceEvents() {
+            switch event {
+            case .attached(let device):
+                print("attached\t\(device.identifier)")
+            case .detached(let identifier, let connection):
+                let value = identifier ?? connection.map(String.init(describing:)) ?? "-"
+                print("detached\t\(value)")
+            }
         }
     }
 }
@@ -116,6 +161,163 @@ struct Info: AsyncParsableCommand {
         print("Product: \(info.productType ?? "-")")
         print("Version: \(info.productVersion ?? "-")")
         print("Build: \(info.buildVersion ?? "-")")
+    }
+}
+
+/// Parent command for AFC and HouseArrest file operations.
+struct Files: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "files",
+        abstract: "Browse and copy files through AFC or HouseArrest.",
+        subcommands: [
+            FilesList.self,
+            FilesInfo.self,
+            FilesPull.self,
+            FilesPush.self,
+            FilesMakeDirectory.self,
+            FilesRemove.self,
+            FilesMove.self,
+        ]
+    )
+}
+
+/// Lists entries in a remote directory.
+struct FilesList: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List a remote directory."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Remote directory path.")
+    var path: String = "/"
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        for name in try await afc.directoryContents(at: path) {
+            print(name)
+        }
+    }
+}
+
+/// Prints metadata for a remote path.
+struct FilesInfo: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "info",
+        abstract: "Print remote path metadata."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Remote path.")
+    var path: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        let info = try await afc.fileInfo(at: path)
+        for key in info.values.keys.sorted() {
+            print("\(key): \(info.values[key] ?? "")")
+        }
+    }
+}
+
+/// Downloads a remote file.
+struct FilesPull: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "pull",
+        abstract: "Download a remote file."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Remote file path.")
+    var remotePath: String
+
+    @Argument(help: "Local output path.")
+    var localPath: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        try await afc.downloadFile(from: remotePath, to: URL(fileURLWithPath: localPath))
+    }
+}
+
+/// Uploads a local file.
+struct FilesPush: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "push",
+        abstract: "Upload a local file."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Local file path.")
+    var localPath: String
+
+    @Argument(help: "Remote output path.")
+    var remotePath: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        try await afc.uploadFile(at: URL(fileURLWithPath: localPath), to: remotePath)
+    }
+}
+
+/// Creates a remote directory.
+struct FilesMakeDirectory: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mkdir",
+        abstract: "Create a remote directory."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Remote directory path.")
+    var path: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        try await afc.makeDirectory(path)
+    }
+}
+
+/// Removes a remote file or directory.
+struct FilesRemove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rm",
+        abstract: "Remove a remote file or directory."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Remote path.")
+    var path: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        try await afc.removePath(path)
+    }
+}
+
+/// Moves or renames a remote path.
+struct FilesMove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mv",
+        abstract: "Move or rename a remote path."
+    )
+
+    @OptionGroup var access: FileAccessOptions
+
+    @Argument(help: "Existing remote path.")
+    var sourcePath: String
+
+    @Argument(help: "New remote path.")
+    var destinationPath: String
+
+    func run() async throws {
+        let afc = try await access.afcClient()
+        try await afc.movePath(from: sourcePath, to: destinationPath)
     }
 }
 

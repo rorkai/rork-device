@@ -35,21 +35,31 @@ Secure-session upgrades are represented by the public `SecureSessionUpgrader`
 protocol. The Apple backend is built in for 0.1.0, and additional platform
 backends can be added without changing the high-level install flow.
 
+## 0.2.0: Device Events And File Access
+
+The second release expands beyond the app-install vertical slice:
+
+- Stream device attach and detach events through usbmux.
+- Expose high-level file operations on AFC.
+- Vend application Documents and containers through HouseArrest.
+- Add CLI commands for watching devices and moving files.
+- Keep pairing creation as the next trust-flow milestone so certificate
+  generation, trust prompts, persistence, and physical-device validation can be
+  designed together.
+
 ## Future Milestones
 
 The next milestones should expand service coverage without weakening the public
 API boundaries:
 
-- Device event streams and richer usbmuxd discovery.
+- Pairing creation, validation, unpairing, and pairing-record storage.
+- Richer usbmuxd discovery and Wi-Fi sync discovery.
 - Syslog relay and crash report retrieval.
-- HouseArrest and AFC document/container access.
 - Developer image mounting, screenshots, and debugserver proxying.
 - Backup, restore, diagnostics, and recovery services.
 
 ## Compatibility Strategy
 
-The implementation is independent Swift code built around observed protocol
-behavior, stable public API boundaries, and tests. Compatibility should be
-validated with protocol fixtures, fake service peers, and opt-in physical-device
-checks. Do not copy external project source, comments, structure, or test
-fixtures into this codebase.
+Compatibility is validated with protocol fixtures, fake service peers, and
+opt-in physical-device checks while keeping the implementation Swift-first and
+independently structured.

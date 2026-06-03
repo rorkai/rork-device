@@ -8,6 +8,7 @@ final class FakeUSBMuxDaemon {
     private let serverFD: Int32
     private let secureLockdown: Bool
     private let secureServices: Set<String>
+    private let deviceEvents: [USBMuxDeviceEvent]
     private let lock = NSLock()
     private var stopped = false
     private var _connectedPorts: [UInt16] = []
@@ -16,6 +17,7 @@ final class FakeUSBMuxDaemon {
     private var _misagentMessageTypes: [String] = []
     private var _servicesStartedWithEscrow: [String] = []
     private var _heartbeatReplies: [String] = []
+    private var _houseArrestRequests: [[String: String]] = []
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -53,9 +55,20 @@ final class FakeUSBMuxDaemon {
         return _heartbeatReplies
     }
 
-    init(secureLockdown: Bool = false, secureServices: Set<String> = []) throws {
+    var houseArrestRequests: [[String: String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _houseArrestRequests
+    }
+
+    init(
+        secureLockdown: Bool = false,
+        secureServices: Set<String> = [],
+        deviceEvents: [USBMuxDeviceEvent] = []
+    ) throws {
         self.secureLockdown = secureLockdown
         self.secureServices = secureServices
+        self.deviceEvents = deviceEvents
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
@@ -156,6 +169,11 @@ final class FakeUSBMuxDaemon {
                     ],
                 ],
             ], tag: request.packet.tag, to: fd)
+        case "Listen":
+            sendUSBMuxResponse(["Number": 0], tag: request.packet.tag, to: fd)
+            for event in deviceEvents {
+                sendUSBMuxEvent(event, to: fd)
+            }
         case "Connect":
             let port = normalizedPort(from: request.dictionary["PortNumber"])
             recordConnectedPort(port)
@@ -171,6 +189,8 @@ final class FakeUSBMuxDaemon {
                 handleMISAgent(fd)
             case 4567:
                 handleHeartbeat(fd)
+            case 5678:
+                handleHouseArrest(fd)
             default:
                 return
             }
@@ -214,6 +234,8 @@ final class FakeUSBMuxDaemon {
                     port = 3456
                 case LockdownServiceName.heartbeat.rawValue:
                     port = 4567
+                case LockdownServiceName.houseArrest.rawValue:
+                    port = 5678
                 default:
                     sendPlistMessage(["Result": "Failure", "Error": "UnknownService"], to: fd)
                     continue
@@ -280,6 +302,17 @@ final class FakeUSBMuxDaemon {
         recordHeartbeatReply(command)
     }
 
+    private func handleHouseArrest(_ fd: Int32) {
+        guard let request = readPlistMessage(fd),
+              let command = request["Command"] as? String,
+              let identifier = request["Identifier"] as? String else {
+            return
+        }
+        recordHouseArrestRequest(command: command, identifier: identifier)
+        sendPlistMessage(["Status": "Complete"], to: fd)
+        handleAFC(fd)
+    }
+
     private func readUSBMuxRequest(_ fd: Int32) -> (packet: USBMuxPacket, dictionary: [String: Any])? {
         guard let header = readExact(fd, count: USBMuxPacket.headerLength),
               let length = try? Int(header.littleEndianInteger(at: 0, as: UInt32.self)),
@@ -307,6 +340,31 @@ final class FakeUSBMuxDaemon {
             return
         }
         sendAll(packet, to: fd)
+    }
+
+    private func sendUSBMuxEvent(_ event: USBMuxDeviceEvent, to fd: Int32) {
+        let dictionary: [String: Any]
+        switch event {
+        case .attached(let device):
+            dictionary = [
+                "MessageType": "Attached",
+                "DeviceID": device.deviceID,
+                "Properties": [
+                    "SerialNumber": device.serialNumber,
+                    "ConnectionType": device.properties["ConnectionType"] ?? "USB",
+                ],
+            ]
+        case .detached(let deviceID, let serialNumber):
+            var detached: [String: Any] = [
+                "MessageType": "Detached",
+                "DeviceID": deviceID,
+            ]
+            if let serialNumber {
+                detached["SerialNumber"] = serialNumber
+            }
+            dictionary = detached
+        }
+        sendUSBMuxResponse(dictionary, tag: 0, to: fd)
     }
 
     private func sendPlistMessage(_ dictionary: [String: Any], to fd: Int32) {
@@ -354,6 +412,15 @@ final class FakeUSBMuxDaemon {
     private func recordHeartbeatReply(_ command: String) {
         lock.lock()
         _heartbeatReplies.append(command)
+        lock.unlock()
+    }
+
+    private func recordHouseArrestRequest(command: String, identifier: String) {
+        lock.lock()
+        _houseArrestRequests.append([
+            "Command": command,
+            "Identifier": identifier,
+        ])
         lock.unlock()
     }
 }

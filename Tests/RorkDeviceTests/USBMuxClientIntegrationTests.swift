@@ -26,4 +26,34 @@ final class USBMuxClientIntegrationTests: XCTestCase {
 
         XCTAssertEqual(daemon.connectedPorts, [62078])
     }
+
+    func testDeviceEventsStreamsAttachAndDetachMessages() async throws {
+        let attached = USBMuxDevice(
+            deviceID: 7,
+            serialNumber: "attached-device",
+            properties: [
+                "ConnectionType": "USB",
+                "SerialNumber": "attached-device",
+            ]
+        )
+        let daemon = try FakeUSBMuxDaemon(deviceEvents: [
+            .attached(attached),
+            .detached(deviceID: 7, serialNumber: "attached-device"),
+        ])
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        var events: [USBMuxDeviceEvent] = []
+        for try await event in client.deviceEvents() {
+            events.append(event)
+            if events.count == 2 {
+                break
+            }
+        }
+
+        XCTAssertEqual(events, [
+            .attached(attached),
+            .detached(deviceID: 7, serialNumber: "attached-device"),
+        ])
+    }
 }

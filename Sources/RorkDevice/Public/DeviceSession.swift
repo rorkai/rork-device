@@ -248,6 +248,37 @@ public final class DeviceSession {
         let afc = AFCClient(connection: connection)
         return try await afc.uploadIPA(ipaData, bundleIdentifier: bundleIdentifier)
     }
+
+    /// Opens the default AFC service for device-level file operations.
+    ///
+    /// The root exposed by default AFC depends on device policy and pairing
+    /// state. For application-specific files, prefer
+    /// `openApplicationContainer(bundleIdentifier:scope:)`.
+    ///
+    /// - Returns: AFC client rooted at the default AFC service.
+    public func openAFC() async throws -> AFCClient {
+        let connection = try await startService(.afc)
+        return AFCClient(connection: connection)
+    }
+
+    /// Opens AFC access to an installed application's HouseArrest area.
+    ///
+    /// HouseArrest is useful for document browser tools, diagnostics, and
+    /// backup-style workflows that need files from one app rather than the
+    /// device-wide AFC root.
+    ///
+    /// - Parameters:
+    ///   - bundleIdentifier: Installed application bundle identifier.
+    ///   - scope: Application area requested from HouseArrest.
+    /// - Returns: AFC client rooted at the requested app area.
+    public func openApplicationContainer(
+        bundleIdentifier: String,
+        scope: HouseArrestScope = .documents
+    ) async throws -> AFCClient {
+        let connection = try await startService(.houseArrest)
+        let client = HouseArrestClient(connection: connection)
+        return try await client.openApplicationContainer(bundleIdentifier: bundleIdentifier, scope: scope)
+    }
 }
 
 private func describeDeviceSessionError(_ error: Error) -> String {
@@ -264,6 +295,9 @@ public enum LockdownServiceName: String, Sendable {
 
     /// Device heartbeat service, used to keep tunnel-backed sessions alive.
     case heartbeat = "com.apple.mobile.heartbeat"
+
+    /// HouseArrest, used to vend app documents and containers through AFC.
+    case houseArrest = "com.apple.mobile.house_arrest"
 
     /// InstallationProxy, used to browse, install, and uninstall applications.
     case installationProxy = "com.apple.mobile.installation_proxy"

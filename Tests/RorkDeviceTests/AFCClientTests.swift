@@ -14,6 +14,40 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[0].contains(Data("/PublicStaging".utf8)))
     }
 
+    func testDirectoryContentsReadsNullTerminatedNames() async throws {
+        let connection = FakeConnection(inbound: afcDataResponse(
+            packetNumber: 1,
+            payload: nullTerminated([".", "..", "Documents", "Library"])
+        ))
+        let client = AFCClient(connection: connection)
+
+        let names = try await client.directoryContents(at: "/")
+
+        XCTAssertEqual(names, [".", "..", "Documents", "Library"])
+        XCTAssertEqual(try afcOperation(connection.sent[0]), 3)
+        XCTAssertTrue(connection.sent[0].contains(Data("/".utf8)))
+    }
+
+    func testFileInfoParsesCommonMetadataFields() async throws {
+        let connection = FakeConnection(inbound: afcDataResponse(
+            packetNumber: 1,
+            payload: nullTerminated([
+                "st_ifmt", "S_IFREG",
+                "st_size", "42",
+                "LinkTarget", "/target",
+            ])
+        ))
+        let client = AFCClient(connection: connection)
+
+        let info = try await client.fileInfo(at: "/file.txt")
+
+        XCTAssertEqual(info.type, .regularFile)
+        XCTAssertEqual(info.size, 42)
+        XCTAssertEqual(info.linkTarget, "/target")
+        XCTAssertEqual(info.values["st_ifmt"], "S_IFREG")
+        XCTAssertEqual(try afcOperation(connection.sent[0]), 10)
+    }
+
     func testRemovePathCanIgnoreNonZeroStatus() async throws {
         let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 8))
         let client = AFCClient(connection: connection)
@@ -31,6 +65,16 @@ final class AFCClientTests: XCTestCase {
         await XCTAssertThrowsErrorAsync({ try await client.removePath("/busy", ignoreMissing: true) }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .afcStatus(7))
         }
+    }
+
+    func testMovePathSendsSourceAndDestination() async throws {
+        let connection = FakeConnection(inbound: afcStatusResponse(packetNumber: 1, status: 0))
+        let client = AFCClient(connection: connection)
+
+        try await client.movePath(from: "/old.txt", to: "/new.txt")
+
+        XCTAssertEqual(try afcOperation(connection.sent[0]), 24)
+        XCTAssertTrue(connection.sent[0].contains(nullTerminated(["/old.txt", "/new.txt"])))
     }
 
     func testMakeDirectoryThrowsNonZeroStatus() async throws {
@@ -116,6 +160,40 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
 
+    func testContentsOfFileReadsUntilEmptyChunkAndClosesFile() async throws {
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        inbound.append(afcDataResponse(packetNumber: 2, payload: Data("hello ".utf8)))
+        inbound.append(afcDataResponse(packetNumber: 3, payload: Data("world".utf8)))
+        inbound.append(afcDataResponse(packetNumber: 4, payload: Data()))
+        inbound.append(afcStatusResponse(packetNumber: 5, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        let data = try await client.contentsOfFile(at: "/Documents/file.txt")
+
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "hello world")
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 15, 15, 15, 20])
+    }
+
+    func testDownloadFileWritesRemoteContentsToLocalURL() async throws {
+        let outputURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        inbound.append(afcDataResponse(packetNumber: 2, payload: Data("file".utf8)))
+        inbound.append(afcDataResponse(packetNumber: 3, payload: Data()))
+        inbound.append(afcStatusResponse(packetNumber: 4, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        try await client.downloadFile(from: "/Documents/file.txt", to: outputURL)
+
+        XCTAssertEqual(try Data(contentsOf: outputURL), Data("file".utf8))
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 15, 15, 20])
+    }
+
     func testUploadIPAStagesInMemoryDataAtBundlePath() async throws {
         var inbound = Data()
         inbound.append(afcStatusResponse(packetNumber: 1, status: 0))
@@ -185,6 +263,10 @@ private func afcStatusResponse(packetNumber: UInt64, status: UInt64) -> Data {
     return afcResponse(packetNumber: packetNumber, operation: 1, payload: payload)
 }
 
+private func afcDataResponse(packetNumber: UInt64, payload: Data) -> Data {
+    afcResponse(packetNumber: packetNumber, operation: 2, payload: payload)
+}
+
 private func afcFileOpenResponse(packetNumber: UInt64, handle: UInt64) -> Data {
     var payload = Data()
     payload.appendLittleEndian(handle)
@@ -207,5 +289,14 @@ private func afcResponse(packetNumber: UInt64, operation: UInt64, payload: Data)
     data.appendLittleEndian(packetNumber)
     data.appendLittleEndian(operation)
     data.append(payload)
+    return data
+}
+
+private func nullTerminated(_ strings: [String]) -> Data {
+    var data = Data()
+    for string in strings {
+        data.append(contentsOf: string.utf8)
+        data.append(0)
+    }
     return data
 }

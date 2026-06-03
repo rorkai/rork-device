@@ -62,6 +62,31 @@ public final class DeviceClient {
         }
     }
 
+    /// Streams device attach and detach events from the local usbmux endpoint.
+    ///
+    /// Use this for watch-style tools that need to react to phones being
+    /// connected or removed. Consumers can cancel iteration to close the
+    /// underlying usbmux listen socket.
+    ///
+    /// - Returns: Async sequence of high-level device visibility events.
+    public func deviceEvents() -> AsyncThrowingStream<DeviceEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await event in usbmuxClient.deviceEvents() {
+                        continuation.yield(DeviceEvent(event))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     /// Opens an authenticated Lockdown session for a discovered device.
     ///
     /// The `pairingRecord` must belong to the same physical device. When
@@ -133,5 +158,20 @@ public final class DeviceClient {
             label: label,
             secureSessionUpgrader: secureSessionUpgrader
         )
+    }
+}
+
+private extension DeviceEvent {
+    init(_ event: USBMuxDeviceEvent) {
+        switch event {
+        case .attached(let device):
+            self = .attached(Device(
+                identifier: device.serialNumber,
+                connection: .usbmux(deviceID: device.deviceID),
+                properties: device.properties
+            ))
+        case .detached(let deviceID, let serialNumber):
+            self = .detached(identifier: serialNumber, connection: .usbmux(deviceID: deviceID))
+        }
     }
 }
