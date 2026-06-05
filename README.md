@@ -115,7 +115,7 @@ SUBCOMMANDS:
   list                    List devices reported by local usbmuxd.
   watch                   Watch usbmux device attach and detach events.
   info                    Print basic Lockdown device information.
-  files                   Browse and copy files through AFC or HouseArrest.
+  files                   Manage files through AFC or HouseArrest.
   apps                    Manage installed apps.
   install                 Install an IPA.
   uninstall               Uninstall an app by bundle identifier.

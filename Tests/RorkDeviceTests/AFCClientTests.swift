@@ -172,7 +172,8 @@ final class AFCClientTests: XCTestCase {
 
         let data = try await client.contentsOfFile(at: "/Documents/file.txt")
 
-        XCTAssertEqual(String(decoding: data, as: UTF8.self), "hello world")
+        let decoded = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertEqual(decoded, "hello world")
         XCTAssertEqual(try connection.sent.map(afcOperation), [13, 15, 15, 15, 20])
     }
 

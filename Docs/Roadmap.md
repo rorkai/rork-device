@@ -42,7 +42,7 @@ The second release expands beyond the app-install vertical slice:
 - Stream device attach and detach events through usbmux.
 - Expose high-level file operations on AFC.
 - Vend application Documents and containers through HouseArrest.
-- Add CLI commands for watching devices and moving files.
+- Add CLI commands for watching devices and managing files.
 - Keep pairing creation as the next trust-flow milestone so certificate
   generation, trust prompts, persistence, and physical-device validation can be
   designed together.

@@ -35,6 +35,38 @@ final class HouseArrestClientTests: XCTestCase {
         XCTAssertEqual(request["Command"] as? String, "VendContainer")
     }
 
+    func testOpenApplicationContainerRejectsSecondVendOnSameConnection() async throws {
+        let connection = FakeConnection(inbound: try PropertyListMessageFramer.encode(["Status": "Complete"]))
+        let client = HouseArrestClient(connection: connection)
+
+        _ = try await client.openApplicationContainer(bundleIdentifier: "com.example.app")
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.openApplicationContainer(bundleIdentifier: "com.example.other")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("HouseArrestClient cannot vend more than one container per connection.")
+            )
+        }
+        XCTAssertEqual(connection.sent.count, 1)
+    }
+
+    func testOpenApplicationContainerAllowsRetryAfterFailedVend() async throws {
+        var inbound = Data()
+        inbound.append(try PropertyListMessageFramer.encode(["Error": "Busy"]))
+        inbound.append(try PropertyListMessageFramer.encode(["Status": "Complete"]))
+        let connection = FakeConnection(inbound: inbound)
+        let client = HouseArrestClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.openApplicationContainer(bundleIdentifier: "com.example.app")
+        }) { _ in }
+        _ = try await client.openApplicationContainer(bundleIdentifier: "com.example.app")
+
+        XCTAssertEqual(connection.sent.count, 2)
+    }
+
     func testOpenApplicationContainerThrowsProtocolErrorResponse() async throws {
         let connection = FakeConnection(inbound: try PropertyListMessageFramer.encode([
             "Error": "ApplicationLookupFailed",

@@ -107,6 +107,14 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.path, "/Documents")
     }
 
+    func testFilesRejectsContainerWithoutBundleIdentifier() {
+        XCTAssertThrowsError(try FilesList.parse([
+            "--pairing-record", "pairing.plist",
+            "--container",
+            "/Documents",
+        ]))
+    }
+
     func testFilesPushParsesLocalAndRemotePaths() throws {
         let command = try FilesPush.parse([
             "--pairing-record", "pairing.plist",

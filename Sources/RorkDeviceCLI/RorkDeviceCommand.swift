@@ -92,6 +92,13 @@ struct FileAccessOptions: ParsableArguments {
     @Flag(help: "Request the full app container instead of Documents.")
     var container: Bool = false
 
+    /// Rejects ambiguous file-root selection.
+    func validate() throws {
+        if container && bundleIdentifier == nil {
+            throw ValidationError("--container requires --bundle-identifier.")
+        }
+    }
+
     /// Opens the requested AFC view.
     func afcClient() async throws -> AFCClient {
         let session = try await connection.session()
@@ -168,7 +175,7 @@ struct Info: AsyncParsableCommand {
 struct Files: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "files",
-        abstract: "Browse and copy files through AFC or HouseArrest.",
+        abstract: "Manage files through AFC or HouseArrest.",
         subcommands: [
             FilesList.self,
             FilesInfo.self,

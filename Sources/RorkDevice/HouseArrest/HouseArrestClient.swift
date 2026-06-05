@@ -8,6 +8,8 @@ import Foundation
 /// an AFC stream when the device replies with `Complete`.
 public final class HouseArrestClient {
     private let connection: DeviceConnection
+    private let stateLock = NSLock()
+    private var state = HouseArrestClientState.idle
 
     /// Creates a HouseArrest client over an existing service connection.
     ///
@@ -27,15 +29,56 @@ public final class HouseArrestClient {
         bundleIdentifier: String,
         scope: HouseArrestScope = .documents
     ) async throws -> AFCClient {
+        try beginVend()
         let request = [
             "Command": scope.command,
             "Identifier": bundleIdentifier,
         ]
-        try await PropertyListMessageFramer.send(request, to: connection)
-        let response = try await PropertyListMessageFramer.receive(from: connection)
-        try validateHouseArrestResponse(response)
-        return AFCClient(connection: connection)
+        do {
+            try await PropertyListMessageFramer.send(request, to: connection)
+            let response = try await PropertyListMessageFramer.receive(from: connection)
+            try validateHouseArrestResponse(response)
+            finishVend()
+            return AFCClient(connection: connection)
+        } catch {
+            failVend()
+            throw error
+        }
     }
+
+    /// Reserves the plist connection for a single vend request.
+    private func beginVend() throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        guard state == .idle else {
+            throw RorkDeviceError.protocolViolation(
+                "HouseArrestClient cannot vend more than one container per connection."
+            )
+        }
+        state = .vending
+    }
+
+    /// Marks the connection as permanently handed over to AFC.
+    private func finishVend() {
+        stateLock.lock()
+        state = .vended
+        stateLock.unlock()
+    }
+
+    /// Restores the client after a failed plist-stage request.
+    private func failVend() {
+        stateLock.lock()
+        state = .idle
+        stateLock.unlock()
+    }
+}
+
+/// Internal HouseArrest connection state.
+private enum HouseArrestClientState {
+    case idle
+    case vending
+    case vended
 }
 
 /// HouseArrest application area to vend through AFC.

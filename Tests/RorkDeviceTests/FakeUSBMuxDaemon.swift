@@ -9,6 +9,7 @@ final class FakeUSBMuxDaemon {
     private let secureLockdown: Bool
     private let secureServices: Set<String>
     private let deviceEvents: [USBMuxDeviceEvent]
+    private let listenResponse: [String: Any]
     private let lock = NSLock()
     private var stopped = false
     private var _connectedPorts: [UInt16] = []
@@ -64,11 +65,13 @@ final class FakeUSBMuxDaemon {
     init(
         secureLockdown: Bool = false,
         secureServices: Set<String> = [],
-        deviceEvents: [USBMuxDeviceEvent] = []
+        deviceEvents: [USBMuxDeviceEvent] = [],
+        listenResponse: [String: Any] = ["Number": 0]
     ) throws {
         self.secureLockdown = secureLockdown
         self.secureServices = secureServices
         self.deviceEvents = deviceEvents
+        self.listenResponse = listenResponse
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
@@ -170,7 +173,7 @@ final class FakeUSBMuxDaemon {
                 ],
             ], tag: request.packet.tag, to: fd)
         case "Listen":
-            sendUSBMuxResponse(["Number": 0], tag: request.packet.tag, to: fd)
+            sendUSBMuxResponse(listenResponse, tag: request.packet.tag, to: fd)
             for event in deviceEvents {
                 sendUSBMuxEvent(event, to: fd)
             }

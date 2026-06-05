@@ -122,7 +122,7 @@ public final class USBMuxClient {
                     continuation.finish()
                 } catch {
                     connection.close()
-                    if Task.isCancelled {
+                    if Task.isCancelled || isUSBMuxListenClosed(error) {
                         continuation.finish()
                     } else {
                         continuation.finish(throwing: error)
@@ -303,7 +303,18 @@ private func parseDeviceEvent(_ message: [String: Any]) -> USBMuxDeviceEvent? {
 
 /// Validates the numeric result field used by usbmux control responses.
 private func validateUSBMuxResult(_ response: [String: Any], operation: String) throws {
-    if let number = response["Number"] as? NSNumber, number.intValue != 0 {
+    guard let number = response["Number"] as? NSNumber else {
+        throw RorkDeviceError.protocolViolation("usbmux \(operation) response was missing Number.")
+    }
+    if number.intValue != 0 {
         throw RorkDeviceError.transport("usbmux \(operation) failed with code \(number.intValue).")
     }
+}
+
+/// Returns true when a usbmux listen stream ended because the peer closed it.
+private func isUSBMuxListenClosed(_ error: Error) -> Bool {
+    guard case RorkDeviceError.transport("Connection closed.") = error else {
+        return false
+    }
+    return true
 }

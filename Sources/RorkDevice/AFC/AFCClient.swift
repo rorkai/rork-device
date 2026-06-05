@@ -156,8 +156,25 @@ public final class AFCClient {
     ///   - remotePath: File path in the AFC service root.
     ///   - localURL: Destination file URL on the host.
     public func downloadFile(from remotePath: String, to localURL: URL) async throws {
-        let data = try await contentsOfFile(at: remotePath)
-        try data.write(to: localURL, options: .atomic)
+        let handle = try await openFile(remotePath, mode: .readOnly)
+        do {
+            FileManager.default.createFile(atPath: localURL.path, contents: nil)
+            let file = try FileHandle(forWritingTo: localURL)
+            defer { try? file.close() }
+            try file.truncate(atOffset: 0)
+
+            while true {
+                let chunk = try await read(handle: handle, length: AFCStaging.chunkSize)
+                if chunk.isEmpty {
+                    break
+                }
+                try file.write(contentsOf: chunk)
+            }
+        } catch {
+            try? await closeFile(handle)
+            throw error
+        }
+        try await closeFile(handle)
     }
 
     /// Uploads a local file to a remote AFC path.

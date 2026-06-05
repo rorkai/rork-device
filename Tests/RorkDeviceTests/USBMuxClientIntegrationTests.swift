@@ -56,4 +56,40 @@ final class USBMuxClientIntegrationTests: XCTestCase {
             .detached(deviceID: 7, serialNumber: "attached-device"),
         ])
     }
+
+    func testDeviceEventsCompletesWhenListenSocketCloses() async throws {
+        let attached = USBMuxDevice(
+            deviceID: 9,
+            serialNumber: "short-lived-device",
+            properties: [
+                "ConnectionType": "USB",
+                "SerialNumber": "short-lived-device",
+            ]
+        )
+        let daemon = try FakeUSBMuxDaemon(deviceEvents: [.attached(attached)])
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        var iterator = client.deviceEvents().makeAsyncIterator()
+        let first = try await iterator.next()
+        let second = try await iterator.next()
+
+        XCTAssertEqual(first, .attached(attached))
+        XCTAssertNil(second)
+    }
+
+    func testDeviceEventsRejectsListenResponseWithoutNumber() async throws {
+        let daemon = try FakeUSBMuxDaemon(listenResponse: [:])
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        var iterator = client.deviceEvents().makeAsyncIterator()
+
+        await XCTAssertThrowsErrorAsync({ _ = try await iterator.next() }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("usbmux Listen response was missing Number.")
+            )
+        }
+    }
 }
