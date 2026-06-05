@@ -10,8 +10,14 @@ final class FakeUSBMuxDaemon {
     private let secureServices: Set<String>
     private let deviceEvents: [USBMuxDeviceEvent]
     private let listenResponse: [String: Any]
+    /// Keeps a Listen socket readable until the client closes it.
+    private let keepListenOpenAfterEvents: Bool
     private let lock = NSLock()
     private var stopped = false
+    /// Whether a Listen request reached the fake daemon.
+    private var _listenConnectionOpen = false
+    /// Whether the client closed the long-lived Listen socket.
+    private var _listenPeerClosed = false
     private var _connectedPorts: [UInt16] = []
     private var _afcOperations: [UInt64] = []
     private var _installedPackagePaths: [String] = []
@@ -24,6 +30,20 @@ final class FakeUSBMuxDaemon {
         lock.lock()
         defer { lock.unlock() }
         return _connectedPorts
+    }
+
+    /// True after the fake daemon receives a Listen request.
+    var listenConnectionOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _listenConnectionOpen
+    }
+
+    /// True after the client closes a held-open Listen connection.
+    var listenPeerClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _listenPeerClosed
     }
 
     var afcOperations: [UInt64] {
@@ -66,12 +86,14 @@ final class FakeUSBMuxDaemon {
         secureLockdown: Bool = false,
         secureServices: Set<String> = [],
         deviceEvents: [USBMuxDeviceEvent] = [],
-        listenResponse: [String: Any] = ["Number": 0]
+        listenResponse: [String: Any] = ["Number": 0],
+        keepListenOpenAfterEvents: Bool = false
     ) throws {
         self.secureLockdown = secureLockdown
         self.secureServices = secureServices
         self.deviceEvents = deviceEvents
         self.listenResponse = listenResponse
+        self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
@@ -151,6 +173,30 @@ final class FakeUSBMuxDaemon {
         return stopped
     }
 
+    private func recordListenConnectionOpen() {
+        lock.lock()
+        _listenConnectionOpen = true
+        lock.unlock()
+    }
+
+    private func recordListenPeerClosed() {
+        lock.lock()
+        _listenPeerClosed = true
+        lock.unlock()
+    }
+
+    /// Blocks until the peer closes a held-open Listen connection.
+    private func waitForListenPeerClose(_ fd: Int32) {
+        var byte = UInt8(0)
+        while true {
+            let readCount = recv(fd, &byte, 1, 0)
+            if readCount <= 0 {
+                recordListenPeerClosed()
+                return
+            }
+        }
+    }
+
     private func handleClient(_ fd: Int32) {
         var noSIGPIPE: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
@@ -173,9 +219,13 @@ final class FakeUSBMuxDaemon {
                 ],
             ], tag: request.packet.tag, to: fd)
         case "Listen":
+            recordListenConnectionOpen()
             sendUSBMuxResponse(listenResponse, tag: request.packet.tag, to: fd)
             for event in deviceEvents {
                 sendUSBMuxEvent(event, to: fd)
+            }
+            if keepListenOpenAfterEvents {
+                waitForListenPeerClose(fd)
             }
         case "Connect":
             let port = normalizedPort(from: request.dictionary["PortNumber"])

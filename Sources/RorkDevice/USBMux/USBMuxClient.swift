@@ -47,8 +47,13 @@ public enum USBMuxDeviceEvent: Equatable, Sendable {
 /// host-side sockets to device service ports. `USBMuxClient` implements the
 /// plist message variant used by modern Apple platforms and supports both the
 /// standard Unix-domain socket and TCP endpoints for tests or forwarding.
+///
+/// A client can be reused for independent usbmux control requests. Each request
+/// opens its own daemon connection, while `deviceEvents()` owns one long-lived
+/// listen connection for the lifetime of the returned async sequence.
 public final class USBMuxClient {
     private let endpoint: USBMuxEndpoint
+    private let tagLock = NSLock()
     private var nextTag: UInt32 = 1
 
     /// Creates a usbmux client for a local or forwarded endpoint.
@@ -89,17 +94,30 @@ public final class USBMuxClient {
     ///
     /// The stream sends a `Listen` request to the configured usbmux endpoint and
     /// yields attach/detach events until the daemon closes the connection, the
-    /// consumer cancels iteration, or a protocol error occurs.
+    /// consumer cancels iteration, or a protocol error occurs. Cancelling the
+    /// returned sequence closes the underlying listen socket so a suspended read
+    /// does not keep the daemon connection alive.
     ///
     /// - Returns: Async sequence of device visibility events.
     public func deviceEvents() -> AsyncThrowingStream<USBMuxDeviceEvent, Error> {
         AsyncThrowingStream { continuation in
+            let listenState = USBMuxListenConnectionState()
             let task = Task {
                 let connection: DeviceConnection
                 do {
                     connection = try await openConnection()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if Task.isCancelled {
+                        continuation.finish()
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
+                    return
+                }
+
+                guard listenState.install(connection) else {
+                    connection.close()
+                    continuation.finish()
                     return
                 }
 
@@ -119,9 +137,11 @@ public final class USBMuxClient {
                         }
                     }
                     connection.close()
+                    listenState.clear(connection)
                     continuation.finish()
                 } catch {
                     connection.close()
+                    listenState.clear(connection)
                     if Task.isCancelled || isUSBMuxListenClosed(error) {
                         continuation.finish()
                     } else {
@@ -131,6 +151,7 @@ public final class USBMuxClient {
             }
 
             continuation.onTermination = { _ in
+                listenState.cancel()
                 task.cancel()
             }
         }
@@ -216,12 +237,60 @@ public final class USBMuxClient {
 
     /// Returns the next non-zero request tag.
     private func nextRequestTag() -> UInt32 {
+        tagLock.lock()
+        defer { tagLock.unlock() }
+
         let tag = nextTag
         nextTag &+= 1
         if nextTag == 0 {
             nextTag = 1
         }
         return tag
+    }
+}
+
+/// Tracks the live usbmux listen connection so cancellation can close it.
+///
+/// `AsyncThrowingStream` cancellation only cancels the task consuming the stream;
+/// it does not automatically unblock a transport read. This helper lets the
+/// termination handler close the socket even while the task is suspended in
+/// `receive(exactly:)`.
+private final class USBMuxListenConnectionState {
+    private let lock = NSLock()
+    private var connection: DeviceConnection?
+    private var cancelled = false
+
+    /// Stores the listen connection unless the stream was already cancelled.
+    func install(_ connection: DeviceConnection) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !cancelled else {
+            return false
+        }
+        self.connection = connection
+        return true
+    }
+
+    /// Clears the stored connection after normal task completion.
+    func clear(_ connection: DeviceConnection) {
+        lock.lock()
+        if self.connection === connection {
+            self.connection = nil
+        }
+        lock.unlock()
+    }
+
+    /// Marks the stream cancelled and closes any installed listen connection.
+    func cancel() {
+        let connectionToClose: DeviceConnection?
+        lock.lock()
+        cancelled = true
+        connectionToClose = connection
+        connection = nil
+        lock.unlock()
+
+        connectionToClose?.close()
     }
 }
 

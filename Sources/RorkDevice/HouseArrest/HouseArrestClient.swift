@@ -6,6 +6,9 @@ import Foundation
 /// documents area. The service starts as a plist protocol: callers ask the
 /// device to vend a specific application area, then the same connection becomes
 /// an AFC stream when the device replies with `Complete`.
+///
+/// A successful vend consumes the connection. Create a new `HouseArrestClient`
+/// over a fresh service connection for each container you want to open.
 public final class HouseArrestClient {
     private let connection: DeviceConnection
     private let stateLock = NSLock()

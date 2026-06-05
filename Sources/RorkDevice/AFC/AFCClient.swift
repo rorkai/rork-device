@@ -5,6 +5,10 @@ import Foundation
 /// AFC provides filesystem-style access to service-specific roots exposed by
 /// the device. The same protocol backs public staging during app installs and
 /// HouseArrest container access for app documents and sandboxes.
+///
+/// An `AFCClient` owns one ordered AFC stream. Use one operation at a time per
+/// client instance; create another service connection when a workflow needs
+/// independent concurrent file operations.
 public final class AFCClient {
     private let connection: DeviceConnection
     private var packetNumber: UInt64 = 0

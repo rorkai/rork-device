@@ -78,6 +78,26 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         XCTAssertNil(second)
     }
 
+    func testDeviceEventsClosesListenSocketWhenCancelled() async throws {
+        let daemon = try FakeUSBMuxDaemon(keepListenOpenAfterEvents: true)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+        let task = Task {
+            do {
+                for try await _ in client.deviceEvents() {}
+            } catch {}
+        }
+
+        try await waitUntil("usbmux Listen connection opens") {
+            daemon.listenConnectionOpen
+        }
+        task.cancel()
+        try await waitUntil("usbmux Listen connection closes") {
+            daemon.listenPeerClosed
+        }
+        await task.value
+    }
+
     func testDeviceEventsRejectsListenResponseWithoutNumber() async throws {
         let daemon = try FakeUSBMuxDaemon(listenResponse: [:])
         defer { daemon.stop() }
@@ -91,5 +111,20 @@ final class USBMuxClientIntegrationTests: XCTestCase {
                 .protocolViolation("usbmux Listen response was missing Number.")
             )
         }
+    }
+}
+
+private func waitUntil(
+    _ description: String,
+    timeout: TimeInterval = 2,
+    condition: () -> Bool
+) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline {
+            XCTFail("Timed out waiting for \(description).")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
     }
 }

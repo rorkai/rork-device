@@ -48,19 +48,35 @@ public final class DeviceSession {
         DeviceInfo(values: try await lockdown.deviceValues())
     }
 
-    /// Starts a supported Lockdown service and opens its service connection.
+    /// Starts a typed Lockdown service and opens its service connection.
+    ///
+    /// This overload covers services modeled by rork-device. Use
+    /// `startService(named:escrowBag:)` for lower-level workflows that need a
+    /// service identifier not yet represented by `LockdownServiceName`.
+    ///
+    /// - Parameters:
+    ///   - serviceName: Modeled Lockdown service identifier.
+    ///   - escrowBag: Optional escrow material from a pairing record. Leave
+    ///     this as `nil` unless the specific service flow requires escrow.
+    /// - Returns: A connected byte stream ready for the service-specific
+    ///   protocol client.
+    public func startService(_ serviceName: LockdownServiceName, escrowBag: Data? = nil) async throws -> DeviceConnection {
+        try await startService(named: serviceName.rawValue, escrowBag: escrowBag)
+    }
+
+    /// Starts a Lockdown service by raw service identifier.
     ///
     /// If Lockdown marks the service as secure, this method upgrades the
     /// returned service connection using the same `SecureSessionUpgrader` that
     /// was configured for the session.
     ///
     /// - Parameters:
-    ///   - serviceName: Lockdown service identifier.
+    ///   - serviceName: Raw Lockdown service identifier.
     ///   - escrowBag: Optional escrow material from a pairing record. Leave
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
-    public func startService(_ serviceName: LockdownServiceName, escrowBag: Data? = nil) async throws -> DeviceConnection {
+    public func startService(named serviceName: String, escrowBag: Data? = nil) async throws -> DeviceConnection {
         let service = try await lockdown.startService(serviceName, escrowBag: escrowBag)
         var connection: DeviceConnection
         do {
