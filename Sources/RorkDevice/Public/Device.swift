@@ -30,6 +30,20 @@ public struct Device: Equatable, Sendable {
     }
 }
 
+/// Device visibility event from a discovery transport.
+///
+/// `DeviceClient.deviceEvents()` yields these values when the local usbmux
+/// endpoint reports that a physical device appeared or disappeared. Detached
+/// events may only contain the transient transport id because some daemons do
+/// not repeat the full device properties when a connection goes away.
+public enum DeviceEvent: Equatable, Sendable {
+    /// A device became available for Lockdown connections.
+    case attached(Device)
+
+    /// A device disappeared from the discovery transport.
+    case detached(identifier: String?, connection: DeviceConnectionKind?)
+}
+
 /// Route used to open service connections for a device.
 public enum DeviceConnectionKind: Equatable, Sendable {
     /// Device is reachable through the local usbmux endpoint.

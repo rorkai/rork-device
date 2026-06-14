@@ -19,12 +19,14 @@ tests and clear public API boundaries.
   Lockdown sessions, service startup, and app-management APIs directly to Swift
   applications.
 - **Command-line tools** - the `rorkdevice` CLI supports device inspection,
-  app listing, provisioning-profile management, IPA installation, and app
-  removal.
+  file access, app listing, provisioning-profile management, IPA installation,
+  and app removal.
 - **Pairing records** - parse existing Lockdown pairing-record plists and
   preserve unknown fields for diagnostics.
 - **SwiftNIO transports** - connect through local `usbmuxd` or a known direct
   Lockdown endpoint with non-blocking TCP and Unix-domain socket streams.
+- **Device events** - watch usbmux attach and detach events through an
+  `AsyncThrowingStream`.
 - **Secure sessions** - upgrade Lockdown and secure service connections through
   a public `SecureSessionUpgrader` protocol, with an Apple Security.framework
   backend enabled by default on Apple platforms.
@@ -32,6 +34,10 @@ tests and clear public API boundaries.
   typed `DeviceInfo` summary.
 - **AFC staging** - create `/PublicStaging` and upload IPA files or in-memory
   IPA bytes before installation.
+- **AFC file access** - list directories, read file metadata, download files,
+  upload files, remove paths, and move paths.
+- **HouseArrest containers** - vend app Documents or full app containers as AFC
+  clients when the device permits access.
 - **Provisioning profiles** - install, remove, and copy CMS-wrapped
   `.mobileprovision` payloads through MISAgent.
 - **Application management** - browse installed apps, install staged IPA
@@ -80,7 +86,10 @@ workflow they drive:
 
 ```bash
 rorkdevice list
+rorkdevice watch
 rorkdevice info --pairing-record pairing.plist
+rorkdevice files list / --pairing-record pairing.plist
+rorkdevice files list / --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist
 rorkdevice profiles install Profile.mobileprovision --pairing-record pairing.plist
 rorkdevice profiles copy --output-directory Profiles --pairing-record pairing.plist
@@ -104,7 +113,9 @@ OPTIONS:
 
 SUBCOMMANDS:
   list                    List devices reported by local usbmuxd.
+  watch                   Watch usbmux device attach and detach events.
   info                    Print basic Lockdown device information.
+  files                   Manage files through AFC or HouseArrest.
   apps                    Manage installed apps.
   install                 Install an IPA.
   uninstall               Uninstall an app by bundle identifier.

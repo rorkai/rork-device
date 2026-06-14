@@ -3,6 +3,39 @@ import XCTest
 @testable import RorkDevice
 
 final class DeviceClientIntegrationTests: XCTestCase {
+    func testStreamsDeviceEventsThroughFakeUSBMuxDaemon() async throws {
+        let daemon = try FakeUSBMuxDaemon(deviceEvents: [
+            .attached(USBMuxDevice(
+                deviceID: 3,
+                serialNumber: "fake-device-3",
+                properties: ["ConnectionType": "USB"]
+            )),
+            .detached(deviceID: 3, serialNumber: "fake-device-3"),
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        var events: [DeviceEvent] = []
+        for try await event in client.deviceEvents() {
+            events.append(event)
+            if events.count == 2 {
+                break
+            }
+        }
+
+        XCTAssertEqual(events, [
+            .attached(Device(
+                identifier: "fake-device-3",
+                connection: .usbmux(deviceID: 3),
+                properties: [
+                    "ConnectionType": "USB",
+                    "SerialNumber": "fake-device-3",
+                ]
+            )),
+            .detached(identifier: "fake-device-3", connection: .usbmux(deviceID: 3)),
+        ])
+    }
+
     func testInstallsApplicationThroughFakeUSBMuxDeviceStack() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
@@ -86,6 +119,20 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.servicesStartedWithEscrow, [LockdownServiceName.afc.rawValue])
     }
 
+    func testStartServiceCanUseRawServiceName() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(to: device, using: try testPairingRecord())
+        let connection = try await session.startService(named: LockdownServiceName.afc.rawValue)
+        connection.close()
+
+        XCTAssertTrue(daemon.connectedPorts.contains(1234))
+    }
+
     func testStartsHeartbeatThroughFakeUSBMuxDeviceStack() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
@@ -99,6 +146,28 @@ final class DeviceClientIntegrationTests: XCTestCase {
 
         XCTAssertTrue(daemon.connectedPorts.contains(4567))
         XCTAssertEqual(daemon.heartbeatReplies, ["Polo"])
+    }
+
+    func testOpensHouseArrestContainerThroughFakeUSBMuxDeviceStack() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port))
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(to: device, using: try testPairingRecord())
+        let afc = try await session.openApplicationContainer(
+            bundleIdentifier: "com.example.app",
+            scope: .container
+        )
+        try await afc.makeDirectory("/Documents/Test")
+
+        XCTAssertTrue(daemon.connectedPorts.contains(5678))
+        XCTAssertEqual(daemon.houseArrestRequests, [[
+            "Command": "VendContainer",
+            "Identifier": "com.example.app",
+        ]])
+        XCTAssertContains(daemon.afcOperations, [9])
     }
 
     func testManagesProvisioningProfilesThroughFakeUSBMuxDeviceStack() async throws {

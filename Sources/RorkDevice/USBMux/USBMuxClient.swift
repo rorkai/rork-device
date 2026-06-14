@@ -13,6 +13,32 @@ public struct USBMuxDevice: Equatable, Sendable {
 
     /// Raw usbmux properties converted to strings where possible.
     public let properties: [String: String]
+
+    /// Creates a usbmux device record from decoded daemon fields.
+    ///
+    /// - Parameters:
+    ///   - deviceID: Numeric id assigned by usbmux for the current attachment.
+    ///   - serialNumber: Device serial number, normally the UDID.
+    ///   - properties: Raw usbmux properties converted to strings where possible.
+    public init(deviceID: UInt32, serialNumber: String, properties: [String: String]) {
+        self.deviceID = deviceID
+        self.serialNumber = serialNumber
+        self.properties = properties
+    }
+}
+
+/// Device attachment event emitted by usbmux.
+///
+/// The local usbmux daemon can keep a listen connection open and stream device
+/// attach/detach events. This enum preserves the typed device record for
+/// attach events while still carrying the numeric id for detach events, where
+/// daemons commonly send less metadata.
+public enum USBMuxDeviceEvent: Equatable, Sendable {
+    /// A device became visible to usbmux.
+    case attached(USBMuxDevice)
+
+    /// A device disappeared from usbmux.
+    case detached(deviceID: UInt32, serialNumber: String?)
 }
 
 /// Client for the usbmux plist protocol.
@@ -21,8 +47,13 @@ public struct USBMuxDevice: Equatable, Sendable {
 /// host-side sockets to device service ports. `USBMuxClient` implements the
 /// plist message variant used by modern Apple platforms and supports both the
 /// standard Unix-domain socket and TCP endpoints for tests or forwarding.
+///
+/// A client can be reused for independent usbmux control requests. Each request
+/// opens its own daemon connection, while `deviceEvents()` owns one long-lived
+/// listen connection for the lifetime of the returned async sequence.
 public final class USBMuxClient {
     private let endpoint: USBMuxEndpoint
+    private let tagLock = NSLock()
     private var nextTag: UInt32 = 1
 
     /// Creates a usbmux client for a local or forwarded endpoint.
@@ -55,12 +86,74 @@ public final class USBMuxClient {
         ])
         let rawDevices = response["DeviceList"] as? [[String: Any]] ?? []
         return rawDevices.compactMap { item in
-            guard let deviceID = (item["DeviceID"] as? NSNumber)?.uint32Value ?? item["DeviceID"] as? UInt32,
-                  let properties = item["Properties"] as? [String: Any],
-                  let serial = properties["SerialNumber"] as? String else {
-                return nil
+            parseDeviceRecord(item)
+        }
+    }
+
+    /// Opens a long-lived stream of usbmux device events.
+    ///
+    /// The stream sends a `Listen` request to the configured usbmux endpoint and
+    /// yields attach/detach events until the daemon closes the connection, the
+    /// consumer cancels iteration, or a protocol error occurs. Cancelling the
+    /// returned sequence closes the underlying listen socket so a suspended read
+    /// does not keep the daemon connection alive.
+    ///
+    /// - Returns: Async sequence of device visibility events.
+    public func deviceEvents() -> AsyncThrowingStream<USBMuxDeviceEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let listenState = USBMuxListenConnectionState()
+            let task = Task {
+                let connection: DeviceConnection
+                do {
+                    connection = try await openConnection()
+                } catch {
+                    if Task.isCancelled {
+                        continuation.finish()
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
+                    return
+                }
+
+                guard listenState.install(connection) else {
+                    connection.close()
+                    continuation.finish()
+                    return
+                }
+
+                do {
+                    let response = try await request([
+                        "MessageType": "Listen",
+                        "ClientVersionString": "rork-device",
+                        "ProgName": "rorkdevice",
+                        "kLibUSBMuxVersion": 3,
+                    ], connection: connection)
+                    try validateUSBMuxResult(response, operation: "Listen")
+
+                    while !Task.isCancelled {
+                        let message = try await readResponseDictionary(from: connection)
+                        if let event = parseDeviceEvent(message) {
+                            continuation.yield(event)
+                        }
+                    }
+                    connection.close()
+                    listenState.clear(connection)
+                    continuation.finish()
+                } catch {
+                    connection.close()
+                    listenState.clear(connection)
+                    if Task.isCancelled || isUSBMuxListenClosed(error) {
+                        continuation.finish()
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
+                }
             }
-            return USBMuxDevice(deviceID: deviceID, serialNumber: serial, properties: stringify(properties))
+
+            continuation.onTermination = { _ in
+                listenState.cancel()
+                task.cancel()
+            }
         }
     }
 
@@ -89,9 +182,7 @@ public final class USBMuxClient {
                 "PortNumber": UInt32(port.bigEndian),
             ], connection: connection)
 
-            if let number = response["Number"] as? NSNumber, number.intValue != 0 {
-                throw RorkDeviceError.transport("usbmux Connect failed with code \(number.intValue).")
-            }
+            try validateUSBMuxResult(response, operation: "Connect")
             return connection
         } catch {
             connection.close()
@@ -121,7 +212,11 @@ public final class USBMuxClient {
         let tag = nextRequestTag()
         let payload = try PropertyListCodec.encode(dictionary, format: .xml)
         try await connection.send(try USBMuxPacket(tag: tag, payload: payload).encoded())
+        return try await readResponseDictionary(from: connection)
+    }
 
+    /// Reads one usbmux plist response dictionary.
+    private func readResponseDictionary(from connection: DeviceConnection) async throws -> [String: Any] {
         let header = try await connection.receive(exactly: USBMuxPacket.headerLength)
         let length = try Int(header.littleEndianInteger(at: 0, as: UInt32.self))
         guard length >= USBMuxPacket.headerLength else {
@@ -142,12 +237,60 @@ public final class USBMuxClient {
 
     /// Returns the next non-zero request tag.
     private func nextRequestTag() -> UInt32 {
+        tagLock.lock()
+        defer { tagLock.unlock() }
+
         let tag = nextTag
         nextTag &+= 1
         if nextTag == 0 {
             nextTag = 1
         }
         return tag
+    }
+}
+
+/// Tracks the live usbmux listen connection so cancellation can close it.
+///
+/// `AsyncThrowingStream` cancellation only cancels the task consuming the stream;
+/// it does not automatically unblock a transport read. This helper lets the
+/// termination handler close the socket even while the task is suspended in
+/// `receive(exactly:)`.
+private final class USBMuxListenConnectionState {
+    private let lock = NSLock()
+    private var connection: DeviceConnection?
+    private var cancelled = false
+
+    /// Stores the listen connection unless the stream was already cancelled.
+    func install(_ connection: DeviceConnection) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !cancelled else {
+            return false
+        }
+        self.connection = connection
+        return true
+    }
+
+    /// Clears the stored connection after normal task completion.
+    func clear(_ connection: DeviceConnection) {
+        lock.lock()
+        if self.connection === connection {
+            self.connection = nil
+        }
+        lock.unlock()
+    }
+
+    /// Marks the stream cancelled and closes any installed listen connection.
+    func cancel() {
+        let connectionToClose: DeviceConnection?
+        lock.lock()
+        cancelled = true
+        connectionToClose = connection
+        connection = nil
+        lock.unlock()
+
+        connectionToClose?.close()
     }
 }
 
@@ -197,4 +340,50 @@ private func stringify(_ dictionary: [String: Any]) -> [String: String] {
             return nil
         }
     }
+}
+
+/// Parses a usbmux device record from a plist dictionary.
+private func parseDeviceRecord(_ item: [String: Any]) -> USBMuxDevice? {
+    guard let deviceID = (item["DeviceID"] as? NSNumber)?.uint32Value ?? item["DeviceID"] as? UInt32,
+          let properties = item["Properties"] as? [String: Any],
+          let serial = properties["SerialNumber"] as? String else {
+        return nil
+    }
+    return USBMuxDevice(deviceID: deviceID, serialNumber: serial, properties: stringify(properties))
+}
+
+/// Parses a streamed usbmux attach or detach event.
+private func parseDeviceEvent(_ message: [String: Any]) -> USBMuxDeviceEvent? {
+    switch message["MessageType"] as? String {
+    case "Attached":
+        guard let device = parseDeviceRecord(message) else {
+            return nil
+        }
+        return .attached(device)
+    case "Detached":
+        guard let deviceID = (message["DeviceID"] as? NSNumber)?.uint32Value ?? message["DeviceID"] as? UInt32 else {
+            return nil
+        }
+        return .detached(deviceID: deviceID, serialNumber: message["SerialNumber"] as? String)
+    default:
+        return nil
+    }
+}
+
+/// Validates the numeric result field used by usbmux control responses.
+private func validateUSBMuxResult(_ response: [String: Any], operation: String) throws {
+    guard let number = response["Number"] as? NSNumber else {
+        throw RorkDeviceError.protocolViolation("usbmux \(operation) response was missing Number.")
+    }
+    if number.intValue != 0 {
+        throw RorkDeviceError.transport("usbmux \(operation) failed with code \(number.intValue).")
+    }
+}
+
+/// Returns true when a usbmux listen stream ended because the peer closed it.
+private func isUSBMuxListenClosed(_ error: Error) -> Bool {
+    guard case RorkDeviceError.transport("Connection closed.") = error else {
+        return false
+    }
+    return true
 }

@@ -7,6 +7,8 @@ final class RorkDeviceCLITests: XCTestCase {
 
         XCTAssertTrue(help.contains("rorkdevice"))
         XCTAssertTrue(help.contains("list"))
+        XCTAssertTrue(help.contains("watch"))
+        XCTAssertTrue(help.contains("files"))
         XCTAssertTrue(help.contains("install"))
         XCTAssertTrue(help.contains("profiles"))
     }
@@ -89,5 +91,39 @@ final class RorkDeviceCLITests: XCTestCase {
 
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
         XCTAssertEqual(command.identifier, "profile-uuid")
+    }
+
+    func testFilesListParsesHouseArrestOptions() throws {
+        let command = try FilesList.parse([
+            "--pairing-record", "pairing.plist",
+            "--bundle-identifier", "com.example.app",
+            "--container",
+            "/Documents",
+        ])
+
+        XCTAssertEqual(command.access.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.access.bundleIdentifier, "com.example.app")
+        XCTAssertTrue(command.access.container)
+        XCTAssertEqual(command.path, "/Documents")
+    }
+
+    func testFilesRejectsContainerWithoutBundleIdentifier() {
+        XCTAssertThrowsError(try FilesList.parse([
+            "--pairing-record", "pairing.plist",
+            "--container",
+            "/Documents",
+        ]))
+    }
+
+    func testFilesPushParsesLocalAndRemotePaths() throws {
+        let command = try FilesPush.parse([
+            "--pairing-record", "pairing.plist",
+            "local.txt",
+            "/Documents/local.txt",
+        ])
+
+        XCTAssertEqual(command.access.connection.pairingRecord, "pairing.plist")
+        XCTAssertEqual(command.localPath, "local.txt")
+        XCTAssertEqual(command.remotePath, "/Documents/local.txt")
     }
 }
