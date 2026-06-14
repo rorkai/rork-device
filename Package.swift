@@ -40,7 +40,10 @@ let package = Package(
         ),
         .testTarget(
             name: "RorkDeviceTests",
-            dependencies: ["RorkDevice"],
+            dependencies: [
+                "RorkDevice",
+                .product(name: "NIOCore", package: "swift-nio"),
+            ],
             resources: [
                 .process("Fixtures"),
             ]
