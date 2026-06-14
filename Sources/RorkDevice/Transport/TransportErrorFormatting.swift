@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 
 /// Formats low-level transport errors for package-level diagnostics.
 ///
@@ -9,6 +10,8 @@ func describeTransportError(_ error: Error) -> String {
     if let deviceError = error as? RorkDeviceError {
         return deviceError.description
     }
+    if let ioError = error as? NIOCore.IOError {
+        return "SwiftNIO IOError errno=\(ioError.errnoCode): \(ioError.description)"
+    }
     return error.localizedDescription
 }
-
