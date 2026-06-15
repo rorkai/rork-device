@@ -4,7 +4,7 @@ import Foundation
 final class FakeConnection: DeviceConnection {
     private(set) var sent: [Data] = []
     private var inbound: Data
-    private var isClosed = false
+    private(set) var isClosed = false
 
     init(inbound: Data = Data()) {
         self.inbound = inbound

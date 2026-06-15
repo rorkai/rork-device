@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
@@ -29,11 +30,48 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         port: UInt16,
         timeout: Duration? = nil
     ) async throws -> TCPDeviceConnection {
-        var bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
-        if let timeout {
-            bootstrap = bootstrap.connectTimeout(timeout.nioTimeAmount)
+        try await connect(
+            to: host,
+            port: port,
+            bootstrap: makeBootstrap(timeout: timeout)
+        )
+    }
+
+    /// Opens a TCP connection whose IPv4 route is bound to one interface index.
+    static func connect(
+        to host: String,
+        port: UInt16,
+        boundToIPv4Interface interfaceIndex: UInt32,
+        timeout: Duration? = nil
+    ) async throws -> TCPDeviceConnection {
+        guard let socketInterfaceIndex = CInt(exactly: interfaceIndex) else {
+            throw RorkDeviceError.invalidInput(
+                "IPv4 interface index \(interfaceIndex) exceeds the socket option range."
+            )
         }
 
+        let bootstrap = makeBootstrap(timeout: timeout).channelOption(
+            .socket(IPPROTO_IP, IP_BOUND_IF),
+            value: socketInterfaceIndex
+        )
+        return try await connect(to: host, port: port, bootstrap: bootstrap)
+    }
+
+    /// Creates the shared NIO bootstrap and applies an optional connect timeout.
+    private static func makeBootstrap(timeout: Duration?) -> ClientBootstrap {
+        let bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
+        guard let timeout else {
+            return bootstrap
+        }
+        return bootstrap.connectTimeout(timeout.nioTimeAmount)
+    }
+
+    /// Opens and wraps an NIO channel using a prepared bootstrap.
+    private static func connect(
+        to host: String,
+        port: UInt16,
+        bootstrap: ClientBootstrap
+    ) async throws -> TCPDeviceConnection {
         do {
             let asyncChannel = try await bootstrap.connect(host: host, port: Int(port)) { channel in
                 channel.eventLoop.makeCompletedFuture {
