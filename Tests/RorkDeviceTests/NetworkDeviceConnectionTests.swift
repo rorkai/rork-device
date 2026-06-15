@@ -57,33 +57,11 @@ final class NetworkDeviceConnectionTests: XCTestCase {
         let interface = try await loopbackInterface()
 
         let parameters = NetworkDeviceConnection.makeTLSParameters(
-            preSharedKey: Data([0x01, 0x02, 0x03]),
+            using: Data([0x01, 0x02, 0x03]),
             through: interface
         )
 
         XCTAssertEqual(parameters.requiredInterface, interface)
-    }
-
-    func testRemotePairingCipherSuiteDescriptionUsesIANANameAndCode() {
-        XCTAssertEqual(
-            remotePairingTLSCipherSuiteDescription(rawValue: 0x00AF),
-            "TLS_PSK_WITH_AES_256_CBC_SHA384 (0x00AF)"
-        )
-        XCTAssertEqual(
-            remotePairingTLSCipherSuiteDescription(rawValue: 0x00A8),
-            "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)"
-        )
-        XCTAssertEqual(
-            remotePairingTLSCipherSuiteDescription(rawValue: 0x008C),
-            "TLS_PSK_WITH_AES_128_CBC_SHA (0x008C)"
-        )
-    }
-
-    func testRemotePairingCipherSuiteDescriptionPreservesUnknownCode() {
-        XCTAssertEqual(
-            remotePairingTLSCipherSuiteDescription(rawValue: 0x1234),
-            "unknown TLS cipher suite (0x1234)"
-        )
     }
 
     private func loopbackInterface() async throws -> NWInterface {

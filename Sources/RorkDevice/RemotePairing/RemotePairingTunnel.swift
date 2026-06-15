@@ -13,7 +13,7 @@ import Network
 /// Keep the instance alive while using RSD-backed `DeviceSession` connections.
 /// Closing the tunnel invalidates every service socket routed through it.
 public final class RemotePairingTunnel {
-    /// Whether the default backend can establish a remote-pairing tunnel.
+    /// Whether the default transport can establish a remote-pairing tunnel.
     ///
     /// The connection API remains available in builds without a compatible
     /// transport implementation. When this value is `false`,
@@ -21,7 +21,7 @@ public final class RemotePairingTunnel {
     /// with `RorkDeviceError.secureSessionUnsupported` before opening a network
     /// connection.
     public static var isSupported: Bool {
-        RemotePairingTransportBackendProvider.platformDefault.isAvailable
+        RemotePairingTransportProvider.isSupported
     }
 
     /// Network parameters negotiated for this tunnel instance.
@@ -31,34 +31,37 @@ public final class RemotePairingTunnel {
     /// Service Discovery endpoint through that interface.
     public let configuration: RemotePairingTunnelConfiguration
 
-    /// IANA name and wire value of the TLS cipher suite protecting packet traffic.
+    /// TLS cipher suite protecting packet traffic.
     ///
     /// The value is diagnostic metadata captured after the PSK handshake. It is
     /// `nil` when the active transport cannot report TLS state. Callers should
-    /// not use it to make routing or compatibility decisions.
-    public let tlsCipherSuite: String?
+    /// not use the value to make routing or compatibility decisions.
+    public let tlsCipherSuite: RemotePairingTLSCipherSuite?
 
     /// Pair-verification stream retained until the tunnel closes.
     private let controlConnection: DeviceConnection
 
-    /// TLS-protected stream that carries complete IPv6 packets.
-    private let tunnelConnection: DeviceConnection
+    /// Full-duplex stream that carries complete IPv6 packets.
+    private let packetConnection: RemotePairingPacketConnection
 
-    /// Actor that serializes writes so concurrent packets cannot interleave.
+    /// Writer that prevents concurrent packet sends from overlapping.
     private let writer: RemotePairingPacketWriter
 
     /// Creates an owned tunnel from established control and packet streams.
     init(
         configuration: RemotePairingTunnelConfiguration,
-        tlsCipherSuite: String? = nil,
+        tlsCipherSuite: RemotePairingTLSCipherSuite? = nil,
         controlConnection: DeviceConnection,
         tunnelConnection: DeviceConnection
     ) {
+        let packetConnection = RemotePairingPacketConnection(
+            connection: tunnelConnection
+        )
         self.configuration = configuration
         self.tlsCipherSuite = tlsCipherSuite
         self.controlConnection = controlConnection
-        self.tunnelConnection = tunnelConnection
-        writer = RemotePairingPacketWriter(connection: tunnelConnection)
+        self.packetConnection = packetConnection
+        writer = RemotePairingPacketWriter(connection: packetConnection)
     }
 
     /// Authenticates a host identity and negotiates an IPv6 packet tunnel.
@@ -84,13 +87,14 @@ public final class RemotePairingTunnel {
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8)
     ) async throws -> RemotePairingTunnel {
-        try await connect(
+        let transport = try RemotePairingTransportProvider.makeDefault()
+        return try await connect(
             to: host,
             port: port,
             using: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit,
             timeout: timeout,
-            backend: RemotePairingTransportBackendProvider.platformDefault
+            transport: transport
         )
     }
 
@@ -125,21 +129,22 @@ public final class RemotePairingTunnel {
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8)
     ) async throws -> RemotePairingTunnel {
-        try await connect(
+        let transport = try RemotePairingTransportProvider.makeDefault()
+        return try await connect(
             to: host,
             port: port,
             using: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit,
             timeout: timeout,
-            backend: RemotePairingTransportBackendProvider.platformDefault,
-            route: .networkInterface(interface)
+            transport: transport,
+            over: .networkInterface(interface)
         )
     }
     #endif
 
-    /// Connects using a specific transport implementation and routing policy.
+    /// Connects using a specific transport and routing policy.
     ///
-    /// Platform selection remains internal so adding a portable backend does not
+    /// Platform selection remains internal so adding a portable transport does not
     /// expand or alter the public tunnel API.
     static func connect(
         to host: String,
@@ -147,17 +152,13 @@ public final class RemotePairingTunnel {
         using identity: RemotePairingIdentity,
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8),
-        backend: any RemotePairingTransportBackend,
-        route: RemotePairingTransportRoute = .systemDefault
+        transport: any RemotePairingTransport,
+        over route: RemotePairingTransportRoute = .systemDefault
     ) async throws -> RemotePairingTunnel {
-        guard backend.isAvailable else {
-            throw RorkDeviceError.secureSessionUnsupported
-        }
-
-        let controlConnection = try await backend.openControlConnection(
+        let controlConnection = try await transport.openControlConnection(
             to: host,
             port: port,
-            route: route,
+            over: route,
             timeout: timeout
         )
 
@@ -166,11 +167,11 @@ public final class RemotePairingTunnel {
             identity: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
         ) { listener in
-            try await backend.openTLSConnection(
+            try await transport.openTLSConnection(
                 to: host,
                 port: listener.port,
-                preSharedKey: listener.preSharedKey,
-                route: route,
+                using: listener.preSharedKey,
+                over: route,
                 timeout: timeout
             )
         }
@@ -234,7 +235,7 @@ public final class RemotePairingTunnel {
     /// - Throws: A protocol error for malformed framing or a transport error when
     ///   the tunnel closes before the packet is complete.
     public func receivePacket() async throws -> Data {
-        try await CDTunnelProtocol.receivePacket(from: tunnelConnection)
+        try await packetConnection.receivePacket()
     }
 
     /// Closes both the remote-pairing control stream and packet stream.
@@ -242,23 +243,97 @@ public final class RemotePairingTunnel {
     /// Calling this method more than once is safe. Any active or future packet
     /// operation fails through its underlying connection.
     public func close() {
-        tunnelConnection.close()
+        packetConnection.close()
         controlConnection.close()
     }
 }
 
-/// Serializes writes to the packet stream while preserving async cancellation.
-private actor RemotePairingPacketWriter {
-    /// Packet stream shared by all callers of `send(_:)`.
+/// Shares the packet stream across the tunnel's read and write tasks.
+///
+/// Remote-pairing transports provide a full-duplex connection that permits one
+/// reader and ordered writes concurrently. The unchecked conformance is scoped
+/// to this private wrapper so the general `DeviceConnection` protocol does not
+/// claim concurrency guarantees that every service transport may not provide.
+private final class RemotePairingPacketConnection: @unchecked Sendable {
+    /// Full-duplex connection supplied by the selected remote-pairing transport.
     private let connection: DeviceConnection
 
-    /// Creates a writer that does not take ownership beyond the tunnel lifetime.
+    /// Creates a concurrency-scoped wrapper around the protected packet stream.
     init(connection: DeviceConnection) {
         self.connection = connection
     }
 
-    /// Writes one already validated IPv6 packet without changing its framing.
+    /// Sends one complete IPv6 packet.
     func send(_ packet: Data) async throws {
         try await connection.send(packet)
+    }
+
+    /// Receives one complete IPv6 packet.
+    func receivePacket() async throws -> Data {
+        try await CDTunnelProtocol.receivePacket(from: connection)
+    }
+
+    /// Closes the protected packet stream.
+    func close() {
+        connection.close()
+    }
+}
+
+/// Serializes packet writes across actor reentrancy.
+///
+/// Actor isolation alone is insufficient because `send(_:)` suspends while the
+/// transport writes and another actor task may run during that suspension. The
+/// explicit write slot keeps later callers queued until the active write has
+/// completed or failed.
+private actor RemotePairingPacketWriter {
+    /// Packet stream shared by all callers of `send(_:)`.
+    private let connection: RemotePairingPacketConnection
+
+    /// Whether one caller currently owns the write slot.
+    private var isWriteInProgress = false
+
+    /// Callers waiting to acquire the write slot, in arrival order.
+    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Creates a writer that does not take ownership beyond the tunnel lifetime.
+    init(connection: RemotePairingPacketConnection) {
+        self.connection = connection
+    }
+
+    /// Writes one validated IPv6 packet after earlier writes finish.
+    ///
+    /// Cancellation is checked both before queueing and after the write slot is
+    /// acquired. A task cancelled while waiting leaves the queue when its turn
+    /// arrives, then releases the slot without invoking the transport.
+    func send(_ packet: Data) async throws {
+        try Task.checkCancellation()
+        await acquireWriteSlot()
+        defer {
+            releaseWriteSlot()
+        }
+        try Task.checkCancellation()
+        try await connection.send(packet)
+    }
+
+    /// Suspends until this caller exclusively owns the transport write slot.
+    private func acquireWriteSlot() async {
+        guard isWriteInProgress else {
+            isWriteInProgress = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            writeWaiters.append(continuation)
+        }
+    }
+
+    /// Transfers the write slot to the next waiter or marks it as available.
+    private func releaseWriteSlot() {
+        guard !writeWaiters.isEmpty else {
+            isWriteInProgress = false
+            return
+        }
+
+        writeWaiters.removeFirst().resume()
     }
 }

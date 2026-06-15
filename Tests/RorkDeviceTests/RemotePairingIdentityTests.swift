@@ -55,4 +55,32 @@ final class RemotePairingIdentityTests: XCTestCase {
             )
         }
     }
+
+    func testStringRepresentationsDoNotExposePrivateKeyMaterial() {
+        let identity = RemotePairingIdentity(
+            identifier: "host-identifier",
+            privateKeyData: Data(repeating: 0x5a, count: 32)
+        )
+
+        XCTAssertEqual(
+            String(describing: identity),
+            "RemotePairingIdentity(identifier: \"host-identifier\")"
+        )
+        XCTAssertEqual(
+            String(reflecting: identity),
+            "RemotePairingIdentity(identifier: \"host-identifier\")"
+        )
+    }
+
+    func testReflectionDoesNotExposePrivateKeyMaterial() {
+        let identity = RemotePairingIdentity(
+            identifier: "host-identifier",
+            privateKeyData: Data(repeating: 0x5a, count: 32)
+        )
+
+        XCTAssertEqual(
+            Mirror(reflecting: identity).children.compactMap(\.label),
+            ["identifier"]
+        )
+    }
 }

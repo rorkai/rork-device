@@ -10,7 +10,13 @@ import Foundation
 ///
 /// Treat instances as sensitive credentials. In particular, do not log or
 /// serialize the instance outside storage already intended for pairing material.
-public struct RemotePairingIdentity: Equatable, Sendable {
+public struct RemotePairingIdentity:
+    Equatable,
+    Sendable,
+    CustomStringConvertible,
+    CustomDebugStringConvertible,
+    CustomReflectable
+{
     /// Stable host identifier presented and signed during pair verification.
     ///
     /// The target device must already recognize this identifier and the
@@ -20,6 +26,25 @@ public struct RemotePairingIdentity: Equatable, Sendable {
 
     /// Raw 32-byte Ed25519 private key used internally for pair verification.
     let privateKeyData: Data
+
+    /// A diagnostic representation that identifies the credential without its key.
+    public var description: String {
+        "RemotePairingIdentity(identifier: \(String(reflecting: identifier)))"
+    }
+
+    /// A debug representation that preserves the credential's redaction boundary.
+    public var debugDescription: String {
+        description
+    }
+
+    /// A mirror that exposes the identifier while omitting private key material.
+    public var customMirror: Mirror {
+        Mirror(
+            self,
+            children: ["identifier": identifier],
+            displayStyle: .struct
+        )
+    }
 
     /// Creates an identity from already validated fields.
     ///

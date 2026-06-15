@@ -6,7 +6,7 @@ import Network
 /// Routing policy applied to both sockets used by one remote-pairing session.
 ///
 /// Pair verification and packet transport must follow the same route. Keeping
-/// that choice in one value prevents a backend from binding only one of the two
+/// that choice in one value prevents a transport from binding only one of the two
 /// connections to a caller-selected interface.
 enum RemotePairingTransportRoute {
     /// Lets the operating system choose the route for both connections.
@@ -18,7 +18,7 @@ enum RemotePairingTransportRoute {
     #endif
 }
 
-/// Protected packet stream and diagnostics returned by a transport backend.
+/// Protected packet stream and diagnostics returned by a transport.
 ///
 /// The connection is ready for the CDTunnel handshake. Security metadata is
 /// optional because not every portable TLS implementation exposes the selected
@@ -27,24 +27,21 @@ struct RemotePairingTLSConnection {
     /// TLS-protected byte stream connected to the device listener.
     let connection: DeviceConnection
 
-    /// IANA cipher description captured after the handshake, when available.
-    let cipherSuite: String?
+    /// Cipher suite captured after the handshake, when available.
+    let cipherSuite: RemotePairingTLSCipherSuite?
 }
 
 /// Opens the control and protected streams required by remote pairing.
 ///
-/// The backend owns platform-specific socket routing and TLS-PSK setup.
-/// Pair-verification messages and CDTunnel negotiation remain in the shared
-/// protocol layer so future platform implementations only replace transport.
-protocol RemotePairingTransportBackend {
-    /// Whether this backend can establish remote-pairing sessions in this build.
-    var isAvailable: Bool { get }
-
+/// The transport owns platform-specific socket routing and TLS-PSK setup.
+/// Pair-verification messages and CDTunnel negotiation remain in shared code so
+/// adding another platform requires only a transport implementation.
+protocol RemotePairingTransport {
     /// Opens the plain TCP stream used for pair verification.
     func openControlConnection(
         to host: String,
         port: UInt16,
-        route: RemotePairingTransportRoute,
+        over route: RemotePairingTransportRoute,
         timeout: Duration
     ) async throws -> DeviceConnection
 
@@ -52,8 +49,8 @@ protocol RemotePairingTransportBackend {
     func openTLSConnection(
         to host: String,
         port: UInt16,
-        preSharedKey: Data,
-        route: RemotePairingTransportRoute,
+        using preSharedKey: Data,
+        over route: RemotePairingTransportRoute,
         timeout: Duration
     ) async throws -> RemotePairingTLSConnection
 }
@@ -61,14 +58,27 @@ protocol RemotePairingTransportBackend {
 /// Selects the transport implementation bundled for the current platform.
 ///
 /// Keeping selection separate from `RemotePairingTunnel` lets additional
-/// backends become the platform default without changing the public tunnel API.
-enum RemotePairingTransportBackendProvider {
-    /// Backend used by public remote-pairing connection methods.
-    static var platformDefault: any RemotePairingTransportBackend {
+/// transports become the platform default without changing the public API.
+enum RemotePairingTransportProvider {
+    /// Whether this build contains a transport capable of remote pairing.
+    static var isSupported: Bool {
         #if canImport(Network) && canImport(Security)
-        AppleRemotePairingTransportBackend()
+        true
         #else
-        UnsupportedRemotePairingTransportBackend()
+        false
+        #endif
+    }
+
+    /// Creates the transport used by public remote-pairing connection methods.
+    ///
+    /// - Returns: The platform's bundled remote-pairing transport.
+    /// - Throws: `RorkDeviceError.secureSessionUnsupported` when the current
+    ///   build does not contain a compatible TLS-PSK implementation.
+    static func makeDefault() throws -> any RemotePairingTransport {
+        #if canImport(Network) && canImport(Security)
+        AppleRemotePairingTransport()
+        #else
+        throw RorkDeviceError.secureSessionUnsupported
         #endif
     }
 }
@@ -79,15 +89,12 @@ enum RemotePairingTransportBackendProvider {
 /// SwiftNIO opens the pair-verification stream. Network.framework opens the
 /// TLS-PSK packet stream because it provides the required PSK cipher policy and
 /// can bind that connection to an `NWInterface`.
-struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
-    /// Apple networking frameworks provide every capability used by the backend.
-    let isAvailable = true
-
+struct AppleRemotePairingTransport: RemotePairingTransport {
     /// Opens pair verification through the system route or requested interface.
     func openControlConnection(
         to host: String,
         port: UInt16,
-        route: RemotePairingTransportRoute,
+        over route: RemotePairingTransportRoute,
         timeout: Duration
     ) async throws -> DeviceConnection {
         switch route {
@@ -97,8 +104,8 @@ struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
                 port: port,
                 timeout: timeout
             )
-        case let .networkInterface(interface):
-            let interfaceIndex = try validatedInterfaceIndex(interface)
+        case .networkInterface(let interface):
+            let interfaceIndex = try Self.socketInterfaceIndex(for: interface)
             return try await TCPDeviceConnection.connect(
                 to: host,
                 port: port,
@@ -112,8 +119,8 @@ struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
     func openTLSConnection(
         to host: String,
         port: UInt16,
-        preSharedKey: Data,
-        route: RemotePairingTransportRoute,
+        using preSharedKey: Data,
+        over route: RemotePairingTransportRoute,
         timeout: Duration
     ) async throws -> RemotePairingTLSConnection {
         let connection: NetworkDeviceConnection
@@ -122,14 +129,14 @@ struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
             connection = try await NetworkDeviceConnection.connect(
                 to: host,
                 port: port,
-                preSharedKey: preSharedKey,
+                using: preSharedKey,
                 timeout: timeout
             )
-        case let .networkInterface(interface):
+        case .networkInterface(let interface):
             connection = try await NetworkDeviceConnection.connect(
                 to: host,
                 port: port,
-                preSharedKey: preSharedKey,
+                using: preSharedKey,
                 through: interface,
                 timeout: timeout
             )
@@ -141,7 +148,9 @@ struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
     }
 
     /// Converts an `NWInterface` index into the socket-option representation.
-    private func validatedInterfaceIndex(_ interface: NWInterface) throws -> UInt32 {
+    private static func socketInterfaceIndex(
+        for interface: NWInterface
+    ) throws -> UInt32 {
         guard interface.index > 0,
               let interfaceIndex = UInt32(exactly: interface.index) else {
             throw RorkDeviceError.invalidInput(
@@ -152,34 +161,3 @@ struct AppleRemotePairingTransportBackend: RemotePairingTransportBackend {
     }
 }
 #endif
-
-/// Placeholder backend used when no remote-pairing TLS implementation is built.
-///
-/// Public connection methods reject this backend before opening either socket.
-/// Its methods still fail explicitly so direct internal use cannot fall back to
-/// an unprotected or partially initialized connection.
-struct UnsupportedRemotePairingTransportBackend: RemotePairingTransportBackend {
-    /// No compatible TLS-PSK transport is present in this build.
-    let isAvailable = false
-
-    /// Rejects pair-verification setup on unsupported platforms.
-    func openControlConnection(
-        to _: String,
-        port _: UInt16,
-        route _: RemotePairingTransportRoute,
-        timeout _: Duration
-    ) async throws -> DeviceConnection {
-        throw RorkDeviceError.secureSessionUnsupported
-    }
-
-    /// Rejects protected packet-stream setup on unsupported platforms.
-    func openTLSConnection(
-        to _: String,
-        port _: UInt16,
-        preSharedKey _: Data,
-        route _: RemotePairingTransportRoute,
-        timeout _: Duration
-    ) async throws -> RemotePairingTLSConnection {
-        throw RorkDeviceError.secureSessionUnsupported
-    }
-}

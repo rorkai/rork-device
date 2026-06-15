@@ -11,26 +11,22 @@ final class RemotePairingTunnelTests: XCTestCase {
         #endif
     }
 
-    func testRejectsUnavailableBackendBeforeOpeningControlConnection() async throws {
-        let backend = RecordingRemotePairingTransportBackend(isAvailable: false)
-
+    #if !canImport(Network) || !canImport(Security)
+    func testConnectRejectsUnsupportedPlatformBeforeOpeningNetworkConnection() async throws {
         await XCTAssertThrowsErrorAsync({
             _ = try await RemotePairingTunnel.connect(
                 to: "192.0.2.1",
-                using: remotePairingIdentity(),
-                backend: backend
+                using: remotePairingIdentity()
             )
         }) { error in
             XCTAssertEqual(error as? RorkDeviceError, .secureSessionUnsupported)
         }
-
-        XCTAssertEqual(backend.controlConnectionAttempts, 0)
     }
+    #endif
 
-    func testUsesBackendToOpenControlConnection() async throws {
+    func testUsesTransportToOpenControlConnection() async throws {
         let expectedError = RorkDeviceError.transport("Stop after recording the request.")
-        let backend = RecordingRemotePairingTransportBackend(
-            isAvailable: true,
+        let transport = RecordingRemotePairingTransport(
             controlConnectionError: expectedError
         )
 
@@ -40,31 +36,29 @@ final class RemotePairingTunnelTests: XCTestCase {
                 port: 49_153,
                 using: remotePairingIdentity(),
                 timeout: .seconds(3),
-                backend: backend
+                transport: transport
             )
         }) { error in
             XCTAssertEqual(error as? RorkDeviceError, expectedError)
         }
 
-        XCTAssertEqual(backend.controlConnectionAttempts, 1)
-        XCTAssertEqual(backend.lastControlHost, "192.0.2.1")
-        XCTAssertEqual(backend.lastControlPort, 49_153)
-        XCTAssertEqual(backend.lastControlTimeout, .seconds(3))
-        XCTAssertTrue(backend.usedSystemDefaultRoute)
+        XCTAssertEqual(transport.controlConnectionAttempts, 1)
+        XCTAssertEqual(transport.lastControlHost, "192.0.2.1")
+        XCTAssertEqual(transport.lastControlPort, 49_153)
+        XCTAssertEqual(transport.lastControlTimeout, .seconds(3))
+        XCTAssertTrue(transport.usedSystemDefaultRoute)
     }
 
     func testExposesTheTLSCipherSuiteReportedByTheTransport() {
+        let cipherSuite = RemotePairingTLSCipherSuite(rawValue: 0x00A8)
         let tunnel = RemotePairingTunnel(
             configuration: tunnelConfiguration(),
-            tlsCipherSuite: "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)",
+            tlsCipherSuite: cipherSuite,
             controlConnection: FakeConnection(),
             tunnelConnection: FakeConnection()
         )
 
-        XCTAssertEqual(
-            tunnel.tlsCipherSuite,
-            "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)"
-        )
+        XCTAssertEqual(tunnel.tlsCipherSuite, cipherSuite)
     }
 
     func testSendsAndReceivesIPv6Packets() async throws {
@@ -83,6 +77,28 @@ final class RemotePairingTunnelTests: XCTestCase {
 
         XCTAssertEqual(tunnelConnection.sent, [outboundPacket])
         XCTAssertEqual(receivedPacket, inboundPacket)
+    }
+
+    func testConcurrentSendsDoNotOverlapTransportWrites() async throws {
+        let tunnelConnection = ConcurrentSendRecordingConnection()
+        let tunnel = RemotePairingTunnel(
+            configuration: tunnelConfiguration(),
+            controlConnection: FakeConnection(),
+            tunnelConnection: tunnelConnection
+        )
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for byte in UInt8(0)..<20 {
+                group.addTask {
+                    try await tunnel.sendPacket(
+                        ipv6Packet(payload: Data([byte]))
+                    )
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        XCTAssertEqual(tunnelConnection.maximumConcurrentSendCount, 1)
     }
 
     func testRejectsNonIPv6Packet() async throws {
@@ -118,8 +134,7 @@ final class RemotePairingTunnelTests: XCTestCase {
     }
 }
 
-private final class RecordingRemotePairingTransportBackend: RemotePairingTransportBackend {
-    let isAvailable: Bool
+private final class RecordingRemotePairingTransport: RemotePairingTransport {
     private let controlConnectionError: Error?
 
     private(set) var controlConnectionAttempts = 0
@@ -128,18 +143,14 @@ private final class RecordingRemotePairingTransportBackend: RemotePairingTranspo
     private(set) var lastControlTimeout: Duration?
     private(set) var usedSystemDefaultRoute = false
 
-    init(
-        isAvailable: Bool,
-        controlConnectionError: Error? = nil
-    ) {
-        self.isAvailable = isAvailable
+    init(controlConnectionError: Error? = nil) {
         self.controlConnectionError = controlConnectionError
     }
 
     func openControlConnection(
         to host: String,
         port: UInt16,
-        route: RemotePairingTransportRoute,
+        over route: RemotePairingTransportRoute,
         timeout: Duration
     ) async throws -> DeviceConnection {
         controlConnectionAttempts += 1
@@ -158,12 +169,44 @@ private final class RecordingRemotePairingTransportBackend: RemotePairingTranspo
     func openTLSConnection(
         to _: String,
         port _: UInt16,
-        preSharedKey _: Data,
-        route _: RemotePairingTransportRoute,
+        using _: Data,
+        over _: RemotePairingTransportRoute,
         timeout _: Duration
     ) async throws -> RemotePairingTLSConnection {
         throw RorkDeviceError.transport("TLS connection was not expected.")
     }
+}
+
+private final class ConcurrentSendRecordingConnection: DeviceConnection {
+    private let lock = NSLock()
+    private var activeSendCount = 0
+    private var recordedMaximumConcurrentSendCount = 0
+
+    var maximumConcurrentSendCount: Int {
+        lock.withLock {
+            recordedMaximumConcurrentSendCount
+        }
+    }
+
+    func send(_: Data) async throws {
+        lock.withLock {
+            activeSendCount += 1
+            recordedMaximumConcurrentSendCount = max(
+                recordedMaximumConcurrentSendCount,
+                activeSendCount
+            )
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        lock.withLock {
+            activeSendCount -= 1
+        }
+    }
+
+    func receive(exactly _: Int) async throws -> Data {
+        throw RorkDeviceError.transport("Receive was not expected.")
+    }
+
+    func close() {}
 }
 
 private func remotePairingIdentity() -> RemotePairingIdentity {

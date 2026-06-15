@@ -24,20 +24,25 @@ final class NetworkDeviceConnection: DeviceConnection {
     /// Serial queue used for state transitions and timeout delivery.
     private let queue: DispatchQueue
 
-    /// IANA cipher description captured when the TLS connection becomes ready.
-    private(set) var tlsCipherSuite: String?
+    /// Cipher suite captured when the TLS connection becomes ready.
+    let tlsCipherSuite: RemotePairingTLSCipherSuite?
 
-    /// Wraps a configured connection before it is started.
-    private init(connection: NWConnection, queue: DispatchQueue) {
+    /// Wraps a ready connection and its immutable handshake diagnostics.
+    private init(
+        connection: NWConnection,
+        queue: DispatchQueue,
+        tlsCipherSuite: RemotePairingTLSCipherSuite?
+    ) {
         self.connection = connection
         self.queue = queue
+        self.tlsCipherSuite = tlsCipherSuite
     }
 
     /// Opens a TLS 1.2 PSK connection, optionally constrained to one interface.
     static func connect(
         to host: String,
         port: UInt16,
-        preSharedKey: Data,
+        using preSharedKey: Data,
         through interface: NWInterface? = nil,
         timeout: Duration
     ) async throws -> NetworkDeviceConnection {
@@ -49,7 +54,7 @@ final class NetworkDeviceConnection: DeviceConnection {
             to: host,
             port: port,
             parameters: makeTLSParameters(
-                preSharedKey: preSharedKey,
+                using: preSharedKey,
                 through: interface
             ),
             timeout: timeout
@@ -58,11 +63,11 @@ final class NetworkDeviceConnection: DeviceConnection {
 
     /// Builds the exact TLS and interface policy required by remote pairing.
     static func makeTLSParameters(
-        preSharedKey: Data,
+        using preSharedKey: Data,
         through interface: NWInterface?
     ) -> NWParameters {
         let parameters = NWParameters(
-            tls: makeTLSOptions(preSharedKey: preSharedKey),
+            tls: makeTLSOptions(using: preSharedKey),
             tcp: NWProtocolTCP.Options()
         )
         parameters.requiredInterface = interface
@@ -82,9 +87,16 @@ final class NetworkDeviceConnection: DeviceConnection {
             using: parameters
         )
         let queue = DispatchQueue(label: "dev.rork.rork-device.network.\(UUID().uuidString)")
-        let wrapper = NetworkDeviceConnection(connection: connection, queue: queue)
-        try await wrapper.start(timeout: timeout)
-        return wrapper
+        let tlsCipherSuite = try await waitUntilReady(
+            connection: connection,
+            queue: queue,
+            timeout: timeout
+        )
+        return NetworkDeviceConnection(
+            connection: connection,
+            queue: queue,
+            tlsCipherSuite: tlsCipherSuite
+        )
     }
 
     /// Sends all bytes and reports completion after Network.framework processes them.
@@ -126,16 +138,25 @@ final class NetworkDeviceConnection: DeviceConnection {
         connection.cancel()
     }
 
-    /// Waits for the ready state while enforcing cancellation and a connect timeout.
-    private func start(timeout: Duration) async throws {
-        try await withTaskCancellationHandler {
+    /// Waits for a connection to become ready and returns its TLS diagnostics.
+    private static func waitUntilReady(
+        connection: NWConnection,
+        queue: DispatchQueue,
+        timeout: Duration
+    ) async throws -> RemotePairingTLSCipherSuite? {
+        defer {
+            connection.stateUpdateHandler = nil
+        }
+
+        return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let waiter = NetworkConnectionStartWaiter(continuation: continuation)
                 connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready:
-                        self.logNegotiatedCipherSuite()
-                        waiter.resume(with: .success(()))
+                        let cipherSuite = negotiatedCipherSuite(from: connection)
+                        logNegotiatedCipherSuite(cipherSuite)
+                        waiter.resume(with: .success(cipherSuite))
                     case let .failed(error):
                         waiter.resume(with: .failure(RorkDeviceError.transport(
                             "TLS connection failed: \(error.localizedDescription)"
@@ -162,30 +183,38 @@ final class NetworkDeviceConnection: DeviceConnection {
         }
     }
 
-    /// Records the cipher suite selected by the device after TLS completes.
-    ///
-    /// Network.framework exposes negotiated TLS state only after the connection
-    /// becomes ready. Missing metadata is logged separately because it indicates
-    /// a diagnostic failure rather than an unsuccessful handshake.
-    private func logNegotiatedCipherSuite() {
+    /// Returns the cipher suite selected by a ready TLS connection.
+    private static func negotiatedCipherSuite(
+        from connection: NWConnection
+    ) -> RemotePairingTLSCipherSuite? {
         guard let metadata = connection.metadata(
             definition: NWProtocolTLS.definition
         ) as? NWProtocolTLS.Metadata else {
-            Self.logger.notice(
-                "Remote-pairing TLS negotiated cipher metadata is unavailable."
-            )
-            return
+            return nil
         }
 
         let cipherSuite = sec_protocol_metadata_get_negotiated_tls_ciphersuite(
             metadata.securityProtocolMetadata
         )
-        let description = remotePairingTLSCipherSuiteDescription(
-            rawValue: cipherSuite.rawValue
-        )
-        tlsCipherSuite = description
-        Self.logger.info(
-            "Remote-pairing TLS negotiated cipher: \(description, privacy: .public)"
+        return RemotePairingTLSCipherSuite(rawValue: cipherSuite.rawValue)
+    }
+
+    /// Records the cipher suite selected after TLS becomes ready.
+    ///
+    /// Missing metadata is logged separately because it indicates a diagnostic
+    /// limitation rather than an unsuccessful handshake.
+    private static func logNegotiatedCipherSuite(
+        _ cipherSuite: RemotePairingTLSCipherSuite?
+    ) {
+        guard let cipherSuite else {
+            logger.notice(
+                "Remote-pairing TLS negotiated cipher metadata is unavailable."
+            )
+            return
+        }
+
+        logger.info(
+            "Remote-pairing TLS negotiated cipher: \(cipherSuite.description, privacy: .public)"
         )
     }
 
@@ -219,32 +248,6 @@ final class NetworkDeviceConnection: DeviceConnection {
     }
 }
 
-/// Returns a stable IANA cipher-suite name and hexadecimal code for diagnostics.
-///
-/// The mapping includes the PSK suites configured by this transport and the
-/// GCM suites that Network.framework may negotiate from its PSK defaults.
-/// Unknown values retain their wire code so diagnostics remain useful when
-/// Apple changes the effective suite set.
-func remotePairingTLSCipherSuiteDescription(rawValue: UInt16) -> String {
-    let name = switch rawValue {
-    case 0x00A9:
-        "TLS_PSK_WITH_AES_256_GCM_SHA384"
-    case 0x00A8:
-        "TLS_PSK_WITH_AES_128_GCM_SHA256"
-    case 0x00AF:
-        "TLS_PSK_WITH_AES_256_CBC_SHA384"
-    case 0x00AE:
-        "TLS_PSK_WITH_AES_128_CBC_SHA256"
-    case 0x008D:
-        "TLS_PSK_WITH_AES_256_CBC_SHA"
-    case 0x008C:
-        "TLS_PSK_WITH_AES_128_CBC_SHA"
-    default:
-        "unknown TLS cipher suite"
-    }
-    return "\(name) (\(String(format: "0x%04X", rawValue)))"
-}
-
 /// Snapshot returned by one asynchronous Network.framework receive callback.
 private struct NetworkReceiveResult {
     /// Bytes delivered by the callback, if any.
@@ -263,16 +266,20 @@ private final class NetworkConnectionStartWaiter: @unchecked Sendable {
     private let lock = NSLock()
 
     /// Pending continuation, cleared by the first terminal outcome.
-    private var continuation: CheckedContinuation<Void, Error>?
+    private var continuation: CheckedContinuation<RemotePairingTLSCipherSuite?, Error>?
 
     /// Stores the continuation until the connection becomes ready or fails.
-    init(continuation: CheckedContinuation<Void, Error>) {
+    init(
+        continuation: CheckedContinuation<RemotePairingTLSCipherSuite?, Error>
+    ) {
         self.continuation = continuation
     }
 
     /// Resumes the waiter if no competing outcome has already won.
     @discardableResult
-    func resume(with result: Result<Void, Error>) -> Bool {
+    func resume(
+        with result: Result<RemotePairingTLSCipherSuite?, Error>
+    ) -> Bool {
         lock.lock()
         guard let continuation else {
             lock.unlock()
@@ -286,7 +293,7 @@ private final class NetworkConnectionStartWaiter: @unchecked Sendable {
 }
 
 /// Configures TLS 1.2 PSK and the cipher suites accepted by remote pairing.
-private func makeTLSOptions(preSharedKey: Data) -> NWProtocolTLS.Options {
+private func makeTLSOptions(using preSharedKey: Data) -> NWProtocolTLS.Options {
     let options = NWProtocolTLS.Options()
     let securityOptions = options.securityProtocolOptions
     sec_protocol_options_set_min_tls_protocol_version(securityOptions, .TLSv12)
