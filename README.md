@@ -25,6 +25,15 @@ tests and clear public API boundaries.
   preserve unknown fields for diagnostics.
 - **SwiftNIO transports** - connect through local `usbmuxd` or a known direct
   Lockdown endpoint with non-blocking TCP and Unix-domain socket streams.
+- **Remote-pairing tunnels** - authenticate an existing remote-pairing identity,
+  establish a TLS 1.2 PSK-protected CDTunnel, and exchange complete IPv6
+  packets through the negotiated link.
+- **Remote services** - connect to Remote Service Discovery through an active
+  tunnel, complete its HTTP/2 and RemoteXPC handshake, and use the advertised
+  services through the same high-level `DeviceSession` APIs.
+- **Tunnel diagnostics** - inspect the negotiated network configuration and
+  TLS cipher suite without coupling application behavior to transport-specific
+  metadata.
 - **Device events** - watch usbmux attach and detach events through an
   `AsyncThrowingStream`.
 - **Secure sessions** - upgrade Lockdown and secure service connections through
@@ -44,16 +53,41 @@ tests and clear public API boundaries.
   packages, and uninstall apps through InstallationProxy.
 - **Structured progress** - expose InstallationProxy progress events and typed
   protocol errors for application workflows.
-- **Protocol test harness** - validate usbmux, Lockdown, AFC, MISAgent, and
-  InstallationProxy behavior with fake service peers and protocol fixtures.
+- **Protocol test harness** - validate usbmux, Lockdown, remote pairing,
+  RemoteXPC, Remote Service Discovery, AFC, MISAgent, and InstallationProxy
+  behavior with fake service peers and protocol fixtures.
 - **Physical-device smoke tests** - provide an opt-in release check for list,
   info, provisioning-profile install/copy, IPA install, and IPA uninstall.
 
 See [Docs/Roadmap.md](Docs/Roadmap.md) for release scope, current limitations,
-and planned services such as pairing creation, device events, syslog, crash
+and planned services such as pairing creation, Wi-Fi discovery, syslog, crash
 reports, debugserver, developer image mounting, backup, and restore.
 
-## Library Example
+## Installation
+
+Add `rork-device` to the package dependencies:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/rorkai/rork-device.git",
+        from: "0.3.0"
+    ),
+]
+```
+
+Then add the library product to the target that communicates with devices:
+
+```swift
+.target(
+    name: "DeviceIntegration",
+    dependencies: [
+        .product(name: "RorkDevice", package: "rork-device"),
+    ]
+)
+```
+
+## Lockdown Example
 
 ```swift
 import Foundation
@@ -78,6 +112,79 @@ try await session.installApplication(
     print(progress.status, progress.percentComplete ?? -1)
 }
 ```
+
+## Remote Pairing Example
+
+Remote pairing requires a host identity that the device has already accepted.
+The tunnel API verifies that identity, negotiates an encrypted private IPv6
+link, and returns the network parameters needed by the application's packet
+interface:
+
+```swift
+import Foundation
+import RorkDevice
+
+guard RemotePairingTunnel.isSupported else {
+    throw RorkDeviceError.secureSessionUnsupported
+}
+
+let identity = try RemotePairingIdentity(
+    contentsOf: URL(fileURLWithPath: "remote-pairing.plist")
+)
+let tunnel = try await RemotePairingTunnel.connect(
+    to: "10.7.0.1",
+    using: identity
+)
+defer { tunnel.close() }
+
+let network = tunnel.configuration
+print("Host address:", network.hostAddress)
+print("Device address:", network.deviceAddress)
+print("MTU:", network.maximumTransmissionUnit)
+
+if let cipherSuite = tunnel.tlsCipherSuite {
+    print("TLS cipher suite:", cipherSuite)
+}
+```
+
+`RemotePairingTunnel` exchanges complete IPv6 packets through
+`sendPacket(_:)` and `receivePacket()`. The application must configure a packet
+interface from `configuration` and continuously bridge packets between that
+interface and the tunnel. After the route to `deviceAddress` is active, connect
+to the negotiated Remote Service Discovery endpoint:
+
+```swift
+let session = try await DeviceClient().connect(
+    toRemoteServicesAt: network.deviceAddress,
+    port: network.serviceDiscoveryPort
+)
+let applications = try await session.installedApplications()
+```
+
+The returned `DeviceSession` retains the discovery connection, but the
+application must also retain `RemotePairingTunnel` for as long as it uses any
+advertised service. Network Extension integrations on Apple platforms can use
+`connect(to:port:using:through:requestedMaximumTransmissionUnit:timeout:)` to
+bind the control and TLS connections to a specific `NWInterface`.
+
+Remote pairing and Remote Service Discovery are library APIs in `0.3.0`. The
+CLI continues to use usbmux or a direct Lockdown endpoint.
+
+## Platform Support
+
+The package currently targets macOS 13 or later and iOS 16 or later. Lockdown
+secure-session upgrades and remote-pairing TLS-PSK connections use built-in
+Apple backends based on Security.framework and Network.framework.
+
+`RemotePairingTunnel.isSupported` reports whether the bundled remote-pairing
+transport is available in the current process. Calling `connect` when it is not
+available throws `RorkDeviceError.secureSessionUnsupported` before opening a
+network connection.
+
+Platform-specific remote-pairing transport selection is isolated behind an
+internal boundary so a portable backend can be added later without changing
+the high-level tunnel or `DeviceSession` APIs. Version `0.3.0` does not include
+a Windows or Linux backend.
 
 ## Usage
 
