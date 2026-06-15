@@ -22,8 +22,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// Lockdown returned a failure response.
     case lockdown(String)
 
-    /// The device requested secure traffic but no secure-session upgrader was
-    /// configured.
+    /// The requested connection requires a secure-session backend that is not
+    /// available in the current build.
     case secureSessionUnsupported
 
     /// Secure-session setup, certificate parsing, or TLS I/O failed.
@@ -55,7 +55,7 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
         case let .lockdown(message):
             return "Lockdown error: \(message)"
         case .secureSessionUnsupported:
-            return "The device requested a secure Lockdown session, but this client was created without a secure-session upgrader."
+            return "The requested device connection requires a secure-session backend that is unavailable in this build."
         case let .secureSession(message):
             return "Secure session error: \(message)"
         case let .afcStatus(status):

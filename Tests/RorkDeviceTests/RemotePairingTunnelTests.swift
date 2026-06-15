@@ -3,6 +3,28 @@ import XCTest
 @testable import RorkDevice
 
 final class RemotePairingTunnelTests: XCTestCase {
+    func testReportsWhetherTheCurrentPlatformSupportsRemotePairingTLS() {
+        #if canImport(Network) && canImport(Security)
+        XCTAssertTrue(RemotePairingTunnel.isSupported)
+        #else
+        XCTAssertFalse(RemotePairingTunnel.isSupported)
+        #endif
+    }
+
+    func testExposesTheTLSCipherSuiteReportedByTheTransport() {
+        let tunnel = RemotePairingTunnel(
+            configuration: tunnelConfiguration(),
+            tlsCipherSuite: "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)",
+            controlConnection: FakeConnection(),
+            tunnelConnection: FakeConnection()
+        )
+
+        XCTAssertEqual(
+            tunnel.tlsCipherSuite,
+            "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)"
+        )
+    }
+
     func testSendsAndReceivesIPv6Packets() async throws {
         let inboundPacket = ipv6Packet(payload: Data([0x10, 0x20]))
         let controlConnection = FakeConnection()

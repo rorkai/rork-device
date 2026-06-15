@@ -24,6 +24,9 @@ final class NetworkDeviceConnection: DeviceConnection {
     /// Serial queue used for state transitions and timeout delivery.
     private let queue: DispatchQueue
 
+    /// IANA cipher description captured when the TLS connection becomes ready.
+    private(set) var tlsCipherSuite: String?
+
     /// Wraps a configured connection before it is started.
     private init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
@@ -180,6 +183,7 @@ final class NetworkDeviceConnection: DeviceConnection {
         let description = remotePairingTLSCipherSuiteDescription(
             rawValue: cipherSuite.rawValue
         )
+        tlsCipherSuite = description
         Self.logger.info(
             "Remote-pairing TLS negotiated cipher: \(description, privacy: .public)"
         )

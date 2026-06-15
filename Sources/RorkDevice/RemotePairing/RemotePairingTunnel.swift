@@ -13,12 +13,34 @@ import Network
 /// Keep the instance alive while using RSD-backed `DeviceSession` connections.
 /// Closing the tunnel invalidates every service socket routed through it.
 public final class RemotePairingTunnel {
+    /// Whether this build contains the TLS-PSK backend required by remote pairing.
+    ///
+    /// The generic connection API remains available on every platform so
+    /// portable callers can compile against one surface. When this value is
+    /// `false`, `connect(to:port:using:requestedMaximumTransmissionUnit:timeout:)`
+    /// fails with `RorkDeviceError.secureSessionUnsupported` before opening a
+    /// network connection.
+    public static var isSupported: Bool {
+        #if canImport(Network) && canImport(Security)
+        true
+        #else
+        false
+        #endif
+    }
+
     /// Network parameters negotiated for this tunnel instance.
     ///
     /// These values remain meaningful only while the tunnel is open. Use them
     /// to configure the host packet interface and to reach the device's Remote
     /// Service Discovery endpoint through that interface.
     public let configuration: RemotePairingTunnelConfiguration
+
+    /// IANA name and wire value of the TLS cipher suite protecting packet traffic.
+    ///
+    /// The value is diagnostic metadata captured after the PSK handshake. It is
+    /// `nil` when the active transport cannot report TLS state. Callers should
+    /// not use it to make routing or compatibility decisions.
+    public let tlsCipherSuite: String?
 
     /// Pair-verification stream retained until the tunnel closes.
     private let controlConnection: DeviceConnection
@@ -32,10 +54,12 @@ public final class RemotePairingTunnel {
     /// Creates an owned tunnel from established control and packet streams.
     init(
         configuration: RemotePairingTunnelConfiguration,
+        tlsCipherSuite: String? = nil,
         controlConnection: DeviceConnection,
         tunnelConnection: DeviceConnection
     ) {
         self.configuration = configuration
+        self.tlsCipherSuite = tlsCipherSuite
         self.controlConnection = controlConnection
         self.tunnelConnection = tunnelConnection
         writer = RemotePairingPacketWriter(connection: tunnelConnection)
@@ -64,6 +88,7 @@ public final class RemotePairingTunnel {
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8)
     ) async throws -> RemotePairingTunnel {
+        #if canImport(Network) && canImport(Security)
         let controlConnection = try await TCPDeviceConnection.connect(
             to: host,
             port: port,
@@ -75,17 +100,20 @@ public final class RemotePairingTunnel {
             identity: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
         ) { listener in
-            #if canImport(Network) && canImport(Security)
-            return try await NetworkDeviceConnection.connect(
+            let connection = try await NetworkDeviceConnection.connect(
                 to: host,
                 port: listener.port,
                 preSharedKey: listener.preSharedKey,
                 timeout: timeout
             )
-            #else
-            throw RorkDeviceError.secureSessionUnsupported
-            #endif
+            return RemotePairingTunnelStream(
+                connection: connection,
+                tlsCipherSuite: connection.tlsCipherSuite
+            )
         }
+        #else
+        throw RorkDeviceError.secureSessionUnsupported
+        #endif
     }
 
     #if canImport(Network) && canImport(Security)
@@ -138,12 +166,16 @@ public final class RemotePairingTunnel {
             identity: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
         ) { listener in
-            try await NetworkDeviceConnection.connect(
+            let connection = try await NetworkDeviceConnection.connect(
                 to: host,
                 port: listener.port,
                 preSharedKey: listener.preSharedKey,
                 through: interface,
                 timeout: timeout
+            )
+            return RemotePairingTunnelStream(
+                connection: connection,
+                tlsCipherSuite: connection.tlsCipherSuite
             )
         }
     }
@@ -154,7 +186,7 @@ public final class RemotePairingTunnel {
         controlConnection: DeviceConnection,
         identity: RemotePairingIdentity,
         requestedMaximumTransmissionUnit: UInt16,
-        openTunnelConnection: (RemotePairingTunnelListener) async throws -> DeviceConnection
+        openTunnelConnection: (RemotePairingTunnelListener) async throws -> RemotePairingTunnelStream
     ) async throws -> RemotePairingTunnel {
         var tunnelConnection: DeviceConnection?
         do {
@@ -162,16 +194,17 @@ public final class RemotePairingTunnel {
                 connection: controlConnection,
                 identity: identity
             ).createTunnelListener()
-            let connection = try await openTunnelConnection(listener)
-            tunnelConnection = connection
+            let stream = try await openTunnelConnection(listener)
+            tunnelConnection = stream.connection
             let configuration = try await CDTunnelProtocol.negotiateConfiguration(
-                over: connection,
+                over: stream.connection,
                 requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
             )
             return RemotePairingTunnel(
                 configuration: configuration,
+                tlsCipherSuite: stream.tlsCipherSuite,
                 controlConnection: controlConnection,
-                tunnelConnection: connection
+                tunnelConnection: stream.connection
             )
         } catch {
             tunnelConnection?.close()
@@ -217,6 +250,15 @@ public final class RemotePairingTunnel {
         tunnelConnection.close()
         controlConnection.close()
     }
+}
+
+/// Packet stream and security metadata produced by remote-pairing TLS setup.
+private struct RemotePairingTunnelStream {
+    /// TLS-protected connection that carries complete IPv6 packets.
+    let connection: DeviceConnection
+
+    /// Cipher description captured after the connection became ready.
+    let tlsCipherSuite: String?
 }
 
 /// Serializes writes to the packet stream while preserving async cancellation.
