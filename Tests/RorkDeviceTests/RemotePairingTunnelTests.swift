@@ -11,6 +11,48 @@ final class RemotePairingTunnelTests: XCTestCase {
         #endif
     }
 
+    func testRejectsUnavailableBackendBeforeOpeningControlConnection() async throws {
+        let backend = RecordingRemotePairingTransportBackend(isAvailable: false)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await RemotePairingTunnel.connect(
+                to: "192.0.2.1",
+                using: remotePairingIdentity(),
+                backend: backend
+            )
+        }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .secureSessionUnsupported)
+        }
+
+        XCTAssertEqual(backend.controlConnectionAttempts, 0)
+    }
+
+    func testUsesBackendToOpenControlConnection() async throws {
+        let expectedError = RorkDeviceError.transport("Stop after recording the request.")
+        let backend = RecordingRemotePairingTransportBackend(
+            isAvailable: true,
+            controlConnectionError: expectedError
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await RemotePairingTunnel.connect(
+                to: "192.0.2.1",
+                port: 49_153,
+                using: remotePairingIdentity(),
+                timeout: .seconds(3),
+                backend: backend
+            )
+        }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, expectedError)
+        }
+
+        XCTAssertEqual(backend.controlConnectionAttempts, 1)
+        XCTAssertEqual(backend.lastControlHost, "192.0.2.1")
+        XCTAssertEqual(backend.lastControlPort, 49_153)
+        XCTAssertEqual(backend.lastControlTimeout, .seconds(3))
+        XCTAssertTrue(backend.usedSystemDefaultRoute)
+    }
+
     func testExposesTheTLSCipherSuiteReportedByTheTransport() {
         let tunnel = RemotePairingTunnel(
             configuration: tunnelConfiguration(),
@@ -74,6 +116,61 @@ final class RemotePairingTunnelTests: XCTestCase {
         XCTAssertTrue(controlConnection.isClosed)
         XCTAssertTrue(tunnelConnection.isClosed)
     }
+}
+
+private final class RecordingRemotePairingTransportBackend: RemotePairingTransportBackend {
+    let isAvailable: Bool
+    private let controlConnectionError: Error?
+
+    private(set) var controlConnectionAttempts = 0
+    private(set) var lastControlHost: String?
+    private(set) var lastControlPort: UInt16?
+    private(set) var lastControlTimeout: Duration?
+    private(set) var usedSystemDefaultRoute = false
+
+    init(
+        isAvailable: Bool,
+        controlConnectionError: Error? = nil
+    ) {
+        self.isAvailable = isAvailable
+        self.controlConnectionError = controlConnectionError
+    }
+
+    func openControlConnection(
+        to host: String,
+        port: UInt16,
+        route: RemotePairingTransportRoute,
+        timeout: Duration
+    ) async throws -> DeviceConnection {
+        controlConnectionAttempts += 1
+        lastControlHost = host
+        lastControlPort = port
+        lastControlTimeout = timeout
+        if case .systemDefault = route {
+            usedSystemDefaultRoute = true
+        }
+        if let controlConnectionError {
+            throw controlConnectionError
+        }
+        return FakeConnection()
+    }
+
+    func openTLSConnection(
+        to _: String,
+        port _: UInt16,
+        preSharedKey _: Data,
+        route _: RemotePairingTransportRoute,
+        timeout _: Duration
+    ) async throws -> RemotePairingTLSConnection {
+        throw RorkDeviceError.transport("TLS connection was not expected.")
+    }
+}
+
+private func remotePairingIdentity() -> RemotePairingIdentity {
+    RemotePairingIdentity(
+        identifier: "test-host",
+        privateKeyData: Data(repeating: 1, count: 32)
+    )
 }
 
 private func tunnelConfiguration() -> RemotePairingTunnelConfiguration {

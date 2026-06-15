@@ -13,19 +13,15 @@ import Network
 /// Keep the instance alive while using RSD-backed `DeviceSession` connections.
 /// Closing the tunnel invalidates every service socket routed through it.
 public final class RemotePairingTunnel {
-    /// Whether this build contains the TLS-PSK backend required by remote pairing.
+    /// Whether the default backend can establish a remote-pairing tunnel.
     ///
-    /// The generic connection API remains available when the package is built
-    /// without Apple's networking frameworks. When this value is `false`,
+    /// The connection API remains available in builds without a compatible
+    /// transport implementation. When this value is `false`,
     /// `connect(to:port:using:requestedMaximumTransmissionUnit:timeout:)` fails
     /// with `RorkDeviceError.secureSessionUnsupported` before opening a network
     /// connection.
     public static var isSupported: Bool {
-        #if canImport(Network) && canImport(Security)
-        true
-        #else
-        false
-        #endif
+        RemotePairingTransportBackendProvider.platformDefault.isAvailable
     }
 
     /// Network parameters negotiated for this tunnel instance.
@@ -88,32 +84,14 @@ public final class RemotePairingTunnel {
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8)
     ) async throws -> RemotePairingTunnel {
-        #if canImport(Network) && canImport(Security)
-        let controlConnection = try await TCPDeviceConnection.connect(
+        try await connect(
             to: host,
             port: port,
-            timeout: timeout
+            using: identity,
+            requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit,
+            timeout: timeout,
+            backend: RemotePairingTransportBackendProvider.platformDefault
         )
-
-        return try await establish(
-            controlConnection: controlConnection,
-            identity: identity,
-            requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
-        ) { listener in
-            let connection = try await NetworkDeviceConnection.connect(
-                to: host,
-                port: listener.port,
-                preSharedKey: listener.preSharedKey,
-                timeout: timeout
-            )
-            return RemotePairingTunnelStream(
-                connection: connection,
-                tlsCipherSuite: connection.tlsCipherSuite
-            )
-        }
-        #else
-        throw RorkDeviceError.secureSessionUnsupported
-        #endif
     }
 
     #if canImport(Network) && canImport(Security)
@@ -147,17 +125,39 @@ public final class RemotePairingTunnel {
         requestedMaximumTransmissionUnit: UInt16 = 16_000,
         timeout: Duration = .seconds(8)
     ) async throws -> RemotePairingTunnel {
-        guard interface.index > 0,
-              let interfaceIndex = UInt32(exactly: interface.index) else {
-            throw RorkDeviceError.invalidInput(
-                "Remote pairing requires a valid network interface index."
-            )
-        }
-
-        let controlConnection = try await TCPDeviceConnection.connect(
+        try await connect(
             to: host,
             port: port,
-            boundToIPv4Interface: interfaceIndex,
+            using: identity,
+            requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit,
+            timeout: timeout,
+            backend: RemotePairingTransportBackendProvider.platformDefault,
+            route: .networkInterface(interface)
+        )
+    }
+    #endif
+
+    /// Connects using a specific transport implementation and routing policy.
+    ///
+    /// Platform selection remains internal so adding a portable backend does not
+    /// expand or alter the public tunnel API.
+    static func connect(
+        to host: String,
+        port: UInt16 = 49_152,
+        using identity: RemotePairingIdentity,
+        requestedMaximumTransmissionUnit: UInt16 = 16_000,
+        timeout: Duration = .seconds(8),
+        backend: any RemotePairingTransportBackend,
+        route: RemotePairingTransportRoute = .systemDefault
+    ) async throws -> RemotePairingTunnel {
+        guard backend.isAvailable else {
+            throw RorkDeviceError.secureSessionUnsupported
+        }
+
+        let controlConnection = try await backend.openControlConnection(
+            to: host,
+            port: port,
+            route: route,
             timeout: timeout
         )
 
@@ -166,27 +166,22 @@ public final class RemotePairingTunnel {
             identity: identity,
             requestedMaximumTransmissionUnit: requestedMaximumTransmissionUnit
         ) { listener in
-            let connection = try await NetworkDeviceConnection.connect(
+            try await backend.openTLSConnection(
                 to: host,
                 port: listener.port,
                 preSharedKey: listener.preSharedKey,
-                through: interface,
+                route: route,
                 timeout: timeout
-            )
-            return RemotePairingTunnelStream(
-                connection: connection,
-                tlsCipherSuite: connection.tlsCipherSuite
             )
         }
     }
-    #endif
 
     /// Completes pair verification, opens the protected stream, and negotiates the link.
     private static func establish(
         controlConnection: DeviceConnection,
         identity: RemotePairingIdentity,
         requestedMaximumTransmissionUnit: UInt16,
-        openTunnelConnection: (RemotePairingTunnelListener) async throws -> RemotePairingTunnelStream
+        openTLSConnection: (RemotePairingTunnelListener) async throws -> RemotePairingTLSConnection
     ) async throws -> RemotePairingTunnel {
         var tunnelConnection: DeviceConnection?
         do {
@@ -194,7 +189,7 @@ public final class RemotePairingTunnel {
                 connection: controlConnection,
                 identity: identity
             ).createTunnelListener()
-            let stream = try await openTunnelConnection(listener)
+            let stream = try await openTLSConnection(listener)
             tunnelConnection = stream.connection
             let configuration = try await CDTunnelProtocol.negotiateConfiguration(
                 over: stream.connection,
@@ -202,7 +197,7 @@ public final class RemotePairingTunnel {
             )
             return RemotePairingTunnel(
                 configuration: configuration,
-                tlsCipherSuite: stream.tlsCipherSuite,
+                tlsCipherSuite: stream.cipherSuite,
                 controlConnection: controlConnection,
                 tunnelConnection: stream.connection
             )
@@ -250,15 +245,6 @@ public final class RemotePairingTunnel {
         tunnelConnection.close()
         controlConnection.close()
     }
-}
-
-/// Packet stream and security metadata produced by remote-pairing TLS setup.
-private struct RemotePairingTunnelStream {
-    /// TLS-protected connection that carries complete IPv6 packets.
-    let connection: DeviceConnection
-
-    /// Cipher description captured after the connection became ready.
-    let tlsCipherSuite: String?
 }
 
 /// Serializes writes to the packet stream while preserving async cancellation.
