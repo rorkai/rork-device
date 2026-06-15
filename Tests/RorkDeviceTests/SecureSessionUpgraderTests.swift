@@ -40,6 +40,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
             to: "127.0.0.1",
             port: server.port
         )
+        defer { connection.close() }
         try await connection.send(SecureSessionTestServer.upgradeRequest)
         let upgradeResponse = try await connection.receive(
             exactly: SecureSessionTestServer.upgradeResponse.count
@@ -53,7 +54,6 @@ final class SecureSessionUpgraderTests: XCTestCase {
             connection,
             pairingRecord: try makeSecureSessionPairingRecord()
         )
-        defer { secureConnection.close() }
 
         let payload = Data("Lockdown over TLS".utf8)
         try await secureConnection.send(payload)

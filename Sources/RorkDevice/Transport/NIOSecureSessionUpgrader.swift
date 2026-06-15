@@ -110,7 +110,7 @@ struct NIOSecureSessionConfiguration: Sendable {
         }
 
         var configuration = TLSConfiguration.makeClientConfiguration()
-        configuration.minimumTLSVersion = .tlsv1
+        configureLockdownProtocolVersions(&configuration)
         configuration.certificateVerification = .noHostnameVerification
         configuration.trustRoots = .certificates([deviceCertificate])
         configuration.certificateChain = certificateChain
@@ -127,6 +127,19 @@ struct NIOSecureSessionConfiguration: Sendable {
             )
         }
     }
+}
+
+/// Configures the protocol range required by classic Lockdown services.
+///
+/// Devices before iOS 10 may only negotiate TLS 1.0. Their secure sessions run
+/// through a paired usbmux-forwarded channel, and the device certificate is
+/// pinned byte-for-byte to the pairing record, so retaining TLS 1.0 is an
+/// intentional device-compatibility boundary rather than a public-network trust
+/// policy. Remote-pairing TLS remains governed by its separate TLS 1.2 policy.
+private func configureLockdownProtocolVersions(
+    _ configuration: inout TLSConfiguration
+) {
+    configuration.minimumTLSVersion = .tlsv1
 }
 
 /// Creates an in-memory certificate from PEM or DER pairing material.
