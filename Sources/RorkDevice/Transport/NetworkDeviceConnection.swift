@@ -2,6 +2,7 @@
 import Dispatch
 import Foundation
 import Network
+import OSLog
 import Security
 
 /// TLS 1.2 PSK byte stream implemented with Apple's Network framework.
@@ -11,6 +12,12 @@ import Security
 /// The type remains internal because callers interact with it through
 /// `RemotePairingTunnel`.
 final class NetworkDeviceConnection: DeviceConnection {
+    /// Unified logger for remote-pairing transport diagnostics.
+    private static let logger = Logger(
+        subsystem: "dev.rork.rork-device",
+        category: "remote-pairing"
+    )
+
     /// Framework connection that owns the socket and TLS state.
     private let connection: NWConnection
 
@@ -124,6 +131,7 @@ final class NetworkDeviceConnection: DeviceConnection {
                 connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready:
+                        self.logNegotiatedTLSCipherSuite()
                         waiter.resume(with: .success(()))
                     case let .failed(error):
                         waiter.resume(with: .failure(RorkDeviceError.transport(
@@ -149,6 +157,32 @@ final class NetworkDeviceConnection: DeviceConnection {
         } onCancel: {
             connection.cancel()
         }
+    }
+
+    /// Records the cipher suite selected by the device after TLS completes.
+    ///
+    /// Network.framework exposes negotiated TLS state only after the connection
+    /// becomes ready. Missing metadata is logged separately because it indicates
+    /// a diagnostic failure rather than an unsuccessful handshake.
+    private func logNegotiatedTLSCipherSuite() {
+        guard let metadata = connection.metadata(
+            definition: NWProtocolTLS.definition
+        ) as? NWProtocolTLS.Metadata else {
+            Self.logger.notice(
+                "Remote-pairing TLS negotiated cipher metadata is unavailable."
+            )
+            return
+        }
+
+        let cipherSuite = sec_protocol_metadata_get_negotiated_tls_ciphersuite(
+            metadata.securityProtocolMetadata
+        )
+        let description = remotePairingTLSCipherSuiteDescription(
+            rawValue: cipherSuite.rawValue
+        )
+        Self.logger.info(
+            "Remote-pairing TLS negotiated cipher: \(description, privacy: .public)"
+        )
     }
 
     /// Receives one nonempty chunk no larger than the requested byte count.
@@ -179,6 +213,27 @@ final class NetworkDeviceConnection: DeviceConnection {
             }
         }
     }
+}
+
+/// Returns a stable IANA cipher-suite name and hexadecimal code for diagnostics.
+///
+/// The switch covers every suite currently offered by the remote-pairing
+/// transport. Unknown values retain their wire code so logs remain actionable
+/// if Apple selects a suite added by a future configuration change.
+func remotePairingTLSCipherSuiteDescription(rawValue: UInt16) -> String {
+    let name = switch rawValue {
+    case 0x00AF:
+        "TLS_PSK_WITH_AES_256_CBC_SHA384"
+    case 0x00AE:
+        "TLS_PSK_WITH_AES_128_CBC_SHA256"
+    case 0x008D:
+        "TLS_PSK_WITH_AES_256_CBC_SHA"
+    case 0x008C:
+        "TLS_PSK_WITH_AES_128_CBC_SHA"
+    default:
+        "unknown TLS cipher suite"
+    }
+    return "\(name) (\(String(format: "0x%04X", rawValue)))"
 }
 
 /// Snapshot returned by one asynchronous Network.framework receive callback.
