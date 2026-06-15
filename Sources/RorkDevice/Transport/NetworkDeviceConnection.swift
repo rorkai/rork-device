@@ -131,7 +131,7 @@ final class NetworkDeviceConnection: DeviceConnection {
                 connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready:
-                        self.logNegotiatedTLSCipherSuite()
+                        self.logNegotiatedCipherSuite()
                         waiter.resume(with: .success(()))
                     case let .failed(error):
                         waiter.resume(with: .failure(RorkDeviceError.transport(
@@ -164,7 +164,7 @@ final class NetworkDeviceConnection: DeviceConnection {
     /// Network.framework exposes negotiated TLS state only after the connection
     /// becomes ready. Missing metadata is logged separately because it indicates
     /// a diagnostic failure rather than an unsuccessful handshake.
-    private func logNegotiatedTLSCipherSuite() {
+    private func logNegotiatedCipherSuite() {
         guard let metadata = connection.metadata(
             definition: NWProtocolTLS.definition
         ) as? NWProtocolTLS.Metadata else {
