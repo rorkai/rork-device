@@ -215,14 +215,34 @@ public final class RemotePairingTunnel {
     /// the underlying TLS stream.
     ///
     /// - Parameter packet: Complete IPv6 packet, including its 40-byte header.
-    /// - Throws: `RorkDeviceError.invalidInput` for non-IPv6 data, or a transport
-    ///   error when the tunnel is closed or the write fails.
+    /// - Throws: `RorkDeviceError.invalidInput` when the buffer is not one
+    ///   complete IPv6 packet, or a transport error when the tunnel is closed or
+    ///   the write fails.
     public func sendPacket(_ packet: Data) async throws {
+        guard packet.count >= 40 else {
+            throw RorkDeviceError.invalidInput(
+                "Remote pairing tunnel packet is shorter than the 40-byte IPv6 header."
+            )
+        }
         guard packet.first.map({ $0 >> 4 }) == 6 else {
             throw RorkDeviceError.invalidInput(
                 "Remote pairing tunnel only accepts IPv6 packets."
             )
         }
+
+        let payloadLengthIndex = packet.index(
+            packet.startIndex,
+            offsetBy: 4
+        )
+        let payloadLength =
+            (Int(packet[payloadLengthIndex]) << 8)
+            | Int(packet[packet.index(after: payloadLengthIndex)])
+        guard packet.count == 40 + payloadLength else {
+            throw RorkDeviceError.invalidInput(
+                "Remote pairing tunnel packet length does not match its IPv6 header."
+            )
+        }
+
         try await writer.send(packet)
     }
 

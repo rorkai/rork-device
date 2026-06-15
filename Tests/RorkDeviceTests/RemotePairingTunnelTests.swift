@@ -107,13 +107,57 @@ final class RemotePairingTunnelTests: XCTestCase {
             controlConnection: FakeConnection(),
             tunnelConnection: FakeConnection()
         )
+        var packet = Data(repeating: 0, count: 40)
+        packet[0] = 0x45
 
         await XCTAssertThrowsErrorAsync({
-            try await tunnel.sendPacket(Data([0x45, 0, 0, 0]))
+            try await tunnel.sendPacket(packet)
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
                 .invalidInput("Remote pairing tunnel only accepts IPv6 packets.")
+            )
+        }
+    }
+
+    func testRejectsPacketShorterThanTheIPv6Header() async throws {
+        let tunnel = RemotePairingTunnel(
+            configuration: tunnelConfiguration(),
+            controlConnection: FakeConnection(),
+            tunnelConnection: FakeConnection()
+        )
+        var packet = Data(repeating: 0, count: 39)
+        packet[0] = 0x60
+
+        await XCTAssertThrowsErrorAsync({
+            try await tunnel.sendPacket(packet)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "Remote pairing tunnel packet is shorter than the 40-byte IPv6 header."
+                )
+            )
+        }
+    }
+
+    func testRejectsPacketWhosePayloadLengthDoesNotMatchItsHeader() async throws {
+        let tunnel = RemotePairingTunnel(
+            configuration: tunnelConfiguration(),
+            controlConnection: FakeConnection(),
+            tunnelConnection: FakeConnection()
+        )
+        var packet = ipv6Packet(payload: Data([0x01, 0x02]))
+        packet[5] = 3
+
+        await XCTAssertThrowsErrorAsync({
+            try await tunnel.sendPacket(packet)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "Remote pairing tunnel packet length does not match its IPv6 header."
+                )
             )
         }
     }

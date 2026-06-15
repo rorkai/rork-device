@@ -53,6 +53,10 @@ public protocol DeviceTransport {
 public protocol SecureSessionUpgrader {
     /// Returns a secure connection using pairing-record credentials.
     ///
+    /// The caller retains ownership of `connection` until this method succeeds.
+    /// On success, the returned connection owns or wraps the original stream; on
+    /// failure, the caller remains responsible for closing the original stream.
+    ///
     /// - Parameters:
     ///   - connection: Plain connection that Lockdown asked to secure.
     ///   - pairingRecord: Pairing material containing certificates and keys.

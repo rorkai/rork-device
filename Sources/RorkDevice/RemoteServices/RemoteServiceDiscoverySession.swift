@@ -205,7 +205,12 @@ private final class RemoteServiceDiscoveryProtocol {
             let frame = try await receiveFrame()
             switch FrameType(rawValue: frame.type) {
             case .data:
-                streamBuffers[frame.streamIdentifier, default: Data()].append(frame.payload)
+                guard frame.streamIdentifier == streamIdentifier else {
+                    continue
+                }
+                streamBuffers[streamIdentifier, default: Data()].append(
+                    frame.payload
+                )
 
             case .settings:
                 if frame.flags & Self.acknowledgementFlag == 0 {

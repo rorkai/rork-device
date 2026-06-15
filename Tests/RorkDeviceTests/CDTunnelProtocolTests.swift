@@ -4,7 +4,7 @@ import XCTest
 
 final class CDTunnelProtocolTests: XCTestCase {
     func testHandshakeParsesTunnelConfiguration() async throws {
-        let response = try JSONSerialization.data(withJSONObject: [
+        let response: [String: Any] = [
             "clientParameters": [
                 "address": "fd00::2",
                 "netmask": "ffff:ffff:ffff:ffff::",
@@ -12,11 +12,8 @@ final class CDTunnelProtocolTests: XCTestCase {
             ],
             "serverAddress": "fd00::1",
             "serverRSDPort": 58783,
-        ])
-        var inbound = Data("CDTunnel".utf8)
-        inbound.appendBigEndian(UInt16(response.count))
-        inbound.append(response)
-        let connection = FakeConnection(inbound: inbound)
+        ]
+        let connection = try handshakeConnection(response: response)
 
         let configuration = try await CDTunnelProtocol.negotiateConfiguration(
             over: connection,
@@ -40,6 +37,47 @@ final class CDTunnelProtocolTests: XCTestCase {
         )
         XCTAssertEqual(requestObject["type"] as? String, "clientHandshakeRequest")
         XCTAssertEqual(requestObject["mtu"] as? Int, 16000)
+    }
+
+    func testHandshakeRejectsMissingNetworkMask() async throws {
+        let connection = try handshakeConnection(response: [
+            "clientParameters": [
+                "address": "fd00::2",
+                "mtu": 1400,
+            ],
+            "serverAddress": "fd00::1",
+            "serverRSDPort": 58783,
+        ])
+
+        await assertHandshakeRejectsInvalidNetworkParameters(connection)
+    }
+
+    func testHandshakeRejectsFractionalMTU() async throws {
+        let connection = try handshakeConnection(response: [
+            "clientParameters": [
+                "address": "fd00::2",
+                "netmask": "ffff:ffff:ffff:ffff::",
+                "mtu": 1400.5,
+            ],
+            "serverAddress": "fd00::1",
+            "serverRSDPort": 58783,
+        ])
+
+        await assertHandshakeRejectsInvalidNetworkParameters(connection)
+    }
+
+    func testHandshakeRejectsBooleanServiceDiscoveryPort() async throws {
+        let connection = try handshakeConnection(response: [
+            "clientParameters": [
+                "address": "fd00::2",
+                "netmask": "ffff:ffff:ffff:ffff::",
+                "mtu": 1400,
+            ],
+            "serverAddress": "fd00::1",
+            "serverRSDPort": true,
+        ])
+
+        await assertHandshakeRejectsInvalidNetworkParameters(connection)
     }
 
     func testReceivesCompleteIPv6Packet() async throws {
@@ -69,5 +107,44 @@ final class CDTunnelProtocolTests: XCTestCase {
                 .protocolViolation("CDTunnel received a packet without an IPv6 header.")
             )
         }
+    }
+
+    /// Creates the framed server response consumed by tunnel negotiation.
+    private func handshakeConnection(
+        response: [String: Any]
+    ) throws -> FakeConnection {
+        let responseData = try JSONSerialization.data(withJSONObject: response)
+        var inbound = Data("CDTunnel".utf8)
+        inbound.appendBigEndian(UInt16(responseData.count))
+        inbound.append(responseData)
+        return FakeConnection(inbound: inbound)
+    }
+
+    /// Verifies malformed handshake numbers fail at the protocol boundary.
+    private func assertHandshakeRejectsInvalidNetworkParameters(
+        _ connection: FakeConnection,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        await XCTAssertThrowsErrorAsync(
+            {
+                _ = try await CDTunnelProtocol.negotiateConfiguration(
+                    over: connection,
+                    requestedMaximumTransmissionUnit: 16_000
+                )
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .protocolViolation(
+                        "CDTunnel handshake response is missing network parameters."
+                    ),
+                    file: file,
+                    line: line
+                )
+            },
+            file: file,
+            line: line
+        )
     }
 }

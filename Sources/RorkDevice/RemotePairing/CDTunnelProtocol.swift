@@ -100,8 +100,13 @@ enum CDTunnelProtocol {
               let clientParameters = response["clientParameters"] as? [String: Any],
               let hostAddress = nonEmptyString(clientParameters["address"]),
               let deviceAddress = nonEmptyString(response["serverAddress"]),
-              let mtu = uint16Value(clientParameters["mtu"]),
-              let rsdPort = uint16Value(response["serverRSDPort"]) else {
+              let networkMask = nonEmptyString(clientParameters["netmask"]),
+              let mtu = RemotePairingJSONValue.positiveUInt16(
+                  from: clientParameters["mtu"]
+              ),
+              let rsdPort = RemotePairingJSONValue.positiveUInt16(
+                  from: response["serverRSDPort"]
+              ) else {
             throw RorkDeviceError.protocolViolation(
                 "CDTunnel handshake response is missing network parameters."
             )
@@ -110,7 +115,7 @@ enum CDTunnelProtocol {
         return RemotePairingTunnelConfiguration(
             hostAddress: hostAddress,
             deviceAddress: deviceAddress,
-            networkMask: nonEmptyString(clientParameters["netmask"]) ?? "",
+            networkMask: networkMask,
             maximumTransmissionUnit: mtu,
             serviceDiscoveryPort: rsdPort
         )
@@ -137,20 +142,4 @@ private func nonEmptyString(_ value: Any?) -> String? {
     }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
-}
-
-/// Converts a positive JSON integer into a valid TCP port or MTU value.
-private func uint16Value(_ value: Any?) -> UInt16? {
-    let integer: Int?
-    if let value = value as? Int {
-        integer = value
-    } else if let value = value as? NSNumber {
-        integer = value.intValue
-    } else {
-        integer = nil
-    }
-    guard let integer, integer > 0, integer <= Int(UInt16.max) else {
-        return nil
-    }
-    return UInt16(integer)
 }

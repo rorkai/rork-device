@@ -50,6 +50,52 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
         XCTAssertEqual(discovery.directory.deviceIdentifier, "device-1")
         XCTAssertEqual(discovery.directory.services.count, 2)
     }
+
+    func testIgnoresReplyStreamDataWhileWaitingForServiceDirectory() async throws {
+        let wrapper = try XCTUnwrap(
+            Data(base64Encoded: remoteServiceHandshakeWrapper)
+        )
+        var inbound = makeHTTP2Frame(type: 0x04, streamID: 0)
+        inbound.append(
+            makeHTTP2Frame(
+                type: 0x00,
+                streamID: 3,
+                payload: Data(repeating: 0xaa, count: 1024)
+            )
+        )
+        inbound.append(
+            makeHTTP2Frame(
+                type: 0x00,
+                streamID: 1,
+                payload: wrapper
+            )
+        )
+
+        let discovery = try await RemoteServiceDiscoverySession.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        XCTAssertEqual(discovery.directory.deviceIdentifier, "device-1")
+    }
+
+    func testRejectsRemoteXPCBodyLargerThanDiscoveryLimit() throws {
+        var wrapper = Data()
+        wrapper.appendLittleEndian(UInt32(0x29b00b92))
+        wrapper.appendLittleEndian(UInt32(0))
+        wrapper.appendLittleEndian(UInt64(16 * 1024 * 1024 + 1))
+        wrapper.appendLittleEndian(UInt64(0))
+
+        XCTAssertThrowsError(
+            try RemoteXPCMessageCodec.decodeFirstMessage(from: wrapper)
+        ) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "RemoteXPC message body exceeds the 16 MiB discovery limit."
+                )
+            )
+        }
+    }
 }
 
 private let remoteServiceHandshakeWrapper =

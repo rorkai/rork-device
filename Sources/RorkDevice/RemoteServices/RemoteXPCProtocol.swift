@@ -89,6 +89,13 @@ enum RemoteXPCMessageCodec {
     /// Object encoding version supported by this implementation.
     private static let objectVersion: UInt32 = 5
 
+    /// Largest RemoteXPC body accepted from the discovery connection.
+    ///
+    /// Service advertisements are normally only a few kilobytes. The 16 MiB
+    /// ceiling leaves substantial headroom while preventing an untrusted peer
+    /// from driving unbounded buffering with a forged wrapper length.
+    private static let maximumDiscoveryBodyLength = 16 * 1024 * 1024
+
     /// RemoteXPC object tags supported by the discovery protocol.
     private enum ObjectType: UInt32 {
         /// Explicit null value.
@@ -164,6 +171,11 @@ enum RemoteXPCMessageCodec {
         guard let bodyLength = Int(exactly: bodyLength),
               bodyLength <= Int.max - 24 else {
             throw RorkDeviceError.protocolViolation("RemoteXPC message body is too large.")
+        }
+        guard bodyLength <= maximumDiscoveryBodyLength else {
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC message body exceeds the 16 MiB discovery limit."
+            )
         }
 
         let messageLength = 24 + bodyLength

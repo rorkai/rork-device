@@ -94,7 +94,7 @@ final class RemotePairingProtocolClient {
         )
 
         let deviceResponse = try TLV8.decode(try await receivePairingData())
-        try validatePairingResponse(deviceResponse)
+        try validatePairingResponse(deviceResponse, expectedState: 0x02)
         let devicePublicKeyData = deviceResponse.value(for: 0x03)
         guard devicePublicKeyData.count == 32 else {
             throw RorkDeviceError.protocolViolation(
@@ -157,7 +157,10 @@ final class RemotePairingProtocolClient {
 
         let verificationResponse = try TLV8.decode(try await receivePairingData())
         do {
-            try validatePairingResponse(verificationResponse)
+            try validatePairingResponse(
+                verificationResponse,
+                expectedState: 0x04
+            )
         } catch {
             try? await sendPairVerificationFailed()
             throw error
@@ -227,7 +230,9 @@ final class RemotePairingProtocolClient {
                   response,
                   keys: ["response", "_1", "createListener", "port"]
               ),
-              let port = portNumber(from: portValue) else {
+              let port = RemotePairingJSONValue.positiveUInt16(
+                  from: portValue
+              ) else {
             throw RorkDeviceError.protocolViolation(
                 "Remote pairing listener response is missing a valid port."
             )
@@ -320,15 +325,23 @@ final class RemotePairingProtocolClient {
     }
 }
 
-/// Rejects a pair-verification response containing the protocol error field.
-private func validatePairingResponse(_ tlv: TLV8) throws {
+/// Validates the error and state fields in one pair-verification response.
+private func validatePairingResponse(
+    _ tlv: TLV8,
+    expectedState: UInt8
+) throws {
     let errorValue = tlv.value(for: 0x07)
-    guard let code = errorValue.first else {
-        return
+    if let code = errorValue.first {
+        throw RorkDeviceError.protocolViolation(
+            "Remote pairing rejected this host identity with error \(code)."
+        )
     }
-    throw RorkDeviceError.protocolViolation(
-        "Remote pairing rejected this host identity with error \(code)."
-    )
+
+    guard tlv.value(for: 0x06) == Data([expectedState]) else {
+        throw RorkDeviceError.protocolViolation(
+            "Remote pairing response has an unexpected pair-verification state."
+        )
+    }
 }
 
 /// Derives one directional ChaCha20-Poly1305 key from the shared secret.
@@ -397,20 +410,4 @@ private func nestedValue(_ dictionary: [String: Any], keys: [String]) -> Any? {
         value = next
     }
     return value
-}
-
-/// Converts a JSON number into a valid, nonzero TCP port.
-private func portNumber(from value: Any) -> UInt16? {
-    let integer: Int?
-    if let value = value as? Int {
-        integer = value
-    } else if let value = value as? NSNumber {
-        integer = value.intValue
-    } else {
-        integer = nil
-    }
-    guard let integer, integer > 0, integer <= Int(UInt16.max) else {
-        return nil
-    }
-    return UInt16(integer)
 }

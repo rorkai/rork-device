@@ -44,7 +44,11 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
         DeviceInfo(values: try await lockdown.deviceValues())
     }
 
-    /// Requests a service from Lockdown, connects to it, and applies security when required.
+    /// Requests a service from Lockdown and returns a protocol-ready stream.
+    ///
+    /// The backend owns the raw service connection until a required secure
+    /// upgrade succeeds. If the upgrader throws, the raw connection is closed
+    /// before the error is propagated.
     func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection {
         let service = try await lockdown.startService(serviceName, escrowBag: escrowBag)
         var connection: DeviceConnection
@@ -56,7 +60,15 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
             )
         }
         if service.requiresSecureConnection {
-            connection = try await secureSessionUpgrader.upgrade(connection, pairingRecord: pairingRecord)
+            do {
+                connection = try await secureSessionUpgrader.upgrade(
+                    connection,
+                    pairingRecord: pairingRecord
+                )
+            } catch {
+                connection.close()
+                throw error
+            }
         }
         return connection
     }
