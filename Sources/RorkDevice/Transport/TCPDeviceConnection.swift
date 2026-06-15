@@ -52,9 +52,10 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         boundToIPv4Interface interfaceIndex: UInt32,
         timeout: Duration? = nil
     ) async throws -> TCPDeviceConnection {
-        guard let socketInterfaceIndex = CInt(exactly: interfaceIndex) else {
+        guard interfaceIndex > 0,
+              let socketInterfaceIndex = CInt(exactly: interfaceIndex) else {
             throw RorkDeviceError.invalidInput(
-                "IPv4 interface index \(interfaceIndex) exceeds the socket option range."
+                "IPv4 interface index \(interfaceIndex) is not a valid socket interface index."
             )
         }
 

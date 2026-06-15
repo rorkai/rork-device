@@ -34,6 +34,25 @@ final class NetworkDeviceConnectionTests: XCTestCase {
         }) { _ in }
     }
 
+    func testSwiftNIOConnectionRejectsZeroIPv4Interface() async throws {
+        let server = try FakeUSBMuxDaemon()
+        defer { server.stop() }
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await TCPDeviceConnection.connect(
+                to: "127.0.0.1",
+                port: server.port,
+                boundToIPv4Interface: 0,
+                timeout: .seconds(1)
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput("IPv4 interface index 0 is not a valid socket interface index.")
+            )
+        }
+    }
+
     func testTLSParametersRequireProvidedInterface() async throws {
         let interface = try await loopbackInterface()
 
