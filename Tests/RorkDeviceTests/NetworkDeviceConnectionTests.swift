@@ -51,6 +51,10 @@ final class NetworkDeviceConnectionTests: XCTestCase {
             "TLS_PSK_WITH_AES_256_CBC_SHA384 (0x00AF)"
         )
         XCTAssertEqual(
+            remotePairingTLSCipherSuiteDescription(rawValue: 0x00A8),
+            "TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8)"
+        )
+        XCTAssertEqual(
             remotePairingTLSCipherSuiteDescription(rawValue: 0x008C),
             "TLS_PSK_WITH_AES_128_CBC_SHA (0x008C)"
         )

@@ -217,11 +217,16 @@ final class NetworkDeviceConnection: DeviceConnection {
 
 /// Returns a stable IANA cipher-suite name and hexadecimal code for diagnostics.
 ///
-/// The switch covers every suite currently offered by the remote-pairing
-/// transport. Unknown values retain their wire code so logs remain actionable
-/// if Apple selects a suite added by a future configuration change.
+/// The mapping includes the PSK suites configured by this transport and the
+/// GCM suites that Network.framework may negotiate from its PSK defaults.
+/// Unknown values retain their wire code so diagnostics remain useful when
+/// Apple changes the effective suite set.
 func remotePairingTLSCipherSuiteDescription(rawValue: UInt16) -> String {
     let name = switch rawValue {
+    case 0x00A9:
+        "TLS_PSK_WITH_AES_256_GCM_SHA384"
+    case 0x00A8:
+        "TLS_PSK_WITH_AES_128_GCM_SHA256"
     case 0x00AF:
         "TLS_PSK_WITH_AES_256_CBC_SHA384"
     case 0x00AE:
