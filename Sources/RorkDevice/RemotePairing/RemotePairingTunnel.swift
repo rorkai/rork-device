@@ -15,11 +15,11 @@ import Network
 public final class RemotePairingTunnel {
     /// Whether this build contains the TLS-PSK backend required by remote pairing.
     ///
-    /// The generic connection API remains available on every platform so
-    /// portable callers can compile against one surface. When this value is
-    /// `false`, `connect(to:port:using:requestedMaximumTransmissionUnit:timeout:)`
-    /// fails with `RorkDeviceError.secureSessionUnsupported` before opening a
-    /// network connection.
+    /// The generic connection API remains available when the package is built
+    /// without Apple's networking frameworks. When this value is `false`,
+    /// `connect(to:port:using:requestedMaximumTransmissionUnit:timeout:)` fails
+    /// with `RorkDeviceError.secureSessionUnsupported` before opening a network
+    /// connection.
     public static var isSupported: Bool {
         #if canImport(Network) && canImport(Security)
         true

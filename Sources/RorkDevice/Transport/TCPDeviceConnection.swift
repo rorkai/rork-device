@@ -1,7 +1,9 @@
-import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// TCP implementation of `DeviceConnection` backed by SwiftNIO.
 ///
@@ -37,7 +39,13 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         )
     }
 
+    #if canImport(Darwin)
     /// Opens a TCP connection whose IPv4 route is bound to one interface index.
+    ///
+    /// Darwin exposes `IP_BOUND_IF`, which the packet-tunnel integration uses
+    /// to keep provider-originated traffic on its virtual interface. Other
+    /// platforms retain the general TCP API without exposing this Apple socket
+    /// option.
     static func connect(
         to host: String,
         port: UInt16,
@@ -56,6 +64,7 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         )
         return try await connect(to: host, port: port, bootstrap: bootstrap)
     }
+    #endif
 
     /// Creates the shared NIO bootstrap and applies an optional connect timeout.
     private static func makeBootstrap(timeout: Duration?) -> ClientBootstrap {
