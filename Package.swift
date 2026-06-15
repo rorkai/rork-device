@@ -21,6 +21,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
         .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.100.0")),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", .upToNextMajor(from: "2.37.1")),
     ],
     targets: [
         .target(
@@ -29,6 +30,8 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOTLS", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ]
         ),
         .executableTarget(
@@ -43,6 +46,8 @@ let package = Package(
             dependencies: [
                 "RorkDevice",
                 .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ],
             resources: [
                 .process("Fixtures"),

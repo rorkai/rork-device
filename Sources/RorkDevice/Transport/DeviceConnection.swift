@@ -24,10 +24,8 @@ public protocol DeviceConnection: AnyObject {
 
 /// Optional capability for transports that can return a short read.
 ///
-/// SecureTransport callbacks should not require the lower transport to fill
-/// the entire requested buffer before returning. Socket-backed connections
-/// conform to this so TLS can consume whatever encrypted bytes are currently
-/// available and continue driving its own state machine.
+/// Socket-backed connections expose this for protocols that can consume
+/// currently available bytes without waiting for a larger fixed-size frame.
 protocol PartialReceiveDeviceConnection: DeviceConnection {
     /// Receives at least one byte and at most `byteCount` bytes.
     func receive(upTo byteCount: Int) async throws -> Data
@@ -65,19 +63,18 @@ public protocol SecureSessionUpgrader {
 
 /// Platform default secure-session upgrader.
 ///
-/// On Apple platforms this delegates to `AppleSecureSessionUpgrader`. On other
-/// platforms it fails explicitly until a backend is provided by the caller.
+/// The default delegates to `NIOSecureSessionUpgrader`, which adds TLS to the
+/// existing SwiftNIO channel used by the package's built-in transports.
 public struct DefaultSecureSessionUpgrader: SecureSessionUpgrader {
     /// Creates the default platform upgrader.
     public init() {}
 
-    /// Upgrades with the platform backend when available.
+    /// Adds TLS to an established connection backed by a built-in transport.
     public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection {
-        #if canImport(Security)
-        return try await AppleSecureSessionUpgrader().upgrade(connection, pairingRecord: pairingRecord)
-        #else
-        throw RorkDeviceError.secureSessionUnsupported
-        #endif
+        try await NIOSecureSessionUpgrader().upgrade(
+            connection,
+            pairingRecord: pairingRecord
+        )
     }
 }
 

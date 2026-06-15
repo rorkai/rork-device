@@ -36,8 +36,8 @@ public final class DeviceClient {
     ///     device-port connections.
     ///   - secureSessionUpgrader: Component responsible for upgrading
     ///     Lockdown and service connections when the device asks for secure
-    ///     traffic. The default uses the built-in Apple backend when Security
-    ///     is available and otherwise throws `secureSessionUnsupported`.
+    ///     traffic. The default inserts SwiftNIO SSL into connections opened by
+    ///     the package's built-in transports.
     public init(
         usbmuxClient: USBMuxClient = USBMuxClient(),
         secureSessionUpgrader: SecureSessionUpgrader = DefaultSecureSessionUpgrader()

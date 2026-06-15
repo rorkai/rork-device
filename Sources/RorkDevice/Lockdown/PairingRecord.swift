@@ -75,9 +75,9 @@ public struct PairingRecord: Equatable, Sendable {
     /// Names of fields missing for the built-in secure-session backend.
     ///
     /// `StartSession` itself only requires `HostID` and `SystemBUID`, but most
-    /// devices then request secure traffic. The Apple backend needs the device
-    /// certificate for server trust plus the host certificate and private key
-    /// for client identity.
+    /// devices then request secure traffic. The SwiftNIO SSL backend needs the
+    /// device certificate for server trust plus the host certificate and
+    /// private key for client identity.
     public var missingSecureSessionFields: [String] {
         [
             ("DeviceCertificate", deviceCertificate),

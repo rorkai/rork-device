@@ -37,8 +37,8 @@ tests and clear public API boundaries.
 - **Device events** - watch usbmux attach and detach events through an
   `AsyncThrowingStream`.
 - **Secure sessions** - upgrade Lockdown and secure service connections through
-  a public `SecureSessionUpgrader` protocol, with an Apple Security.framework
-  backend enabled by default on Apple platforms.
+  a public `SecureSessionUpgrader` protocol, with a SwiftNIO SSL backend enabled
+  by default for the package's built-in transports.
 - **Lockdown values** - query common device identity and OS metadata through a
   typed `DeviceInfo` summary.
 - **AFC staging** - create `/PublicStaging` and upload IPA files or in-memory
@@ -173,8 +173,9 @@ CLI continues to use usbmux or a direct Lockdown endpoint.
 ## Platform Support
 
 The package currently targets macOS 13 or later and iOS 16 or later. Lockdown
-secure-session upgrades and remote-pairing TLS-PSK connections use built-in
-Apple backends based on Security.framework and Network.framework.
+secure-session upgrades use SwiftNIO SSL on the package's SwiftNIO transports.
+Remote-pairing TLS-PSK connections use the Apple Network.framework and
+Security.framework backend described below.
 
 `RemotePairingTunnel.isSupported` reports whether the bundled remote-pairing
 transport is available in the current process. Calling `connect` when it is not
