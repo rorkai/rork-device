@@ -32,8 +32,9 @@ Out of scope for 0.1.0:
 - Windows support.
 
 Secure-session upgrades are represented by the public `SecureSessionUpgrader`
-protocol. The Apple backend is built in for 0.1.0, and additional platform
-backends can be added without changing the high-level install flow.
+protocol. The current default inserts SwiftNIO SSL into the package's existing
+SwiftNIO channels, and callers can provide another backend without changing the
+high-level install flow.
 
 ## 0.2.0: Device Events And File Access
 

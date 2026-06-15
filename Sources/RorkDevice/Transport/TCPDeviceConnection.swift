@@ -10,7 +10,11 @@ import Darwin
 /// TCP is used for direct Lockdown endpoints, tunnel-backed service ports, and
 /// test daemons. The public API remains a small async byte stream while NIO
 /// handles DNS resolution, non-blocking connect, read readiness, and writes.
-public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
+public final class TCPDeviceConnection:
+    DeviceConnection,
+    PartialReceiveDeviceConnection,
+    NIOSecureSessionConnection
+{
     /// Shared NIO byte stream used by the public connection wrapper.
     private let connection: NIODeviceConnection
 
@@ -108,6 +112,13 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
     /// Receives at least one byte and at most `count` bytes.
     func receive(upTo count: Int) async throws -> Data {
         try await connection.receive(upTo: count)
+    }
+
+    /// Inserts client-authenticated TLS into the established TCP channel.
+    func startSecureSession(
+        using configuration: NIOSecureSessionConfiguration
+    ) async throws {
+        try await connection.startSecureSession(using: configuration)
     }
 
     /// Closes the channel. Calling this more than once is safe.

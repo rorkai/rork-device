@@ -7,7 +7,11 @@ import NIOPosix
 /// The local usbmux daemon is normally reached through a Unix-domain socket on
 /// macOS and Linux. This wrapper keeps that transport available while sharing
 /// the same NIO byte-stream adapter used by TCP connections.
-public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveDeviceConnection {
+public final class UnixDomainSocketConnection:
+    DeviceConnection,
+    PartialReceiveDeviceConnection,
+    NIOSecureSessionConnection
+{
     /// Shared NIO byte stream used by the public connection wrapper.
     private let connection: NIODeviceConnection
 
@@ -50,6 +54,13 @@ public final class UnixDomainSocketConnection: DeviceConnection, PartialReceiveD
     /// Receives at least one byte and at most `count` bytes.
     func receive(upTo count: Int) async throws -> Data {
         try await connection.receive(upTo: count)
+    }
+
+    /// Inserts client-authenticated TLS into the usbmux byte-stream channel.
+    func startSecureSession(
+        using configuration: NIOSecureSessionConfiguration
+    ) async throws {
+        try await connection.startSecureSession(using: configuration)
     }
 
     /// Closes the channel. Calling this more than once is safe.

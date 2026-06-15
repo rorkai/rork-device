@@ -1,6 +1,8 @@
 import Foundation
 import NIOCore
 import NIOFoundationCompat
+import NIOSSL
+import NIOTLS
 
 /// SwiftNIO-backed byte stream used by concrete device transports.
 ///
@@ -40,6 +42,9 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
     /// Tracks local close so it is rejected synchronously before `close()`
     /// returns, preventing late reads from draining still-buffered bytes.
     private var closedLocally = false
+
+    /// Prevents a second TLS handler from being inserted into the same channel.
+    private var secureSessionStarted = false
 
     /// Creates a connection around an async-wrapped NIO channel.
     ///
@@ -94,6 +99,56 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         return try await coordinator.read(.upTo(byteCount))
     }
 
+    /// Inserts a SwiftNIO SSL client handler and waits for its handshake.
+    ///
+    /// The handler is placed before the async byte-stream adapter so inbound
+    /// buffers are decrypted before the receive coordinator sees them and
+    /// outbound writes are encrypted before reaching the socket.
+    func startSecureSession(
+        using configuration: NIOSecureSessionConfiguration
+    ) async throws {
+        try beginSecureSession()
+
+        let certificatePin = DeviceCertificatePin(
+            expectedCertificate: configuration.trustedServerCertificate
+        )
+        let channel = self.channel
+        let setupPromise = channel.eventLoop.makePromise(of: Void.self)
+        let handshakePromise = channel.eventLoop.makePromise(of: Void.self)
+
+        channel.eventLoop.execute {
+            do {
+                let tlsHandler = try NIOSSLClientHandler(
+                    context: configuration.context,
+                    serverHostname: nil,
+                    customVerificationCallback: certificatePin.verify
+                )
+                let handshakeObserver = NIOSSLHandshakeObserver(
+                    promise: handshakePromise
+                )
+                try channel.pipeline.syncOperations.addHandlers(
+                    [tlsHandler, handshakeObserver],
+                    position: .first
+                )
+                setupPromise.succeed(())
+            } catch {
+                setupPromise.fail(error)
+            }
+        }
+
+        do {
+            try await setupPromise.futureResult.get()
+            try await handshakePromise.futureResult.get()
+        } catch {
+            if let verificationFailure = certificatePin.failureDescription {
+                throw RorkDeviceError.secureSession(verificationFailure)
+            }
+            throw RorkDeviceError.secureSession(
+                "TLS handshake failed: \(describeTransportError(error))"
+            )
+        }
+    }
+
     /// Closes the channel and fails any in-flight or future reads.
     func close() {
         stateLock.lock()
@@ -126,6 +181,141 @@ final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnectio
         if closedLocally {
             throw NIODeviceConnection.closedError
         }
+    }
+
+    /// Reserves the channel for one TLS upgrade while checking close state.
+    private func beginSecureSession() throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !closedLocally else {
+            throw NIODeviceConnection.closedError
+        }
+        guard !secureSessionStarted else {
+            throw RorkDeviceError.secureSession(
+                "The connection already has a secure session."
+            )
+        }
+        secureSessionStarted = true
+    }
+}
+
+/// Exact certificate pin evaluated by NIOSSL's verification callback.
+///
+/// The callback and awaiting task may run on different executors. The lock
+/// protects the diagnostic state that explains a rejected handshake.
+private final class DeviceCertificatePin: @unchecked Sendable {
+    /// DER bytes copied from the device certificate in the pairing record.
+    private let expectedCertificate: Data
+
+    /// Guards the failure description shared with the awaiting task.
+    private let lock = NSLock()
+
+    /// Specific certificate failure recorded during verification.
+    private var storedFailureDescription: String?
+
+    /// Creates a verifier for one pairing-record certificate.
+    init(expectedCertificate: Data) {
+        self.expectedCertificate = expectedCertificate
+    }
+
+    /// Diagnostic recorded when the peer omits or changes its leaf certificate.
+    var failureDescription: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedFailureDescription
+    }
+
+    /// Completes NIOSSL verification from the peer's unvalidated certificate chain.
+    func verify(
+        certificates: [NIOSSLCertificate],
+        promise: EventLoopPromise<NIOSSLVerificationResult>
+    ) {
+        let result: NIOSSLVerificationResult
+        do {
+            guard let leafCertificate = certificates.first else {
+                recordFailure(
+                    "Device did not present a server certificate."
+                )
+                promise.succeed(.failed)
+                return
+            }
+
+            if Data(try leafCertificate.toDERBytes()) == expectedCertificate {
+                result = .certificateVerified
+            } else {
+                recordFailure(
+                    "Device server certificate did not match the pairing record."
+                )
+                result = .failed
+            }
+        } catch {
+            recordFailure(
+                "Could not read the device server certificate: \(error)"
+            )
+            result = .failed
+        }
+        promise.succeed(result)
+    }
+
+    /// Stores the first verification failure without overwriting its cause.
+    private func recordFailure(_ description: String) {
+        lock.lock()
+        if storedFailureDescription == nil {
+            storedFailureDescription = description
+        }
+        lock.unlock()
+    }
+}
+
+/// Resolves an async waiter when NIOSSL completes or aborts its handshake.
+private final class NIOSSLHandshakeObserver: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+
+    /// Promise awaited by `NIODeviceConnection.startSecureSession`.
+    private let promise: EventLoopPromise<Void>
+
+    /// Prevents channel shutdown after success from completing the promise twice.
+    private var completed = false
+
+    /// Creates an observer bound to the channel's event loop.
+    init(promise: EventLoopPromise<Void>) {
+        self.promise = promise
+    }
+
+    /// Completes successfully when NIOSSL publishes its handshake event.
+    func userInboundEventTriggered(
+        context: ChannelHandlerContext,
+        event: Any
+    ) {
+        if let tlsEvent = event as? TLSUserEvent,
+           case .handshakeCompleted = tlsEvent {
+            complete(.success(()))
+        }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    /// Completes with the TLS failure while preserving normal pipeline delivery.
+    func errorCaught(
+        context: ChannelHandlerContext,
+        error: Error
+    ) {
+        complete(.failure(error))
+        context.fireErrorCaught(error)
+    }
+
+    /// Reports a peer close that occurs before the handshake completes.
+    func channelInactive(context: ChannelHandlerContext) {
+        complete(.failure(NIODeviceConnection.peerClosedError))
+        context.fireChannelInactive()
+    }
+
+    /// Resolves the handshake promise exactly once on its event loop.
+    private func complete(_ result: Result<Void, Error>) {
+        guard !completed else {
+            return
+        }
+        completed = true
+        promise.completeWith(result)
     }
 }
 
