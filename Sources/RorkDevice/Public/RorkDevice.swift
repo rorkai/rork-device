@@ -7,24 +7,26 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.2.1"
+    public static let version = "0.3.0"
 }
 
-/// High-level entry point for device discovery and authenticated sessions.
+/// High-level entry point for device discovery and service sessions.
 ///
-/// `DeviceClient` owns the top-level flow most callers need:
+/// `DeviceClient` supports two connection routes:
 ///
-/// 1. Discover devices through the local usbmux daemon.
-/// 2. Open Lockdown using an existing pairing record.
-/// 3. Upgrade the connection when Lockdown requests secure traffic.
-/// 4. Return a `DeviceSession` that can start AFC, MISAgent, and
-///    InstallationProxy services.
+/// - authenticated Lockdown over usbmux or a direct endpoint, using an existing
+///   pairing record;
+/// - direct connections to service ports advertised by Remote Service
+///   Discovery after a remote-pairing tunnel has been established.
 ///
-/// The 0.1.0 API assumes the device is already paired. Pairing creation is kept
-/// out of this first vertical slice so installation flows can be implemented and
-/// tested against known pairing records first.
+/// Both routes return `DeviceSession`, so AFC staging, provisioning-profile
+/// management, heartbeat, and InstallationProxy workflows do not depend on the
+/// transport selected by the application.
 public final class DeviceClient {
+    /// Client used to discover devices and open usbmux-forwarded connections.
     private let usbmuxClient: USBMuxClient
+
+    /// Strategy used when Lockdown requires a secure service connection.
     private let secureSessionUpgrader: SecureSessionUpgrader
 
     /// Creates a client with injectable transport and secure-session behavior.
@@ -138,6 +140,56 @@ public final class DeviceClient {
         return try await openSession(transport: transport, pairingRecord: pairingRecord, label: label)
     }
 
+    /// Opens a live Remote Service Discovery session through an active tunnel.
+    ///
+    /// The method connects to the tunnel's negotiated discovery port, completes
+    /// the HTTP/2 and RemoteXPC handshake, and builds a service directory from
+    /// the device's current advertisement. It retains the discovery connection
+    /// inside the returned session so those advertised ports remain valid while
+    /// AFC, MISAgent, and InstallationProxy connections are opened.
+    ///
+    /// The caller remains responsible for retaining the packet tunnel itself.
+    /// Closing or replacing that tunnel invalidates both the discovery channel
+    /// and every service port returned by the advertisement.
+    ///
+    /// - Parameters:
+    ///   - host: Device-side IPv6 address reachable through the packet tunnel.
+    ///   - port: Remote Service Discovery port negotiated for that tunnel.
+    ///   - label: Client label included in each service check-in request.
+    /// - Returns: A session backed by the device's live RSD advertisement.
+    /// - Throws: Transport failures while opening the discovery endpoint, or
+    ///   `RorkDeviceError.protocolViolation` when the HTTP/2, RemoteXPC, or RSD
+    ///   handshake is malformed.
+    public func connect(
+        toRemoteServicesAt host: String,
+        port: UInt16,
+        label: String = "rorkdevice"
+    ) async throws -> DeviceSession {
+        let connection: DeviceConnection
+        do {
+            connection = try await TCPDeviceConnection.connect(
+                to: host,
+                port: port
+            )
+        } catch {
+            throw RorkDeviceError.transport(
+                "Failed to connect Remote Service Discovery on \(host):\(port): \(describeDeviceSessionError(error))"
+            )
+        }
+
+        let discoverySession = try await RemoteServiceDiscoverySession.open(
+            over: connection
+        )
+        return DeviceSession(
+            backend: RemoteServiceSessionBackend(
+                host: host,
+                directory: discoverySession.directory,
+                label: label,
+                retaining: discoverySession
+            )
+        )
+    }
+
     /// Shared implementation for direct and usbmux-backed Lockdown sessions.
     private func openSession(
         transport: DeviceTransport,
@@ -162,6 +214,7 @@ public final class DeviceClient {
 }
 
 private extension DeviceEvent {
+    /// Converts the usbmux protocol event into the transport-neutral public model.
     init(_ event: USBMuxDeviceEvent) {
         switch event {
         case .attached(let device):

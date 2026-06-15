@@ -1,6 +1,9 @@
 import Foundation
 import NIOCore
 import NIOPosix
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// TCP implementation of `DeviceConnection` backed by SwiftNIO.
 ///
@@ -29,11 +32,56 @@ public final class TCPDeviceConnection: DeviceConnection, PartialReceiveDeviceCo
         port: UInt16,
         timeout: Duration? = nil
     ) async throws -> TCPDeviceConnection {
-        var bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
-        if let timeout {
-            bootstrap = bootstrap.connectTimeout(timeout.nioTimeAmount)
+        try await connect(
+            to: host,
+            port: port,
+            bootstrap: makeBootstrap(timeout: timeout)
+        )
+    }
+
+    #if canImport(Darwin)
+    /// Opens a TCP connection whose IPv4 route is bound to one interface index.
+    ///
+    /// Darwin exposes `IP_BOUND_IF`, which the packet-tunnel integration uses
+    /// to keep provider-originated traffic on its virtual interface. Other
+    /// platforms retain the general TCP API without exposing this Apple socket
+    /// option.
+    static func connect(
+        to host: String,
+        port: UInt16,
+        boundToIPv4Interface interfaceIndex: UInt32,
+        timeout: Duration? = nil
+    ) async throws -> TCPDeviceConnection {
+        guard interfaceIndex > 0,
+              let socketInterfaceIndex = CInt(exactly: interfaceIndex) else {
+            throw RorkDeviceError.invalidInput(
+                "IPv4 interface index \(interfaceIndex) is not a valid socket interface index."
+            )
         }
 
+        let bootstrap = makeBootstrap(timeout: timeout).channelOption(
+            .socket(IPPROTO_IP, IP_BOUND_IF),
+            value: socketInterfaceIndex
+        )
+        return try await connect(to: host, port: port, bootstrap: bootstrap)
+    }
+    #endif
+
+    /// Creates the shared NIO bootstrap and applies an optional connect timeout.
+    private static func makeBootstrap(timeout: Duration?) -> ClientBootstrap {
+        let bootstrap = ClientBootstrap(group: NIOTransportRuntime.eventLoopGroup)
+        guard let timeout else {
+            return bootstrap
+        }
+        return bootstrap.connectTimeout(timeout.nioTimeAmount)
+    }
+
+    /// Opens and wraps an NIO channel using a prepared bootstrap.
+    private static func connect(
+        to host: String,
+        port: UInt16,
+        bootstrap: ClientBootstrap
+    ) async throws -> TCPDeviceConnection {
         do {
             let asyncChannel = try await bootstrap.connect(host: host, port: Int(port)) { channel in
                 channel.eventLoop.makeCompletedFuture {

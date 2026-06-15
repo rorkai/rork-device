@@ -1,26 +1,22 @@
 import Foundation
 
-/// Authenticated device session with helpers for developer-service workflows.
+/// Connected device service environment for installation and diagnostics.
 ///
-/// A session is created after Lockdown accepts a pairing record. It keeps the
-/// authenticated Lockdown client plus the transport needed to open additional
-/// services on the same device. The high-level methods here implement the
-/// 0.1.0 app-install vertical slice:
+/// A session hides how service endpoints are discovered. Lockdown-backed
+/// sessions start services through an authenticated Lockdown connection, while
+/// remote sessions connect to ports advertised by Remote Service Discovery and
+/// complete the required RSD check-in. The higher-level AFC, MISAgent,
+/// heartbeat, HouseArrest, and InstallationProxy workflows are identical for
+/// both routes.
 ///
-/// - query device information through Lockdown,
-/// - install provisioning profiles through MISAgent,
-/// - stage IPA archives through AFC,
-/// - list, install, and uninstall apps through InstallationProxy.
-///
-/// `DeviceSession` does not own pairing creation. Callers must provide a valid
-/// pairing record when opening the session through `DeviceClient`.
+/// Each operation opens the service connection it needs. Callers may therefore
+/// retain a session for a complete install workflow without managing individual
+/// service ports or protocol handshakes.
 public final class DeviceSession {
-    private let transport: DeviceTransport
-    private let lockdown: LockdownClient
-    private let pairingRecord: PairingRecord
-    private let label: String
-    private let secureSessionUpgrader: SecureSessionUpgrader
+    /// Backend that resolves and opens services for this session's transport.
+    private let backend: DeviceSessionBackend
 
+    /// Creates a Lockdown-backed session from an authenticated connection.
     init(
         transport: DeviceTransport,
         lockdown: LockdownClient,
@@ -28,34 +24,45 @@ public final class DeviceSession {
         label: String,
         secureSessionUpgrader: SecureSessionUpgrader
     ) {
-        self.transport = transport
-        self.lockdown = lockdown
-        self.pairingRecord = pairingRecord
-        self.label = label
-        self.secureSessionUpgrader = secureSessionUpgrader
+        backend = LockdownDeviceSessionBackend(
+            transport: transport,
+            lockdown: lockdown,
+            pairingRecord: pairingRecord,
+            secureSessionUpgrader: secureSessionUpgrader
+        )
     }
 
-    /// Queries the default Lockdown value domain and returns common fields.
+    /// Creates a session around a transport-independent service backend.
+    init(backend: DeviceSessionBackend) {
+        self.backend = backend
+    }
+
+    /// Returns the identity information available for the connected device.
     ///
-    /// Use this as a lightweight readiness check after opening a session. More
-    /// specialized Lockdown values can be queried through `LockdownClient`
-    /// directly when needed.
+    /// Lockdown sessions return common values from the device's default value
+    /// domain. Remote Service Discovery sessions return the device identifier
+    /// recorded in their service manifest. This makes the method suitable for
+    /// validating that a session targets the expected physical device without
+    /// requiring callers to know which transport created it.
     ///
-    /// - Returns: Common identity and OS fields from Lockdown.
-    /// - Throws: `RorkDeviceError.protocolViolation` when the response does
-    ///   not contain a dictionary, plus lower-level transport errors.
+    /// - Returns: Device identity and OS fields available from the active
+    ///   session backend.
+    /// - Throws: A transport or protocol error when the backend cannot obtain
+    ///   valid device information.
     public func fetchDeviceInfo() async throws -> DeviceInfo {
-        DeviceInfo(values: try await lockdown.deviceValues())
+        try await backend.fetchDeviceInfo()
     }
 
-    /// Starts a typed Lockdown service and opens its service connection.
+    /// Opens a modeled device service on the active session route.
     ///
     /// This overload covers services modeled by rork-device. Use
     /// `startService(named:escrowBag:)` for lower-level workflows that need a
     /// service identifier not yet represented by `LockdownServiceName`.
+    /// Lockdown sessions request the service from lockdownd; RSD sessions resolve
+    /// and connect to the corresponding `.shim.remote` endpoint.
     ///
     /// - Parameters:
-    ///   - serviceName: Modeled Lockdown service identifier.
+    ///   - serviceName: Modeled device service identifier.
     ///   - escrowBag: Optional escrow material from a pairing record. Leave
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
@@ -64,32 +71,24 @@ public final class DeviceSession {
         try await startService(named: serviceName.rawValue, escrowBag: escrowBag)
     }
 
-    /// Starts a Lockdown service by raw service identifier.
+    /// Opens a device service by its raw Lockdown identifier.
     ///
-    /// If Lockdown marks the service as secure, this method upgrades the
-    /// returned service connection using the same `SecureSessionUpgrader` that
-    /// was configured for the session.
+    /// Lockdown-backed sessions ask lockdownd to start the named service and
+    /// upgrade the returned connection when required. RSD-backed sessions look
+    /// up either the exact name or its `.shim.remote` variant, connect to the
+    /// advertised port, and complete RSD check-in before returning.
     ///
     /// - Parameters:
-    ///   - serviceName: Raw Lockdown service identifier.
+    ///   - serviceName: Raw Lockdown service identifier. RSD sessions derive the
+    ///     corresponding remote shim name automatically.
     ///   - escrowBag: Optional escrow material from a pairing record. Leave
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
+    /// - Throws: `RorkDeviceError.protocolViolation` when the service is absent
+    ///   or its handshake is invalid, plus lower-level transport errors.
     public func startService(named serviceName: String, escrowBag: Data? = nil) async throws -> DeviceConnection {
-        let service = try await lockdown.startService(serviceName, escrowBag: escrowBag)
-        var connection: DeviceConnection
-        do {
-            connection = try await transport.connect(to: service.port)
-        } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect \(service.name) on service port \(service.port): \(describeDeviceSessionError(error))"
-            )
-        }
-        if service.requiresSecureConnection {
-            connection = try await secureSessionUpgrader.upgrade(connection, pairingRecord: pairingRecord)
-        }
-        return connection
+        try await backend.startService(named: serviceName, escrowBag: escrowBag)
     }
 
     /// Reads and installs a provisioning profile through MISAgent.
@@ -295,13 +294,6 @@ public final class DeviceSession {
         let client = HouseArrestClient(connection: connection)
         return try await client.openApplicationContainer(bundleIdentifier: bundleIdentifier, scope: scope)
     }
-}
-
-private func describeDeviceSessionError(_ error: Error) -> String {
-    if let deviceError = error as? RorkDeviceError {
-        return deviceError.description
-    }
-    return error.localizedDescription
 }
 
 /// Lockdown services exposed by the high-level install workflow.

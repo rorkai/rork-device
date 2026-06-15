@@ -214,6 +214,38 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertTrue(daemon.connectedPorts.contains(62078))
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
     }
+
+    func testSecureServiceConnectionClosesWhenUpgradeFails() async throws {
+        let lockdownConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Port": 1234,
+                "EnableServiceSSL": true,
+            ])
+        )
+        let serviceConnection = FakeConnection()
+        let expectedError = RorkDeviceError.secureSession(
+            "Deliberate secure-upgrade failure."
+        )
+        let backend = LockdownDeviceSessionBackend(
+            transport: StaticDeviceTransport(connection: serviceConnection),
+            lockdown: LockdownClient(connection: lockdownConnection),
+            pairingRecord: try testPairingRecord(),
+            secureSessionUpgrader: FailingSecureSessionUpgrader(
+                error: expectedError
+            )
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await backend.startService(
+                named: LockdownServiceName.afc.rawValue,
+                escrowBag: nil
+            )
+        }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, expectedError)
+        }
+
+        XCTAssertTrue(serviceConnection.isClosed)
+    }
 }
 
 private final class RecordingSecureSessionUpgrader: SecureSessionUpgrader {
@@ -229,6 +261,31 @@ private final class RecordingSecureSessionUpgrader: SecureSessionUpgrader {
             _upgradeCount += 1
         }
         return connection
+    }
+}
+
+/// Returns one preconstructed connection for backend ownership tests.
+private struct StaticDeviceTransport: DeviceTransport {
+    /// Connection handed to the first service request.
+    let connection: DeviceConnection
+
+    /// Returns the preconstructed connection without opening a real transport.
+    func connect(to _: UInt16) async throws -> DeviceConnection {
+        connection
+    }
+}
+
+/// Fails every secure-session upgrade with a caller-supplied error.
+private struct FailingSecureSessionUpgrader: SecureSessionUpgrader {
+    /// Error propagated from `upgrade(_:pairingRecord:)`.
+    let error: Error
+
+    /// Rejects the upgrade so the backend's cleanup path can be observed.
+    func upgrade(
+        _: DeviceConnection,
+        pairingRecord _: PairingRecord
+    ) async throws -> DeviceConnection {
+        throw error
     }
 }
 
