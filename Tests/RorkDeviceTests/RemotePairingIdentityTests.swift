@@ -68,6 +68,27 @@ final class RemotePairingIdentityTests: XCTestCase {
         )
     }
 
+    func testCreatesTemporaryIdentityFileWithOwnerOnlyPermissions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = directory.appendingPathComponent("identity.plist")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let fileManager = RecordingIdentityFileManager()
+
+        try RemotePairingIdentity.generate().write(
+            to: file,
+            fileManager: fileManager
+        )
+
+        XCTAssertEqual(fileManager.createdFilePermissions, 0o600)
+    }
+
     func testLoadOrCreatePersistsAndReusesOneIdentity() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -222,6 +243,31 @@ final class RemotePairingIdentityTests: XCTestCase {
         XCTAssertEqual(
             Mirror(reflecting: identity).children.compactMap(\.label),
             ["identifier"]
+        )
+    }
+}
+
+/// Records the permissions supplied when an identity file is created.
+///
+/// The real file operation still runs so the test exercises the complete
+/// atomic-write path while observing the security-sensitive creation mode.
+private final class RecordingIdentityFileManager: FileManager {
+    /// POSIX mode supplied for the most recently created file.
+    private(set) var createdFilePermissions: Int?
+
+    /// Captures creation attributes before delegating to `FileManager`.
+    override func createFile(
+        atPath path: String,
+        contents data: Data? = nil,
+        attributes attr: [FileAttributeKey: Any]? = nil
+    ) -> Bool {
+        createdFilePermissions = (
+            attr?[.posixPermissions] as? NSNumber
+        )?.intValue
+        return super.createFile(
+            atPath: path,
+            contents: data,
+            attributes: attr
         )
     }
 }

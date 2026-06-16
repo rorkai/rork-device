@@ -256,8 +256,27 @@ public struct RemotePairingIdentity:
         to url: URL,
         format: PropertyListSerialization.PropertyListFormat = .binary
     ) throws {
+        try write(to: url, format: format, fileManager: .default)
+    }
+
+    /// Persists an identity using an injectable file manager.
+    ///
+    /// Supplying the file manager keeps creation-mode behavior observable in
+    /// tests while production callers use `FileManager.default` through the
+    /// public overload. The temporary file receives owner-only permissions at
+    /// creation, before any credential bytes are written.
+    ///
+    /// - Parameters:
+    ///   - url: Destination property-list file.
+    ///   - format: Property-list encoding to write.
+    ///   - fileManager: File-system implementation used for creation and commit.
+    /// - Throws: Serialization or file-system errors.
+    func write(
+        to url: URL,
+        format: PropertyListSerialization.PropertyListFormat = .binary,
+        fileManager: FileManager
+    ) throws {
         let data = try propertyList(format: format)
-        let fileManager = FileManager.default
         let temporaryURL = url
             .deletingLastPathComponent()
             .appendingPathComponent(
@@ -265,11 +284,23 @@ public struct RemotePairingIdentity:
             )
 
         do {
-            try data.write(to: temporaryURL)
-            try fileManager.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o600)],
-                ofItemAtPath: temporaryURL.path
-            )
+            guard fileManager.createFile(
+                atPath: temporaryURL.path,
+                contents: nil,
+                attributes: [
+                    .posixPermissions: NSNumber(value: 0o600),
+                ]
+            ) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let handle = try FileHandle(forWritingTo: temporaryURL)
+            do {
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } catch {
+                try? handle.close()
+                throw error
+            }
             if fileManager.fileExists(atPath: url.path) {
                 _ = try fileManager.replaceItemAt(
                     url,

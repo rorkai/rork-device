@@ -89,7 +89,7 @@ The fourth release owns the complete unprivileged CoreDevice route for a
 USB-connected device:
 
 - Require complete identity material, including the 16-byte identity resolving
-  key used by manual pair setup.
+  key used by manual pair-setup.
 - Generate new Ed25519 identities with independent resolving keys and persist
   them atomically with owner-only permissions.
 - Read the trusted Lockdown pairing record directly from local `usbmuxd`.

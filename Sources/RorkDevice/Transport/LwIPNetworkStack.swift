@@ -259,6 +259,8 @@ final class LwIPNetworkStack: @unchecked Sendable {
         }
         Self.queue.async {
             handle.destroyConnection()
+            // Keep the callback target alive until C has detached and released
+            // every reference that can use its unretained context pointer.
             _ = state
         }
     }
@@ -355,9 +357,15 @@ private final class LwIPOutputSink: @unchecked Sendable {
 }
 
 /// Mutable async state associated with one lwIP TCP control block.
-private final class LwIPConnectionState: @unchecked Sendable {
+final class LwIPConnectionState: @unchecked Sendable {
+    /// Async sleep implementation used by the handshake timeout task.
+    typealias TimeoutSleep = @Sendable (Duration) async throws -> Void
+
     /// Protects all fields because C callbacks and async callers use different executors.
     private let lock = NSLock()
+
+    /// Sleep operation used to enforce the connection deadline.
+    private let timeoutSleep: TimeoutSleep
 
     /// Buffered bytes not yet consumed by `receive(exactly:)`.
     private var inbound = Data()
@@ -370,6 +378,9 @@ private final class LwIPConnectionState: @unchecked Sendable {
 
     /// Continuation waiting for the initial TCP handshake.
     private var connectionWaiter: CheckedContinuation<Void, Error>?
+
+    /// Cancellable task enforcing the initial TCP handshake deadline.
+    private var connectionTimeoutTask: Task<Void, Never>?
 
     /// Exact-read continuation, limited to one active protocol reader.
     private var receiveWaiter: (
@@ -385,6 +396,19 @@ private final class LwIPConnectionState: @unchecked Sendable {
         generation: UInt64,
         continuation: CheckedContinuation<Void, Error>
     )] = []
+
+    /// Creates connection state with a configurable deadline clock.
+    ///
+    /// The default uses Swift's continuous clock. Supplying another operation
+    /// allows deterministic deadline control without changing connection-state
+    /// transitions.
+    init(
+        timeoutSleep: @escaping TimeoutSleep = {
+            try await Task.sleep(for: $0)
+        }
+    ) {
+        self.timeoutSleep = timeoutSleep
+    }
 
     /// Waits for the three-way TCP handshake or fails it after `timeout`.
     func waitUntilConnected(timeout: Duration) async throws {
@@ -406,12 +430,16 @@ private final class LwIPConnectionState: @unchecked Sendable {
                 "Only one task may await an lwIP connection handshake."
             )
             connectionWaiter = continuation
-            lock.unlock()
-
-            Task { [weak self] in
-                try? await Task.sleep(for: timeout)
+            let timeoutSleep = self.timeoutSleep
+            connectionTimeoutTask = Task { [weak self] in
+                do {
+                    try await timeoutSleep(timeout)
+                } catch {
+                    return
+                }
                 self?.finishConnectingAfterTimeout()
             }
+            lock.unlock()
         }
     }
 
@@ -523,12 +551,15 @@ private final class LwIPConnectionState: @unchecked Sendable {
         terminalError = error
         let connectionWaiter = self.connectionWaiter
         self.connectionWaiter = nil
+        let connectionTimeoutTask = self.connectionTimeoutTask
+        self.connectionTimeoutTask = nil
         let receiveWaiter = self.receiveWaiter
         self.receiveWaiter = nil
         let writableWaiters = self.writableWaiters
         self.writableWaiters.removeAll()
         lock.unlock()
 
+        connectionTimeoutTask?.cancel()
         connectionWaiter?.resume(throwing: error)
         receiveWaiter?.continuation.resume(throwing: error)
         writableWaiters.forEach {
@@ -537,7 +568,7 @@ private final class LwIPConnectionState: @unchecked Sendable {
     }
 
     /// Completes the handshake waiter exactly once.
-    private func handleConnected() {
+    func handleConnected() {
         lock.lock()
         guard terminalError == nil, !isConnected else {
             lock.unlock()
@@ -546,7 +577,10 @@ private final class LwIPConnectionState: @unchecked Sendable {
         isConnected = true
         let waiter = connectionWaiter
         connectionWaiter = nil
+        let timeoutTask = connectionTimeoutTask
+        connectionTimeoutTask = nil
         lock.unlock()
+        timeoutTask?.cancel()
         waiter?.resume()
     }
 
@@ -587,18 +621,20 @@ private final class LwIPConnectionState: @unchecked Sendable {
     /// Converts an unfinished handshake into a terminal timeout.
     private func finishConnectingAfterTimeout() {
         lock.lock()
-        let shouldTimeout =
-            !isConnected &&
-            terminalError == nil &&
-            connectionWaiter != nil
-        lock.unlock()
-        if shouldTimeout {
-            finish(
-                with: RorkDeviceError.transport(
-                    "Timed out opening the CoreDevice userspace TCP connection."
-                )
-            )
+        guard !isConnected,
+              terminalError == nil,
+              let waiter = connectionWaiter else {
+            lock.unlock()
+            return
         }
+        let error = RorkDeviceError.transport(
+            "Timed out opening the CoreDevice userspace TCP connection."
+        )
+        terminalError = error
+        connectionWaiter = nil
+        connectionTimeoutTask = nil
+        lock.unlock()
+        waiter.resume(throwing: error)
     }
 }
 

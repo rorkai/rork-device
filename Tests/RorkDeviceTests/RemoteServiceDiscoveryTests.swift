@@ -114,6 +114,39 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
         XCTAssertEqual(discovery.directory.deviceIdentifier, "device-1")
     }
 
+    func testRejectsTooManyMessagesWithoutAServiceDirectory() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        for identifier in 1...33 {
+            let message = try RemoteXPCMessageCodec.encode(
+                value: .dictionary([
+                    "MessageType": .string("NotAHandshake"),
+                ]),
+                flags: 0x00000101,
+                messageIdentifier: UInt64(identifier)
+            )
+            inbound.append(
+                remoteXPCTestFrame(
+                    type: 0x00,
+                    streamIdentifier: 1,
+                    payload: message
+                )
+            )
+        }
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await RemoteServiceDiscoverySession.open(
+                over: FakeConnection(inbound: inbound)
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "Remote Service Discovery received too many messages without a handshake."
+                )
+            )
+        }
+    }
+
     func testRejectsRemoteXPCBodyLargerThanGlobalLimit() throws {
         var wrapper = Data()
         wrapper.appendLittleEndian(UInt32(0x29b00b92))

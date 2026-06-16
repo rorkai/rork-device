@@ -99,6 +99,40 @@ final class RemotePairingControlChannelTests: XCTestCase {
         XCTAssertEqual(sequenceNumber, 1)
         XCTAssertEqual(pairingPayload["data"], .data(hostPairingData))
     }
+
+    func testRemoteXPCChannelRejectsTooManyNonEnvelopeMessages() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        for identifier in 1...33 {
+            let message = try RemoteXPCMessageCodec.encode(
+                value: .dictionary([
+                    "setup": .uint64(UInt64(identifier)),
+                ]),
+                flags: 0x00000101,
+                messageIdentifier: UInt64(identifier)
+            )
+            inbound.append(
+                remoteXPCTestFrame(
+                    type: 0x00,
+                    streamIdentifier: 1,
+                    payload: message
+                )
+            )
+        }
+        let channel = try await RemotePairingRemoteXPCChannel.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await channel.receivePlain()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "Remote pairing received too many messages without a control-channel envelope."
+                )
+            )
+        }
+    }
 }
 
 private func pairingControlNestedValue(

@@ -127,6 +127,24 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         waitTask.cancel()
         client.close()
     }
+
+    func testWaitUntilClosedCompletesNormallyAfterExplicitClose() async throws {
+        let gateway = try await CoreDeviceUserspaceGateway.start(
+            deviceAddress: "fd00::1",
+            host: "127.0.0.1",
+            port: 0
+        ) { _ in
+            GatewayTestConnection(response: Data())
+        }
+        let waitTask = Task {
+            try await gateway.waitUntilClosed()
+        }
+
+        await Task.yield()
+        gateway.close()
+
+        try await waitTask.value
+    }
 }
 
 private actor RequestedPortRecorder {

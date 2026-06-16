@@ -89,15 +89,25 @@ final class RemoteXPCConnection {
     /// Connected byte stream carrying the HTTP/2 session.
     private let connection: DeviceConnection
 
+    /// Serializes complete HTTP/2 frame writes on the underlying byte stream.
+    private let writer: RemoteXPCFrameWriter
+
+    /// Protects message-identifier allocation and receive-operation ownership.
+    private let stateLock = NSLock()
+
     /// Incomplete RemoteXPC bytes accumulated independently for each stream.
     private var streamBuffers: [UInt32: Data] = [:]
 
     /// Identifier assigned to the next application-level message.
     private var nextMessageIdentifier: UInt64 = 1
 
+    /// Whether one task currently owns frame reads and stream buffers.
+    private var isReceiving = false
+
     /// Creates a protocol driver without starting the RemoteXPC handshake.
     private init(connection: DeviceConnection) {
         self.connection = connection
+        writer = RemoteXPCFrameWriter(connection: connection)
     }
 
     /// Opens the HTTP/2 streams and sends the RemoteXPC channel handshake.
@@ -126,16 +136,20 @@ final class RemoteXPCConnection {
         _ value: RemoteXPCValue?,
         additionalFlags: UInt32 = 0
     ) async throws {
+        let messageIdentifier = stateLock.withLock {
+            let identifier = nextMessageIdentifier
+            nextMessageIdentifier &+= 1
+            return identifier
+        }
         let flags = Self.alwaysSetFlag
             | (value == nil ? 0 : Self.dataFlag)
             | additionalFlags
         try await send(
             value,
             flags: flags,
-            messageIdentifier: nextMessageIdentifier,
+            messageIdentifier: messageIdentifier,
             on: .control
         )
-        nextMessageIdentifier += 1
     }
 
     /// Receives the next complete message from one logical stream.
@@ -146,6 +160,11 @@ final class RemoteXPCConnection {
     func receive(
         on stream: Stream = .control
     ) async throws -> RemoteXPCMessage {
+        try beginReceiving()
+        defer {
+            endReceiving()
+        }
+
         while true {
             if let decoded = try decodeBufferedMessage(on: stream.identifier) {
                 return decoded
@@ -154,6 +173,12 @@ final class RemoteXPCConnection {
             let frame = try await receiveFrame()
             switch FrameType(rawValue: frame.type) {
             case .data:
+                guard frame.streamIdentifier == Stream.control.identifier
+                        || frame.streamIdentifier == Stream.reply.identifier else {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC received DATA on unexpected HTTP/2 stream \(frame.streamIdentifier)."
+                    )
+                }
                 streamBuffers[frame.streamIdentifier, default: Data()].append(
                     frame.payload
                 )
@@ -318,7 +343,7 @@ final class RemoteXPCConnection {
         ])
         frame.appendBigEndian(streamIdentifier & 0x7fff_ffff)
         frame.append(payload)
-        try await connection.send(frame)
+        try await writer.send(frame)
     }
 
     /// Reads one HTTP/2 frame and removes DATA padding before returning it.
@@ -357,5 +382,45 @@ final class RemoteXPCConnection {
             streamIdentifier: streamIdentifier,
             payload: payload
         )
+    }
+
+    /// Reserves the single receive path that owns frame reads and stream buffers.
+    private func beginReceiving() throws {
+        try stateLock.withLock {
+            guard !isReceiving else {
+                throw RorkDeviceError.protocolViolation(
+                    "Concurrent RemoteXPC receive operations are not supported."
+                )
+            }
+            isReceiving = true
+        }
+    }
+
+    /// Releases receive ownership after a message or error leaves `receive`.
+    private func endReceiving() {
+        stateLock.withLock {
+            isReceiving = false
+        }
+    }
+}
+
+/// Serial writer for HTTP/2 frames sharing one RemoteXPC byte stream.
+///
+/// A `DeviceConnection` guarantees complete-buffer writes but does not require
+/// implementations to coordinate concurrent callers. Actor isolation preserves
+/// frame boundaries for application traffic and protocol acknowledgements
+/// without blocking the independent receive path.
+private actor RemoteXPCFrameWriter {
+    /// Connection that receives already encoded HTTP/2 frames.
+    private let connection: DeviceConnection
+
+    /// Creates a writer for one RemoteXPC session.
+    init(connection: DeviceConnection) {
+        self.connection = connection
+    }
+
+    /// Sends one complete frame after prior writes have finished.
+    func send(_ frame: Data) async throws {
+        try await connection.send(frame)
     }
 }

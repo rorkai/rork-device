@@ -66,6 +66,30 @@ struct ConnectionOptions: ParsableArguments {
         try validateConnectionOptions()
     }
 
+    /// Requires a route through an existing CoreDevice userspace gateway.
+    ///
+    /// CoreDevice-only commands cannot run through a Lockdown session because
+    /// their services are advertised by Remote Service Discovery.
+    func requireUserspaceRoute(for command: String) throws {
+        guard usesUserspaceRemoteServiceRoute else {
+            throw ValidationError(
+                "\(command) requires --userspace-device-address, --userspace-gateway-port, and --remote-service-discovery-port."
+            )
+        }
+    }
+
+    /// Requires a Lockdown route that can create a new CoreDevice tunnel.
+    ///
+    /// Tunnel startup owns the packet tunnel and gateway lifecycle, so reusing
+    /// an already running userspace route would be ambiguous and unsupported.
+    func requireLockdownRoute(for command: String) throws {
+        guard !usesUserspaceRemoteServiceRoute else {
+            throw ValidationError(
+                "\(command) requires a Lockdown connection and cannot use userspace gateway options."
+            )
+        }
+    }
+
     /// Loads and validates an explicitly supplied pairing record.
     func pairingRecordValue() throws -> PairingRecord {
         guard let pairingRecord else {
@@ -159,7 +183,10 @@ struct ConnectionOptions: ParsableArguments {
     /// Shared implementation for parse-time and runtime connection validation.
     private func validateConnectionOptions() throws {
         if usesUserspaceRemoteServiceRoute {
-            guard userspaceDeviceAddress != nil,
+            guard let userspaceDeviceAddress,
+                  !userspaceDeviceAddress.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ).isEmpty,
                   let userspaceGatewayPort,
                   let remoteServiceDiscoveryPort else {
                 throw ValidationError(
@@ -316,8 +343,18 @@ struct RemotePairingTrustCommand: AsyncParsableCommand {
     @Option(help: "Local CoreDevice userspace gateway port.")
     var gatewayPort: UInt16
 
-    /// Rejects zero-valued ports before opening a connection.
+    /// Rejects blank addresses and zero-valued ports before connecting.
     func validate() throws {
+        guard !deviceAddress.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            throw ValidationError("--device-address cannot be empty.")
+        }
+        guard !gatewayHost.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            throw ValidationError("--gateway-host cannot be empty.")
+        }
         guard discoveryPort > 0 else {
             throw ValidationError(
                 "--discovery-port must be greater than zero."
@@ -393,6 +430,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// Rejects tunnel settings that cannot form a valid IPv6 link.
     func validate() throws {
         try connection.validate()
+        try connection.requireLockdownRoute(for: "tunnel start")
         guard !gatewayHost.trimmingCharacters(
             in: .whitespacesAndNewlines
         ).isEmpty else {
@@ -832,6 +870,7 @@ struct Launch: AsyncParsableCommand {
 
     /// Rejects malformed environment assignments before opening the device.
     func validate() throws {
+        try connection.requireUserspaceRoute(for: "launch")
         _ = try parsedEnvironment()
     }
 
@@ -878,6 +917,11 @@ struct Terminate: AsyncParsableCommand {
 
     @Argument(help: "Bundle identifier.")
     var bundleIdentifier: String
+
+    /// Requires the Remote Service Discovery route used by process control.
+    func validate() throws {
+        try connection.requireUserspaceRoute(for: "terminate")
+    }
 
     /// Opens the selected RSD session and terminates matching app processes.
     func run() async throws {

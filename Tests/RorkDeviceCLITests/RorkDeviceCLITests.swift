@@ -64,6 +64,16 @@ final class RorkDeviceCLITests: XCTestCase {
         ]))
     }
 
+    func testInstallCommandRejectsBlankUserspaceDeviceAddress() {
+        XCTAssertThrowsError(try Install.parse([
+            "--userspace-device-address", " \n ",
+            "--userspace-gateway-port", "60112",
+            "--remote-service-discovery-port", "54130",
+            "App.ipa",
+            "--bundle-identifier", "com.example.app",
+        ]))
+    }
+
     func testLaunchCommandParsesProcessOptions() throws {
         let command = try Launch.parse([
             "--userspace-device-address", "fd92:fbe0:acf3::2",
@@ -81,6 +91,13 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.environment, ["RORK_MODE=test"])
     }
 
+    func testLaunchCommandRequiresAUserspaceRoute() {
+        XCTAssertThrowsError(try Launch.parse([
+            "--pairing-record", "pairing.plist",
+            "com.example.app",
+        ]))
+    }
+
     func testTerminateCommandParsesBundleIdentifier() throws {
         let command = try Terminate.parse([
             "--userspace-device-address", "fd92:fbe0:acf3::2",
@@ -90,6 +107,13 @@ final class RorkDeviceCLITests: XCTestCase {
         ])
 
         XCTAssertEqual(command.bundleIdentifier, "com.example.app")
+    }
+
+    func testTerminateCommandRequiresAUserspaceRoute() {
+        XCTAssertThrowsError(try Terminate.parse([
+            "--pairing-record", "pairing.plist",
+            "com.example.app",
+        ]))
     }
 
     func testAppsListCommandParsesApplicationType() throws {
@@ -175,6 +199,25 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.gatewayPort, 60_112)
     }
 
+    func testRemotePairingTrustCommandRejectsBlankDeviceAddress() {
+        XCTAssertThrowsError(try RemotePairingTrustCommand.parse([
+            "--identity", "selfIdentity.plist",
+            "--device-address", " \n ",
+            "--discovery-port", "54130",
+            "--gateway-port", "60112",
+        ]))
+    }
+
+    func testRemotePairingTrustCommandRejectsBlankGatewayHost() {
+        XCTAssertThrowsError(try RemotePairingTrustCommand.parse([
+            "--identity", "selfIdentity.plist",
+            "--device-address", "fd92:fbe0:acf3::2",
+            "--discovery-port", "54130",
+            "--gateway-host", " \n ",
+            "--gateway-port", "60112",
+        ]))
+    }
+
     func testTunnelStartCommandParsesGatewayConfiguration() throws {
         let command = try TunnelStartCommand.parse([
             "--udid", "device-1",
@@ -188,6 +231,15 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.gatewayHost, "127.0.0.1")
         XCTAssertEqual(command.gatewayPort, 60_112)
         XCTAssertEqual(command.maximumTransmissionUnit, 1_500)
+    }
+
+    func testTunnelStartCommandRejectsAnExistingUserspaceRoute() {
+        XCTAssertThrowsError(try TunnelStartCommand.parse([
+            "--userspace-device-address", "fd92:fbe0:acf3::2",
+            "--userspace-gateway-port", "60112",
+            "--remote-service-discovery-port", "54130",
+            "--identity", "selfIdentity.plist",
+        ]))
     }
 
     func testFilesListParsesHouseArrestOptions() throws {

@@ -3,6 +3,32 @@ import XCTest
 @testable import RorkDevice
 
 final class LwIPNetworkStackTests: XCTestCase {
+    func testCancelsConnectionTimeoutAfterHandshakeSucceeds() async throws {
+        let timeoutStarted = expectation(
+            description: "Connection timeout task started."
+        )
+        let timeoutCancelled = expectation(
+            description: "Connection timeout task was cancelled."
+        )
+        let state = LwIPConnectionState { _ in
+            timeoutStarted.fulfill()
+            try await withTaskCancellationHandler {
+                try await Task.sleep(for: .seconds(30))
+            } onCancel: {
+                timeoutCancelled.fulfill()
+            }
+        }
+        let connectionTask = Task {
+            try await state.waitUntilConnected(timeout: .seconds(30))
+        }
+        await fulfillment(of: [timeoutStarted], timeout: 1)
+
+        state.handleConnected()
+
+        try await connectionTask.value
+        await fulfillment(of: [timeoutCancelled], timeout: 1)
+    }
+
     func testConnectionUsesItsOwningInterfaceWhenAddressesOverlap() async throws {
         let firstPackets = LwIPPacketRecorder()
         let secondPackets = LwIPPacketRecorder()

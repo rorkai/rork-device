@@ -2,6 +2,9 @@ import Foundation
 
 /// Owns a live discovery connection and the service directory it advertised.
 final class RemoteServiceDiscoverySession {
+    /// Maximum unrelated messages accepted before rejecting the stream.
+    private static let maximumMessagesWithoutHandshake = 32
+
     /// Service map whose ports remain valid while this session is retained.
     let directory: RemoteServiceDirectory
 
@@ -61,7 +64,7 @@ final class RemoteServiceDiscoverySession {
     private static func receiveServiceDirectory(
         from connection: RemoteXPCConnection
     ) async throws -> RemoteServiceDirectory {
-        while true {
+        for _ in 0..<maximumMessagesWithoutHandshake {
             let message = try await connection.receive()
             guard let root = message.value?.dictionaryValue else {
                 continue
@@ -71,6 +74,9 @@ final class RemoteServiceDiscoverySession {
             }
             return try parseDirectory(from: root)
         }
+        throw RorkDeviceError.protocolViolation(
+            "Remote Service Discovery received too many messages without a handshake."
+        )
     }
 
     /// Validates the discovery handshake and extracts its device-bound service map.

@@ -132,6 +132,9 @@ final class RemotePairingRemoteXPCChannel: RemotePairingControlChannel {
     private static let envelopeTypeName =
         "RemotePairing.ControlChannelMessageEnvelope"
 
+    /// Maximum setup or unrelated messages skipped before rejecting the stream.
+    private static let maximumMessagesWithoutEnvelope = 32
+
     /// Live RemoteXPC transport to the untrusted tunnel service.
     private let connection: RemoteXPCConnection
 
@@ -216,7 +219,7 @@ final class RemotePairingRemoteXPCChannel: RemotePairingControlChannel {
 
     /// Waits for the next control-channel envelope, skipping setup messages.
     private func receiveMessage() async throws -> [String: RemoteXPCValue] {
-        while true {
+        for _ in 0..<Self.maximumMessagesWithoutEnvelope {
             let message = try await connection.receive()
             guard case let .dictionary(root)? = message.value,
                   case let .dictionary(value)? = root["value"],
@@ -225,6 +228,9 @@ final class RemotePairingRemoteXPCChannel: RemotePairingControlChannel {
             }
             return payload
         }
+        throw RorkDeviceError.protocolViolation(
+            "Remote pairing received too many messages without a control-channel envelope."
+        )
     }
 }
 

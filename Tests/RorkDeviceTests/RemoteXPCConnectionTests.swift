@@ -134,4 +134,237 @@ final class RemoteXPCConnectionTests: XCTestCase {
             ])
         )
     }
+
+    func testRejectsDataOnAnUnexpectedHTTP2Stream() async throws {
+        let unexpectedMessage = try RemoteXPCMessageCodec.encode(
+            value: .string("unexpected"),
+            flags: 0x00000101,
+            messageIdentifier: 1
+        )
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x00,
+                streamIdentifier: 5,
+                payload: unexpectedMessage
+            )
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await remoteXPC.receive()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "RemoteXPC received DATA on unexpected HTTP/2 stream 5."
+                )
+            )
+        }
+    }
+
+    func testConcurrentSendsReserveDistinctMessageIdentifiers() async throws {
+        let sendBlocked = expectation(
+            description: "The first application send is suspended."
+        )
+        let connection = BlockingRemoteXPCConnection(
+            inbound: try remoteXPCSessionHandshakeInbound(),
+            blocking: .send(10),
+            blockedExpectation: sendBlocked
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        let first = Task {
+            try await remoteXPC.send(.string("first"))
+        }
+        await fulfillment(of: [sendBlocked], timeout: 1)
+        let second = Task {
+            try await remoteXPC.send(.string("second"))
+        }
+
+        await Task.yield()
+        connection.release()
+        try await first.value
+        try await second.value
+
+        let identifiers = try connection.sentData.compactMap {
+            frame -> UInt64? in
+            guard frame.count >= 9,
+                  frame[3] == 0x00,
+                  Data(frame[5...8]) == Data([0, 0, 0, 1]),
+                  let decoded = try RemoteXPCMessageCodec.decodeFirstMessage(
+                      from: Data(frame.dropFirst(9))
+                  ),
+                  decoded.message.messageIdentifier > 0 else {
+                return nil
+            }
+            return decoded.message.messageIdentifier
+        }
+        XCTAssertEqual(identifiers, [1, 2])
+    }
+
+    func testRejectsConcurrentReceivesOnOneConnection() async throws {
+        let receiveBlocked = expectation(
+            description: "The first application receive is suspended."
+        )
+        let connection = BlockingRemoteXPCConnection(
+            inbound: try remoteXPCSessionHandshakeInbound(),
+            blocking: .receive(9),
+            blockedExpectation: receiveBlocked
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        let first = Task {
+            try await remoteXPC.receive()
+        }
+        await fulfillment(of: [receiveBlocked], timeout: 1)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await remoteXPC.receive()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "Concurrent RemoteXPC receive operations are not supported."
+                )
+            )
+        }
+
+        connection.release()
+        _ = try? await first.value
+    }
+}
+
+/// Deterministic byte stream that suspends one selected protocol operation.
+///
+/// RemoteXPC startup performs a fixed series of reads and writes. Selecting an
+/// operation by ordinal lets concurrency tests pause the first application
+/// operation after startup without adding hooks to production code.
+private final class BlockingRemoteXPCConnection:
+    DeviceConnection,
+    @unchecked Sendable
+{
+    /// Operation and one-based invocation number to suspend.
+    enum Operation: Equatable {
+        case send(Int)
+        case receive(Int)
+    }
+
+    /// Protects stream bytes, counters, and suspension state.
+    private let lock = NSLock()
+
+    /// Operation selected by the test.
+    private let blockedOperation: Operation
+
+    /// Expectation fulfilled after the suspension continuation is installed.
+    private let blockedExpectation: XCTestExpectation
+
+    /// Inbound bytes consumed by exact reads.
+    private var inbound: Data
+
+    /// Complete outbound buffers in invocation order.
+    private var sent: [Data] = []
+
+    /// Number of send and receive calls observed since construction.
+    private var sendCount = 0
+    private var receiveCount = 0
+
+    /// Continuation for the selected operation while it is suspended.
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+
+    /// Whether local closure has made future operations invalid.
+    private var isClosed = false
+
+    /// Thread-safe snapshot of complete outbound buffers.
+    var sentData: [Data] {
+        lock.withLock { sent }
+    }
+
+    /// Creates a stream with one operation-level suspension point.
+    init(
+        inbound: Data,
+        blocking operation: Operation,
+        blockedExpectation: XCTestExpectation
+    ) {
+        self.inbound = inbound
+        blockedOperation = operation
+        self.blockedExpectation = blockedExpectation
+    }
+
+    /// Records one complete write and suspends the selected invocation.
+    func send(_ data: Data) async throws {
+        let shouldBlock = try lock.withLock {
+            try ensureOpen()
+            sendCount += 1
+            sent.append(data)
+            return blockedOperation == .send(sendCount)
+        }
+        if shouldBlock {
+            await suspendSelectedOperation()
+        }
+    }
+
+    /// Reads exactly the requested bytes after any selected suspension.
+    func receive(exactly count: Int) async throws -> Data {
+        let shouldBlock = try lock.withLock {
+            try ensureOpen()
+            receiveCount += 1
+            return blockedOperation == .receive(receiveCount)
+        }
+        if shouldBlock {
+            await suspendSelectedOperation()
+        }
+
+        return try lock.withLock {
+            try ensureOpen()
+            guard inbound.count >= count else {
+                throw RorkDeviceError.transport(
+                    "Blocking RemoteXPC connection underflow."
+                )
+            }
+            let data = Data(inbound.prefix(count))
+            inbound.removeFirst(count)
+            return data
+        }
+    }
+
+    /// Closes the stream and releases a suspended operation.
+    func close() {
+        let continuation = lock.withLock {
+            isClosed = true
+            let continuation = blockedContinuation
+            blockedContinuation = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+
+    /// Releases the operation selected by the test.
+    func release() {
+        let continuation = lock.withLock {
+            let continuation = blockedContinuation
+            blockedContinuation = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+
+    /// Suspends after installing the continuation observed by the test.
+    private func suspendSelectedOperation() async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                blockedContinuation = continuation
+            }
+            blockedExpectation.fulfill()
+        }
+    }
+
+    /// Rejects operations after local closure.
+    private func ensureOpen() throws {
+        guard !isClosed else {
+            throw RorkDeviceError.transport(
+                "Blocking RemoteXPC connection is closed."
+            )
+        }
+    }
 }

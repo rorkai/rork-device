@@ -94,8 +94,9 @@ public final class USBMuxClient {
     ///
     /// usbmux stores pairing records by device identifier and returns the
     /// original property-list bytes. Some daemon implementations omit `UDID`
-    /// from that inner record because it is already the lookup key; this method
-    /// restores the identifier before validating the record.
+    /// from that inner record because it is already the lookup key. This method
+    /// backfills a missing identifier and rejects a stored identifier that does
+    /// not exactly match the requested device.
     ///
     /// - Parameter deviceIdentifier: Device UDID used as the usbmux record key.
     /// - Returns: Validated Lockdown pairing material for the device.
@@ -112,12 +113,13 @@ public final class USBMuxClient {
             "kLibUSBMuxVersion": 3,
             "PairRecordID": deviceIdentifier,
         ])
+        if let number = response["Number"] as? NSNumber,
+           number.intValue != 0 {
+            throw RorkDeviceError.transport(
+                "usbmux ReadPairRecord failed with code \(number.intValue)."
+            )
+        }
         guard let recordData = response["PairRecordData"] as? Data else {
-            if let number = response["Number"] as? NSNumber {
-                throw RorkDeviceError.transport(
-                    "usbmux ReadPairRecord failed with code \(number.intValue)."
-                )
-            }
             throw RorkDeviceError.protocolViolation(
                 "usbmux ReadPairRecord response was missing PairRecordData."
             )
@@ -128,7 +130,22 @@ public final class USBMuxClient {
                 "Expected plist dictionary."
             )
         }
-        dictionary["UDID"] = deviceIdentifier
+        switch dictionary["UDID"] {
+        case let storedIdentifier as String:
+            guard storedIdentifier == deviceIdentifier else {
+                throw RorkDeviceError.invalidPairingRecord(
+                    "Pairing record UDID does not match the requested device."
+                )
+            }
+
+        case nil:
+            dictionary["UDID"] = deviceIdentifier
+
+        default:
+            throw RorkDeviceError.invalidPairingRecord(
+                "Pairing record UDID must be a string when present."
+            )
+        }
         return try PairingRecord.parse(
             PropertyListCodec.encode(dictionary, format: .binary)
         )

@@ -109,7 +109,14 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// unexpected listener failures are rethrown.
     public func waitUntilClosed() async throws {
         let task = closeLock.withLock { acceptTask }
-        try await task?.value
+        do {
+            try await task?.value
+        } catch {
+            let closedExplicitly = closeLock.withLock { isClosed }
+            guard closedExplicitly else {
+                throw error
+            }
+        }
     }
 
     /// Stops accepting clients and closes the owned userspace network.

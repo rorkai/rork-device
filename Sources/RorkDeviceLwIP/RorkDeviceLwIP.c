@@ -5,6 +5,11 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__linux__)
+#include <errno.h>
+#include <sys/random.h>
+#endif
+
 #include "lwip/init.h"
 #include "lwip/ip6.h"
 #include "lwip/mem.h"
@@ -610,16 +615,36 @@ void rork_lwip_connection_destroy(
 
 /// Supplies entropy for lwIP sequence numbers and protocol identifiers.
 ///
-/// Apple and FreeBSD platforms provide `arc4random_buf`. Other supported
-/// platforms use the C runtime fallback expected by this no-OS lwIP port.
+/// Apple and FreeBSD platforms provide `arc4random_buf`, while Linux uses
+/// `getrandom`. The C runtime fallback remains available for platforms without
+/// either API.
 uint32_t rork_lwip_random(void) {
     uint32_t value = 0;
 #if defined(__APPLE__) || defined(__FreeBSD__)
     arc4random_buf(&value, sizeof(value));
-#else
+#elif defined(__linux__)
+    size_t offset = 0;
+    while (offset < sizeof(value)) {
+        ssize_t result = getrandom(
+            ((uint8_t *)&value) + offset,
+            sizeof(value) - offset,
+            0
+        );
+        if (result > 0) {
+            offset += (size_t)result;
+            continue;
+        }
+        if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    if (offset == sizeof(value)) {
+        return value;
+    }
+#endif
     value = (uint32_t)rand();
     value ^= (uint32_t)rand() << 16;
-#endif
     return value;
 }
 
