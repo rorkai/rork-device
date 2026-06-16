@@ -1,9 +1,10 @@
 import Foundation
 
-/// Application class filter accepted by InstallationProxy `Browse`.
+/// Application class filter used when listing installed applications.
 ///
-/// The raw values match the strings used by the device protocol. They are kept
-/// public so callers can reason about the exact request that will be sent.
+/// The raw values match InstallationProxy's `Browse` protocol. RSD-backed
+/// sessions derive the same classes from CoreDevice metadata so callers can use
+/// one filter across both service backends.
 public enum ApplicationType: String, Sendable {
     /// User-installed applications visible to normal app-management flows.
     case user = "User"

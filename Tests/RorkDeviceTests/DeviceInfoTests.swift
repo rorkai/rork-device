@@ -26,6 +26,7 @@ final class DeviceInfoTests: XCTestCase {
         let app = InstalledApplication(values: [
             "CFBundleIdentifier": "com.example.app",
             "CFBundleDisplayName": "Example",
+            "CFBundleExecutable": "ExampleExecutable",
             "CFBundleShortVersionString": "1.2.3",
             "CFBundleVersion": "45",
             "ApplicationType": "User",
@@ -34,6 +35,7 @@ final class DeviceInfoTests: XCTestCase {
 
         XCTAssertEqual(app.bundleIdentifier, "com.example.app")
         XCTAssertEqual(app.displayName, "Example")
+        XCTAssertEqual(app.executableName, "ExampleExecutable")
         XCTAssertEqual(app.version, "1.2.3")
         XCTAssertEqual(app.buildVersion, "45")
         XCTAssertEqual(app.applicationType, "User")

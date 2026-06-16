@@ -22,7 +22,7 @@ final class CDTunnelProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             configuration,
-            RemotePairingTunnelConfiguration(
+            CoreDeviceTunnelConfiguration(
                 hostAddress: "fd00::2",
                 deviceAddress: "fd00::1",
                 networkMask: "ffff:ffff:ffff:ffff::",

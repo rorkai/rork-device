@@ -5,11 +5,39 @@ import Foundation
 /// Backends preserve the same service-oriented API while obtaining endpoints
 /// either from Lockdown or from a live Remote Service Discovery advertisement.
 protocol DeviceSessionBackend {
+    /// Whether this backend can open direct services from an RSD advertisement.
+    ///
+    /// RSD-backed sessions use CoreDevice's app service for complete installed
+    /// application metadata, including developer apps that InstallationProxy
+    /// may omit on recent iOS versions.
+    var usesRemoteServiceDiscovery: Bool { get }
+
     /// Returns the device information available through this transport.
     func fetchDeviceInfo() async throws -> DeviceInfo
 
     /// Opens a service stream that is ready for its service-specific protocol.
     func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection
+
+    /// Opens a raw service advertised directly by Remote Service Discovery.
+    ///
+    /// Unlike Lockdown-compatible shim services, direct CoreDevice services do
+    /// not exchange `RSDCheckin` property lists before their own protocol
+    /// begins.
+    func startRemoteService(named serviceName: String) async throws -> DeviceConnection
+}
+
+extension DeviceSessionBackend {
+    /// Lockdown-backed sessions do not have a direct RSD service directory.
+    var usesRemoteServiceDiscovery: Bool {
+        false
+    }
+
+    /// Rejects direct Remote Service Discovery access for non-RSD backends.
+    func startRemoteService(named serviceName: String) async throws -> DeviceConnection {
+        throw RorkDeviceError.protocolViolation(
+            "Remote service \(serviceName) requires a Remote Service Discovery session."
+        )
+    }
 }
 
 /// Starts services through an authenticated Lockdown session.

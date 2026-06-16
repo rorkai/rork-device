@@ -91,6 +91,29 @@ public final class DeviceSession {
         try await backend.startService(named: serviceName, escrowBag: escrowBag)
     }
 
+    /// Opens CoreDevice's raw IPv6 packet tunnel through this Lockdown session.
+    ///
+    /// The device must expose the internal CoreDeviceProxy service, which is
+    /// available on current developer-enabled iOS versions. The returned tunnel
+    /// owns its service connection and must remain alive while its negotiated
+    /// network link is in use.
+    ///
+    /// - Parameter requestedMaximumTransmissionUnit: Largest complete IPv6
+    ///   packet size requested during tunnel negotiation. The default is IPv6's
+    ///   required minimum link MTU and is compatible with USB Lockdown tunnels.
+    /// - Returns: Negotiated packet tunnel to the connected device.
+    /// - Throws: Lockdown, transport, or CDTunnel protocol errors.
+    public func openCoreDeviceTunnel(
+        requestedMaximumTransmissionUnit: UInt16 = 1_280
+    ) async throws -> CoreDeviceTunnel {
+        let connection = try await startService(.coreDeviceProxy)
+        return try await CoreDeviceTunnel.open(
+            over: connection,
+            requestedMaximumTransmissionUnit:
+                requestedMaximumTransmissionUnit
+        )
+    }
+
     /// Reads and installs a provisioning profile through MISAgent.
     ///
     /// - Parameter fileURL: Local path to a `.mobileprovision` payload.
@@ -156,11 +179,25 @@ public final class DeviceSession {
         return heartbeat
     }
 
-    /// Lists installed applications through InstallationProxy.
+    /// Lists installed applications through the active session backend.
+    ///
+    /// Remote Service Discovery sessions use CoreDevice so developer-installed
+    /// apps remain visible on current iOS versions. Lockdown sessions use
+    /// InstallationProxy for compatibility with older devices.
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Typed application metadata values.
     public func installedApplications(matching type: ApplicationType = .user) async throws -> [InstalledApplication] {
+        if backend.usesRemoteServiceDiscovery {
+            let service = try await openCoreDeviceApplicationService()
+            defer {
+                service.close()
+            }
+            return try await service.applications(matching: type).map(
+                \.installedApplication
+            )
+        }
+
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         return try await client.applications(matching: type)
@@ -177,6 +214,119 @@ public final class DeviceSession {
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         return try await client.rawApplications(matching: type)
+    }
+
+    /// Launches an installed application through CoreDevice's app service.
+    ///
+    /// This operation requires an RSD-backed session because the app service is
+    /// advertised directly inside the active CoreDevice tunnel. Lockdown-only
+    /// sessions fail with a protocol error instead of silently selecting a
+    /// different process-control implementation.
+    ///
+    /// - Parameters:
+    ///   - bundleIdentifier: Bundle identifier of the installed application.
+    ///   - options: Arguments, environment, and existing-process behavior.
+    /// - Returns: Positive process identifier assigned by iOS.
+    @discardableResult
+    public func launchApplication(
+        bundleIdentifier: String,
+        options: ApplicationLaunchOptions = ApplicationLaunchOptions()
+    ) async throws -> Int {
+        let bundleIdentifier = bundleIdentifier.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !bundleIdentifier.isEmpty else {
+            throw RorkDeviceError.invalidInput(
+                "Application bundle identifier must not be empty."
+            )
+        }
+
+        let service = try await openCoreDeviceApplicationService()
+        defer {
+            service.close()
+        }
+        return try await service.launchApplication(
+            bundleIdentifier: bundleIdentifier,
+            options: options
+        )
+    }
+
+    /// Terminates running processes belonging to an installed application.
+    ///
+    /// CoreDevice supplies both the installed bundle path and live process
+    /// executable paths. Processes whose executables reside inside the selected
+    /// bundle receive `SIGKILL`, matching the behavior expected by in-place app
+    /// updates without relying on InstallationProxy's incomplete developer-app
+    /// browse results.
+    ///
+    /// - Parameter bundleIdentifier: Bundle identifier of the installed app.
+    /// - Returns: `true` when at least one matching process was terminated, or
+    ///   `false` when the application was installed but not running.
+    @discardableResult
+    public func terminateApplication(
+        bundleIdentifier: String
+    ) async throws -> Bool {
+        let bundleIdentifier = bundleIdentifier.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !bundleIdentifier.isEmpty else {
+            throw RorkDeviceError.invalidInput(
+                "Application bundle identifier must not be empty."
+            )
+        }
+
+        let applications: [CoreDeviceApplication]
+        let applicationService = try await openCoreDeviceApplicationService()
+        do {
+            defer {
+                applicationService.close()
+            }
+            applications = try await applicationService.applications(
+                matching: .all
+            )
+        }
+        guard let application = applications.first(where: {
+            $0.bundleIdentifier == bundleIdentifier
+        }) else {
+            throw RorkDeviceError.invalidInput(
+                "Application \(bundleIdentifier) is not installed."
+            )
+        }
+        let bundlePath = standardizedDeviceFilePath(application.bundlePath)
+        let executablePrefix = bundlePath.hasSuffix("/")
+            ? bundlePath
+            : "\(bundlePath)/"
+        let runningProcesses: [CoreDeviceProcess]
+        let processService = try await openCoreDeviceApplicationService()
+        do {
+            defer {
+                processService.close()
+            }
+            runningProcesses = try await processService.runningProcesses()
+        }
+        let processes = runningProcesses.filter {
+            let executablePath = standardizedDeviceFilePath(
+                $0.executablePath
+            )
+            return executablePath == bundlePath
+                || executablePath.hasPrefix(executablePrefix)
+        }
+        // A device may close an app-service stream after a process-control
+        // invocation. Isolating each signal prevents that lifecycle from
+        // cancelling signals for other processes in the same application.
+        for process in processes {
+            let signalService = try await openCoreDeviceApplicationService()
+            do {
+                defer {
+                    signalService.close()
+                }
+                try await signalService.sendSignal(
+                    9,
+                    to: process.identifier
+                )
+            }
+        }
+        return !processes.isEmpty
     }
 
     /// Uninstalls an application through InstallationProxy.
@@ -294,12 +444,44 @@ public final class DeviceSession {
         let client = HouseArrestClient(connection: connection)
         return try await client.openApplicationContainer(bundleIdentifier: bundleIdentifier, scope: scope)
     }
+
+    /// Opens CoreDevice's direct RemoteXPC app service on an RSD session.
+    ///
+    /// The backend returns a raw stream because direct CoreDevice services must
+    /// not receive the property-list check-in used by Lockdown-compatible shim
+    /// services.
+    private func openCoreDeviceApplicationService() async throws -> CoreDeviceApplicationService {
+        let connection = try await backend.startRemoteService(
+            named: CoreDeviceApplicationService.serviceName
+        )
+        return try await CoreDeviceApplicationService.open(over: connection)
+    }
+}
+
+/// Converts CoreDevice file locations into comparable absolute paths.
+///
+/// Installed-application records use POSIX paths, while process records may
+/// encode the same location as a percent-escaped `file:` URL. Interpreting a
+/// file URL as a literal path preserves its scheme and escapes, so an
+/// executable inside an application bundle would not match that bundle.
+///
+/// - Parameter value: Absolute POSIX path or file URL reported by CoreDevice.
+/// - Returns: Standardized file-system path with file-URL escapes decoded.
+private func standardizedDeviceFilePath(_ value: String) -> String {
+    if let url = URL(string: value), url.isFileURL {
+        return url.standardizedFileURL.path
+    }
+    return URL(fileURLWithPath: value).standardizedFileURL.path
 }
 
 /// Lockdown services exposed by the high-level install workflow.
 public enum LockdownServiceName: String, Sendable {
     /// Apple File Conduit, used to create `./PublicStaging` and upload IPA data.
     case afc = "com.apple.afc"
+
+    /// CoreDevice packet proxy used to negotiate a private IPv6 link.
+    case coreDeviceProxy =
+        "com.apple.internal.devicecompute.CoreDeviceProxy"
 
     /// Device heartbeat service, used to keep tunnel-backed sessions alive.
     case heartbeat = "com.apple.mobile.heartbeat"

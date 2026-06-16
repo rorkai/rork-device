@@ -10,6 +10,11 @@ final class FakeUSBMuxDaemon {
     private let secureServices: Set<String>
     private let deviceEvents: [USBMuxDeviceEvent]
     private let listenResponse: [String: Any]
+    private let pairingRecordData: Data?
+
+    /// Optional usbmux result code included with a pairing-record response.
+    private let pairingRecordStatus: Int?
+
     /// Keeps a Listen socket readable until the client closes it.
     private let keepListenOpenAfterEvents: Bool
     private let lock = NSLock()
@@ -87,12 +92,16 @@ final class FakeUSBMuxDaemon {
         secureServices: Set<String> = [],
         deviceEvents: [USBMuxDeviceEvent] = [],
         listenResponse: [String: Any] = ["Number": 0],
+        pairingRecordData: Data? = nil,
+        pairingRecordStatus: Int? = nil,
         keepListenOpenAfterEvents: Bool = false
     ) throws {
         self.secureLockdown = secureLockdown
         self.secureServices = secureServices
         self.deviceEvents = deviceEvents
         self.listenResponse = listenResponse
+        self.pairingRecordData = pairingRecordData
+        self.pairingRecordStatus = pairingRecordStatus
         self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -227,6 +236,22 @@ final class FakeUSBMuxDaemon {
             if keepListenOpenAfterEvents {
                 waitForListenPeerClose(fd)
             }
+        case "ReadPairRecord":
+            guard let pairingRecordData else {
+                sendUSBMuxResponse(
+                    ["Number": 2],
+                    tag: request.packet.tag,
+                    to: fd
+                )
+                return
+            }
+            var response: [String: Any] = [
+                "PairRecordData": pairingRecordData,
+            ]
+            if let pairingRecordStatus {
+                response["Number"] = pairingRecordStatus
+            }
+            sendUSBMuxResponse(response, tag: request.packet.tag, to: fd)
         case "Connect":
             let port = normalizedPort(from: request.dictionary["PortNumber"])
             recordConnectedPort(port)

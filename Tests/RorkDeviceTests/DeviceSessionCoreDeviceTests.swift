@@ -1,0 +1,213 @@
+import Foundation
+import XCTest
+@testable import RorkDevice
+
+final class DeviceSessionCoreDeviceTests: XCTestCase {
+    func testListsDeveloperApplicationsThroughCoreDevice() async throws {
+        let connection = try coreDeviceAppServiceConnection(responses: [
+            .array([
+                .dictionary([
+                    "bundleIdentifier": .string("app.rork.max.dev"),
+                    "name": .string("Rork Max Dev"),
+                    "path": .string(
+                        "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                    ),
+                    "isDeveloperApp": .bool(true),
+                    "isFirstParty": .bool(false),
+                    "isInternal": .bool(false),
+                ]),
+            ]),
+        ])
+        let backend = CoreDeviceSessionTestBackend(
+            remoteConnections: [connection]
+        )
+        let session = DeviceSession(backend: backend)
+
+        let applications = try await session.installedApplications(
+            matching: .all
+        )
+
+        XCTAssertEqual(
+            applications.map(\.bundleIdentifier),
+            ["app.rork.max.dev"]
+        )
+        XCTAssertEqual(
+            applications.map(\.applicationType),
+            [ApplicationType.user.rawValue]
+        )
+        XCTAssertEqual(
+            backend.startedRemoteServices,
+            [CoreDeviceApplicationService.serviceName]
+        )
+        XCTAssertTrue(backend.startedLockdownServices.isEmpty)
+    }
+
+    func testTerminatesDeveloperApplicationByItsBundlePath() async throws {
+        let applicationConnection = try coreDeviceAppServiceConnection(
+            responses: [
+                .array([
+                    .dictionary([
+                        "bundleIdentifier": .string("app.rork.max.dev"),
+                        "name": .string("Rork Max Dev"),
+                        "path": .string(
+                            "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                        ),
+                        "isDeveloperApp": .bool(true),
+                        "isFirstParty": .bool(false),
+                        "isInternal": .bool(false),
+                    ]),
+                ]),
+            ]
+        )
+        let processConnection = try coreDeviceAppServiceConnection(responses: [
+            .dictionary([
+                "processTokens": .array([
+                    .dictionary([
+                        "processIdentifier": .int64(6_303),
+                        "executableURL": .dictionary([
+                            "relative": .string(
+                                "file:///private/var/containers/Bundle/Application/UUID/Rork%20Max%20Dev.app/Rork%20Max%20Dev"
+                            ),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ])
+        let signalConnection = try coreDeviceAppServiceConnection(responses: [
+            .dictionary([:]),
+        ])
+        let backend = CoreDeviceSessionTestBackend(
+            remoteConnections: [
+                applicationConnection,
+                processConnection,
+                signalConnection,
+            ]
+        )
+        let session = DeviceSession(backend: backend)
+
+        let terminated = try await session.terminateApplication(
+            bundleIdentifier: "app.rork.max.dev"
+        )
+
+        XCTAssertTrue(terminated)
+        XCTAssertEqual(
+            backend.startedRemoteServices,
+            [
+                CoreDeviceApplicationService.serviceName,
+                CoreDeviceApplicationService.serviceName,
+                CoreDeviceApplicationService.serviceName,
+            ]
+        )
+        XCTAssertTrue(backend.startedLockdownServices.isEmpty)
+    }
+
+    func testReturnsFalseWhenDeveloperApplicationIsNotRunning() async throws {
+        let applicationConnection = try coreDeviceAppServiceConnection(
+            responses: [
+                .array([
+                    .dictionary([
+                        "bundleIdentifier": .string("app.rork.max.dev"),
+                        "name": .string("Rork Max Dev"),
+                        "path": .string(
+                            "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                        ),
+                        "isDeveloperApp": .bool(true),
+                        "isFirstParty": .bool(false),
+                        "isInternal": .bool(false),
+                    ]),
+                ]),
+            ]
+        )
+        let processConnection = try coreDeviceAppServiceConnection(responses: [
+            .dictionary([
+                "processTokens": .array([]),
+            ]),
+        ])
+        let backend = CoreDeviceSessionTestBackend(
+            remoteConnections: [
+                applicationConnection,
+                processConnection,
+            ]
+        )
+        let session = DeviceSession(backend: backend)
+
+        let terminated = try await session.terminateApplication(
+            bundleIdentifier: "app.rork.max.dev"
+        )
+
+        XCTAssertFalse(terminated)
+    }
+}
+
+/// Device-session backend that exposes only direct CoreDevice services.
+private final class CoreDeviceSessionTestBackend: DeviceSessionBackend {
+    /// Signals that typed application listing should use CoreDevice.
+    let usesRemoteServiceDiscovery = true
+
+    /// Connections returned in service-open order.
+    private var remoteConnections: [DeviceConnection]
+
+    /// Lockdown-compatible services requested by the session.
+    private(set) var startedLockdownServices: [String] = []
+
+    /// Direct RSD services requested by the session.
+    private(set) var startedRemoteServices: [String] = []
+
+    /// Creates a backend with deterministic direct-service connections.
+    init(remoteConnections: [DeviceConnection]) {
+        self.remoteConnections = remoteConnections
+    }
+
+    /// Returns minimal device information for protocol conformance.
+    func fetchDeviceInfo() async throws -> DeviceInfo {
+        DeviceInfo(values: [:])
+    }
+
+    /// Records and rejects unexpected Lockdown-compatible service access.
+    func startService(
+        named serviceName: String,
+        escrowBag _: Data?
+    ) async throws -> DeviceConnection {
+        startedLockdownServices.append(serviceName)
+        throw RorkDeviceError.protocolViolation(
+            "Unexpected Lockdown service \(serviceName)."
+        )
+    }
+
+    /// Returns the next direct CoreDevice service connection.
+    func startRemoteService(
+        named serviceName: String
+    ) async throws -> DeviceConnection {
+        startedRemoteServices.append(serviceName)
+        guard !remoteConnections.isEmpty else {
+            throw RorkDeviceError.transport(
+                "No CoreDevice test connection remains."
+            )
+        }
+        return remoteConnections.removeFirst()
+    }
+}
+
+/// Encodes app-service outputs after a complete RemoteXPC channel handshake.
+private func coreDeviceAppServiceConnection(
+    responses: [RemoteXPCValue]
+) throws -> FakeConnection {
+    var inbound = try remoteXPCSessionHandshakeInbound()
+    for (index, output) in responses.enumerated() {
+        let response = try RemoteXPCMessageCodec.encode(
+            value: .dictionary([
+                "CoreDevice.output": output,
+            ]),
+            flags: 0x00020101,
+            messageIdentifier: UInt64(index + 1)
+        )
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x00,
+                streamIdentifier: 3,
+                payload: response
+            )
+        )
+    }
+    return FakeConnection(inbound: inbound)
+}

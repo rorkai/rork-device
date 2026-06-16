@@ -24,8 +24,8 @@ private struct VerifiedRemotePairingKeys {
 
 /// Drives pair verification and asks the device to allocate a tunnel listener.
 final class RemotePairingProtocolClient {
-    /// Plain control stream connected to the remote-pairing endpoint.
-    private let connection: DeviceConnection
+    /// Outer transport used to exchange remote-pairing messages.
+    private let channel: any RemotePairingControlChannel
 
     /// Previously trusted host identity presented during pair verification.
     private let identity: RemotePairingIdentity
@@ -33,8 +33,8 @@ final class RemotePairingProtocolClient {
     /// Per-session X25519 key used to establish the shared secret.
     private let ephemeralKey: Curve25519.KeyAgreement.PrivateKey
 
-    /// Sequence number attached to each outer remote-pairing message.
-    private var messageSequenceNumber = 0
+    /// Creates the SRP client only when pair verification rejects the identity.
+    private let makeSRPClient: () throws -> RemotePairingSRPClient
 
     /// Sequence number used to derive nonces for encrypted stream messages.
     private var encryptionSequenceNumber: UInt64 = 0
@@ -43,11 +43,32 @@ final class RemotePairingProtocolClient {
     init(
         connection: DeviceConnection,
         identity: RemotePairingIdentity,
-        ephemeralKey: Curve25519.KeyAgreement.PrivateKey = Curve25519.KeyAgreement.PrivateKey()
+        ephemeralKey: Curve25519.KeyAgreement.PrivateKey = Curve25519.KeyAgreement.PrivateKey(),
+        makeSRPClient: @escaping () throws -> RemotePairingSRPClient = {
+            try RemotePairingSRPClient()
+        }
     ) {
-        self.connection = connection
+        channel = RemotePairingFramedControlChannel(
+            connection: connection
+        )
         self.identity = identity
         self.ephemeralKey = ephemeralKey
+        self.makeSRPClient = makeSRPClient
+    }
+
+    /// Creates a protocol driver over a transport-specific control channel.
+    init(
+        channel: any RemotePairingControlChannel,
+        identity: RemotePairingIdentity,
+        ephemeralKey: Curve25519.KeyAgreement.PrivateKey = Curve25519.KeyAgreement.PrivateKey(),
+        makeSRPClient: @escaping () throws -> RemotePairingSRPClient = {
+            try RemotePairingSRPClient()
+        }
+    ) {
+        self.channel = channel
+        self.identity = identity
+        self.ephemeralKey = ephemeralKey
+        self.makeSRPClient = makeSRPClient
     }
 
     /// Verifies the host identity and creates the device-side TLS listener.
@@ -56,6 +77,26 @@ final class RemotePairingProtocolClient {
         let keys = try await verifyIdentity()
         let port = try await requestTCPListener(using: keys)
         return RemotePairingTunnelListener(port: port, preSharedKey: keys.preSharedKey)
+    }
+
+    /// Verifies the identity, invoking manual pair setup only when it is unknown.
+    ///
+    /// - Parameter willEstablishTrust: Called immediately before manual pair
+    ///   setup starts after an authentication or unknown-peer rejection.
+    func establishTrustIfNeeded(
+        willEstablishTrust: () -> Void = {}
+    ) async throws {
+        try await beginPairVerification()
+        do {
+            _ = try await verifyIdentity()
+        } catch let error as RorkDeviceError {
+            guard case let .remotePairing(rejection) = error,
+                  rejection.allowsPairSetup else {
+                throw error
+            }
+            willEstablishTrust()
+            try await establishTrust()
+        }
     }
 
     /// Starts the wire-protocol handshake and verifies the expected response shape.
@@ -75,7 +116,10 @@ final class RemotePairingProtocolClient {
             ],
         ])
         let response = try await receivePlain()
-        guard nestedDictionary(response, keys: ["response", "_1", "handshake", "_0"]) != nil else {
+        guard remotePairingNestedDictionary(
+            response,
+            keys: ["response", "_1", "handshake", "_0"]
+        ) != nil else {
             throw RorkDeviceError.protocolViolation(
                 "Remote pairing handshake response is missing response._1.handshake._0."
             )
@@ -90,11 +134,15 @@ final class RemotePairingProtocolClient {
                 TLV8Field(type: 0x06, value: Data([0x01])),
                 TLV8Field(type: 0x03, value: hostPublicKey),
             ]),
+            kind: "verifyManualPairing",
             startsNewSession: true
         )
 
         let deviceResponse = try TLV8.decode(try await receivePairingData())
-        try validatePairingResponse(deviceResponse, expectedState: 0x02)
+        try validatePairVerificationResponse(
+            deviceResponse,
+            expectedState: 0x02
+        )
         let devicePublicKeyData = deviceResponse.value(for: 0x03)
         guard devicePublicKeyData.count == 32 else {
             throw RorkDeviceError.protocolViolation(
@@ -152,12 +200,13 @@ final class RemotePairingProtocolClient {
                 TLV8Field(type: 0x06, value: Data([0x03])),
                 TLV8Field(type: 0x05, value: encryptedContents),
             ]),
+            kind: "verifyManualPairing",
             startsNewSession: false
         )
 
         let verificationResponse = try TLV8.decode(try await receivePairingData())
         do {
-            try validatePairingResponse(
+            try validatePairVerificationResponse(
                 verificationResponse,
                 expectedState: 0x04
             )
@@ -179,6 +228,150 @@ final class RemotePairingProtocolClient {
         )
     }
 
+    /// Completes SRP pair setup and registers the host identity with the device.
+    private func establishTrust() async throws {
+        try await sendPairingData(
+            TLV8.encode([
+                TLV8Field(type: 0x00, value: Data([0x00])),
+                TLV8Field(type: 0x06, value: Data([0x01])),
+            ]),
+            kind: "setupManualPairing",
+            startsNewSession: true
+        )
+        _ = try await receivePlain()
+
+        let deviceParameters = try TLV8.decode(
+            try await receivePairingData()
+        )
+        try validatePairSetupResponse(
+            deviceParameters,
+            expectedState: 0x02
+        )
+        let devicePublicKey = deviceParameters.value(for: 0x03)
+        let salt = deviceParameters.value(for: 0x02)
+        guard !devicePublicKey.isEmpty, !salt.isEmpty else {
+            throw RorkDeviceError.protocolViolation(
+                "Remote pair setup did not provide SRP parameters."
+            )
+        }
+
+        let exchange = try makeSRPClient().start(
+            salt: salt,
+            serverPublicKey: devicePublicKey
+        )
+        try await sendPairingData(
+            TLV8.encode([
+                TLV8Field(type: 0x06, value: Data([0x03])),
+                TLV8Field(type: 0x03, value: exchange.clientPublicKey),
+                TLV8Field(type: 0x04, value: exchange.clientProof),
+            ]),
+            kind: "setupManualPairing",
+            startsNewSession: false
+        )
+
+        let proofResponse = try TLV8.decode(
+            try await receivePairingData()
+        )
+        try validatePairSetupResponse(
+            proofResponse,
+            expectedState: 0x04
+        )
+        try exchange.verify(serverProof: proofResponse.value(for: 0x04))
+
+        try await exchangeIdentity(using: exchange.sessionKey)
+        try await createRemoteUnlockKey(using: exchange.sessionKey)
+    }
+
+    /// Signs and encrypts the host metadata stored by remote pairing.
+    private func exchangeIdentity(using sessionKey: Data) async throws {
+        let controllerSigningKey = deriveKey(
+            from: sessionKey,
+            salt: "Pair-Setup-Controller-Sign-Salt",
+            context: "Pair-Setup-Controller-Sign-Info"
+        )
+        var signedData = controllerSigningKey
+        signedData.append(Data(identity.identifier.utf8))
+        signedData.append(identity.publicKeyData)
+
+        let signingKey: Curve25519.Signing.PrivateKey
+        do {
+            signingKey = try Curve25519.Signing.PrivateKey(
+                rawRepresentation: identity.privateKeyData
+            )
+        } catch {
+            throw RorkDeviceError.invalidPairingRecord(
+                "Remote pairing private key is invalid."
+            )
+        }
+        let signature: Data
+        do {
+            signature = try signingKey.signature(for: signedData)
+        } catch {
+            throw RorkDeviceError.secureSession(
+                "Remote pairing identity signing failed."
+            )
+        }
+
+        let deviceInfo = try RemotePairingOPACKEncoder.encode([
+            "accountID": identity.identifier,
+            "altIRK": identity.identityResolvingKey,
+            "btAddr": "00:00:00:00:00:00",
+            "mac": Data(repeating: 0, count: 6),
+            "model": "RorkDevice",
+            "name": "Rork Companion",
+            "remotepairing_serial_number": identity.identifier,
+        ])
+        let identityData = TLV8.encode([
+            TLV8Field(type: 0x0a, value: signature),
+            TLV8Field(type: 0x03, value: identity.publicKeyData),
+            TLV8Field(type: 0x01, value: Data(identity.identifier.utf8)),
+            TLV8Field(type: 0x11, value: deviceInfo),
+        ])
+        let setupEncryptionKey = symmetricKey(
+            from: sessionKey,
+            salt: "Pair-Setup-Encrypt-Salt",
+            context: "Pair-Setup-Encrypt-Info"
+        )
+        let encryptedIdentity = try encrypt(
+            identityData,
+            using: setupEncryptionKey,
+            nonce: Data([0, 0, 0, 0]) + Data("PS-Msg05".utf8)
+        )
+
+        try await sendPairingData(
+            TLV8.encode([
+                TLV8Field(type: 0x06, value: Data([0x05])),
+                TLV8Field(type: 0x05, value: encryptedIdentity),
+            ]),
+            kind: "setupManualPairing",
+            startsNewSession: false,
+            sendingHost: "Rork Companion"
+        )
+
+        let response = try TLV8.decode(try await receivePairingData())
+        try validatePairSetupResponse(response, expectedState: 0x06)
+        _ = try decrypt(
+            response.value(for: 0x05),
+            using: setupEncryptionKey,
+            nonce: Data([0, 0, 0, 0]) + Data("PS-Msg06".utf8)
+        )
+    }
+
+    /// Finalizes pair setup by requesting the device's remote-unlock material.
+    private func createRemoteUnlockKey(using sessionKey: Data) async throws {
+        let keys = sessionKeys(from: sessionKey)
+        _ = try await exchangeEncryptedMessage(
+            [
+                "request": [
+                    "_0": [
+                        "createRemoteUnlockKey": [:],
+                    ],
+                ],
+            ],
+            using: keys
+        )
+    }
+
     /// Requests a TCP listener using the keys established by pair verification.
     private func requestTCPListener(using keys: VerifiedRemotePairingKeys) async throws -> UInt16 {
         let request: [String: Any] = [
@@ -191,42 +384,11 @@ final class RemotePairingProtocolClient {
                 ],
             ],
         ]
-        let plaintext = try JSONSerialization.data(withJSONObject: request)
-        let nonce = encryptedMessageNonce(sequenceNumber: encryptionSequenceNumber)
-        let ciphertext = try encrypt(
-            plaintext,
-            using: keys.hostToDeviceCipher,
-            nonce: nonce
+        let response = try await exchangeEncryptedMessage(
+            request,
+            using: keys
         )
-        try await sendEncrypted(ciphertext)
-
-        let responseFrame = try await RemotePairingFrameCodec.receive(from: connection)
-        guard let encryptedBase64 = nestedValue(
-            responseFrame,
-            keys: ["message", "streamEncrypted", "_0"]
-        ) as? String,
-              let encryptedResponse = Data(base64Encoded: encryptedBase64) else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote pairing listener response is missing encrypted data."
-            )
-        }
-        let decrypted = try decrypt(
-            encryptedResponse,
-            using: keys.deviceToHostCipher,
-            nonce: nonce
-        )
-        encryptionSequenceNumber += 1
-
-        let object: Any
-        do {
-            object = try JSONSerialization.jsonObject(with: decrypted)
-        } catch {
-            throw RorkDeviceError.protocolViolation(
-                "Remote pairing listener response is not valid JSON."
-            )
-        }
-        guard let response = object as? [String: Any],
-              let portValue = nestedValue(
+        guard let portValue = remotePairingNestedValue(
                   response,
                   keys: ["response", "_1", "createListener", "port"]
               ),
@@ -240,15 +402,63 @@ final class RemotePairingProtocolClient {
         return port
     }
 
-    /// Sends a pair-verification TLV through the outer plain-message envelope.
-    private func sendPairingData(_ data: Data, startsNewSession: Bool) async throws {
+    /// Exchanges one JSON request over the authenticated encrypted stream.
+    private func exchangeEncryptedMessage(
+        _ request: [String: Any],
+        using keys: VerifiedRemotePairingKeys
+    ) async throws -> [String: Any] {
+        let plaintext = try JSONSerialization.data(withJSONObject: request)
+        let nonce = encryptedMessageNonce(
+            sequenceNumber: encryptionSequenceNumber
+        )
+        let ciphertext = try encrypt(
+            plaintext,
+            using: keys.hostToDeviceCipher,
+            nonce: nonce
+        )
+        try await sendEncrypted(ciphertext)
+
+        let encryptedResponse = try await channel.receiveEncrypted()
+        let decrypted = try decrypt(
+            encryptedResponse,
+            using: keys.deviceToHostCipher,
+            nonce: nonce
+        )
+        encryptionSequenceNumber += 1
+
+        do {
+            guard let response = try JSONSerialization.jsonObject(
+                with: decrypted
+            ) as? [String: Any] else {
+                throw RorkDeviceError.protocolViolation(
+                    "Remote pairing encrypted response is not a JSON object."
+                )
+            }
+            return response
+        } catch let error as RorkDeviceError {
+            throw error
+        } catch {
+            throw RorkDeviceError.protocolViolation(
+                "Remote pairing encrypted response is not valid JSON."
+            )
+        }
+    }
+
+    /// Sends one pairing TLV through the outer plain-message envelope.
+    private func sendPairingData(
+        _ data: Data,
+        kind: String,
+        startsNewSession: Bool,
+        sendingHost: String = ""
+    ) async throws {
         try await sendPlain([
             "event": [
                 "_0": [
                     "pairingData": [
                         "_0": [
-                            "data": data.base64EncodedString(),
-                            "kind": "verifyManualPairing",
+                            "data": data,
+                            "kind": kind,
+                            "sendingHost": sendingHost,
                             "startNewSession": startsNewSession,
                         ],
                     ],
@@ -257,19 +467,23 @@ final class RemotePairingProtocolClient {
         ])
     }
 
-    /// Receives and base64-decodes one pair-verification TLV payload.
+    /// Receives and base64-decodes one pairing TLV payload.
     private func receivePairingData() async throws -> Data {
         let response = try await receivePlain()
-        guard let base64 = nestedValue(
+        let encodedData = remotePairingNestedValue(
             response,
             keys: ["event", "_0", "pairingData", "_0", "data"]
-        ) as? String,
-              let data = Data(base64Encoded: base64) else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote pairing response is missing pairing data."
-            )
+        )
+        if let data = encodedData as? Data {
+            return data
         }
-        return data
+        if let base64 = encodedData as? String,
+           let data = Data(base64Encoded: base64) {
+            return data
+        }
+        throw RorkDeviceError.protocolViolation(
+            "Remote pairing response is missing pairing data."
+        )
     }
 
     /// Notifies the device that its final verification response was rejected.
@@ -285,56 +499,27 @@ final class RemotePairingProtocolClient {
 
     /// Sends one unencrypted outer protocol message.
     private func sendPlain(_ payload: [String: Any]) async throws {
-        let frame = try RemotePairingFrameCodec.encode([
-            "message": [
-                "plain": [
-                    "_0": payload,
-                ],
-            ],
-            "originatedBy": "host",
-            "sequenceNumber": messageSequenceNumber,
-        ])
-        try await connection.send(frame)
-        messageSequenceNumber += 1
+        try await channel.sendPlain(payload)
     }
 
     /// Sends one encrypted payload inside the outer protocol envelope.
     private func sendEncrypted(_ ciphertext: Data) async throws {
-        let frame = try RemotePairingFrameCodec.encode([
-            "message": [
-                "streamEncrypted": [
-                    "_0": ciphertext.base64EncodedString(),
-                ],
-            ],
-            "originatedBy": "host",
-            "sequenceNumber": messageSequenceNumber,
-        ])
-        try await connection.send(frame)
-        messageSequenceNumber += 1
+        try await channel.sendEncrypted(ciphertext)
     }
 
     /// Receives one outer message and extracts its unencrypted payload.
     private func receivePlain() async throws -> [String: Any] {
-        let frame = try await RemotePairingFrameCodec.receive(from: connection)
-        guard let payload = nestedDictionary(frame, keys: ["message", "plain", "_0"]) else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote pairing response is missing a plain message payload."
-            )
-        }
-        return payload
+        try await channel.receivePlain()
     }
 }
 
-/// Validates the error and state fields in one pair-verification response.
-private func validatePairingResponse(
+/// Validates one pair-verification response without hiding trust rejection.
+private func validatePairVerificationResponse(
     _ tlv: TLV8,
     expectedState: UInt8
 ) throws {
-    let errorValue = tlv.value(for: 0x07)
-    if let code = errorValue.first {
-        throw RorkDeviceError.protocolViolation(
-            "Remote pairing rejected this host identity with error \(code)."
-        )
+    if let rejection = remotePairingRejection(in: tlv) {
+        throw RorkDeviceError.remotePairing(rejection)
     }
 
     guard tlv.value(for: 0x06) == Data([expectedState]) else {
@@ -344,11 +529,112 @@ private func validatePairingResponse(
     }
 }
 
+/// Validates the state and optional error returned during manual pair setup.
+private func validatePairSetupResponse(
+    _ tlv: TLV8,
+    expectedState: UInt8
+) throws {
+    if let rejection = remotePairingRejection(in: tlv) {
+        throw RorkDeviceError.remotePairing(rejection)
+    }
+    guard tlv.value(for: 0x06) == Data([expectedState]) else {
+        throw RorkDeviceError.protocolViolation(
+            "Remote pair setup returned an unexpected state."
+        )
+    }
+}
+
+/// Decodes the protocol's error and optional retry-delay TLVs.
+private func remotePairingRejection(
+    in tlv: TLV8
+) -> RemotePairingRejection? {
+    guard let code = tlv.value(for: 0x07).first else {
+        return nil
+    }
+
+    switch code {
+    case 0x01:
+        return .unknown
+    case 0x02:
+        return .authentication
+    case 0x03:
+        return .backoff(
+            retryDelay: retryDelay(from: tlv.value(for: 0x08))
+        )
+    case 0x04:
+        return .unknownPeer
+    case 0x05:
+        return .maximumPeers
+    case 0x06:
+        return .maximumAttempts
+    default:
+        return .unrecognized(code: code)
+    }
+}
+
+/// Decodes a little-endian retry delay expressed in whole seconds.
+private func retryDelay(from data: Data) -> Duration? {
+    guard !data.isEmpty, data.count <= MemoryLayout<UInt64>.size else {
+        return nil
+    }
+
+    var seconds: UInt64 = 0
+    for (index, byte) in data.enumerated() {
+        seconds |= UInt64(byte) << (index * 8)
+    }
+    guard seconds <= UInt64(Int64.max) else {
+        return nil
+    }
+    return .seconds(Int64(seconds))
+}
+
+/// Derives the directional ciphers used after pairing or pair verification.
+private func sessionKeys(from secret: Data) -> VerifiedRemotePairingKeys {
+    VerifiedRemotePairingKeys(
+        preSharedKey: secret,
+        hostToDeviceCipher: deriveSessionKey(
+            from: secret,
+            context: "ClientEncrypt-main"
+        ),
+        deviceToHostCipher: deriveSessionKey(
+            from: secret,
+            context: "ServerEncrypt-main"
+        )
+    )
+}
+
 /// Derives one directional ChaCha20-Poly1305 key from the shared secret.
 private func deriveSessionKey(from secret: Data, context: String) -> SymmetricKey {
     HKDF<SHA512>.deriveKey(
         inputKeyMaterial: SymmetricKey(data: secret),
         salt: Data(),
+        info: Data(context.utf8),
+        outputByteCount: 32
+    )
+}
+
+/// Derives raw key material for a named pair-setup operation.
+private func deriveKey(
+    from secret: Data,
+    salt: String,
+    context: String
+) -> Data {
+    symmetricKey(
+        from: secret,
+        salt: salt,
+        context: context
+    ).withUnsafeBytes { Data($0) }
+}
+
+/// Derives one pair-setup key using Apple's protocol labels.
+private func symmetricKey(
+    from secret: Data,
+    salt: String,
+    context: String
+) -> SymmetricKey {
+    HKDF<SHA512>.deriveKey(
+        inputKeyMaterial: SymmetricKey(data: secret),
+        salt: Data(salt.utf8),
         info: Data(context.utf8),
         outputByteCount: 32
     )
@@ -393,21 +679,4 @@ private func decrypt(_ ciphertextAndTag: Data, using key: SymmetricKey, nonce: D
     } catch {
         throw RorkDeviceError.secureSession("Remote pairing response authentication failed.")
     }
-}
-
-/// Reads a nested JSON dictionary at the supplied key path.
-private func nestedDictionary(_ dictionary: [String: Any], keys: [String]) -> [String: Any]? {
-    nestedValue(dictionary, keys: keys) as? [String: Any]
-}
-
-/// Reads an arbitrary nested JSON value at the supplied key path.
-private func nestedValue(_ dictionary: [String: Any], keys: [String]) -> Any? {
-    var value: Any = dictionary
-    for key in keys {
-        guard let current = value as? [String: Any], let next = current[key] else {
-            return nil
-        }
-        value = next
-    }
-    return value
 }

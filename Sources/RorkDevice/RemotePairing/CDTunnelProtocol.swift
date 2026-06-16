@@ -1,12 +1,12 @@
 import Foundation
 
-/// Network configuration negotiated for a remote-pairing tunnel.
+/// Network configuration negotiated for a CoreDevice packet tunnel.
 ///
 /// The host and device addresses define the private IPv6 link carried by
-/// `RemotePairingTunnel`. Applications typically apply these values to a packet
-/// tunnel interface, then connect to Remote Service Discovery at
-/// `deviceAddress` and `serviceDiscoveryPort`.
-public struct RemotePairingTunnelConfiguration: Equatable, Sendable {
+/// `CoreDeviceTunnel` or `RemotePairingTunnel`. Applications can apply these
+/// values to a packet interface or use `CoreDeviceUserspaceNetwork` to expose
+/// device services through `DeviceTransport`.
+public struct CoreDeviceTunnelConfiguration: Equatable, Sendable {
     /// IPv6 address assigned to the host side of the private tunnel link.
     ///
     /// A packet-tunnel integration should configure this address on its local
@@ -29,15 +29,17 @@ public struct RemotePairingTunnelConfiguration: Equatable, Sendable {
     /// Maximum complete IPv6 packet size negotiated for the tunnel.
     ///
     /// Callers should apply this value to their packet interface and avoid
-    /// forwarding larger packets because `RemotePairingTunnel` does not perform
-    /// fragmentation.
+    /// forwarding larger packets because the CoreDevice packet-tunnel
+    /// implementations forward complete packets and do not fragment them.
     public let maximumTransmissionUnit: UInt16
 
     /// Port of the device's Remote Service Discovery endpoint.
     ///
     /// The endpoint is available at `deviceAddress` only through the active
-    /// packet tunnel. Pass it to
-    /// `DeviceClient.connect(toRemoteServicesAt:port:label:)`.
+    /// packet tunnel. Pass it to the `discoveryPort` parameter of
+    /// `DeviceClient.connect(toRemoteServicesUsing:discoveryPort:label:)` when
+    /// using `CoreDeviceUserspaceNetwork`, or connect to `deviceAddress`
+    /// directly after configuring the tunnel on the host network stack.
     public let serviceDiscoveryPort: UInt16
 
     /// Creates a negotiated tunnel configuration.
@@ -65,7 +67,7 @@ enum CDTunnelProtocol {
     static func negotiateConfiguration(
         over connection: DeviceConnection,
         requestedMaximumTransmissionUnit: UInt16
-    ) async throws -> RemotePairingTunnelConfiguration {
+    ) async throws -> CoreDeviceTunnelConfiguration {
         let request = try JSONSerialization.data(withJSONObject: [
             "type": "clientHandshakeRequest",
             "mtu": Int(requestedMaximumTransmissionUnit),
@@ -112,7 +114,7 @@ enum CDTunnelProtocol {
             )
         }
 
-        return RemotePairingTunnelConfiguration(
+        return CoreDeviceTunnelConfiguration(
             hostAddress: hostAddress,
             deviceAddress: deviceAddress,
             networkMask: networkMask,
@@ -132,6 +134,131 @@ enum CDTunnelProtocol {
         let payloadLength = try Int(header.bigEndianInteger(at: 4, as: UInt16.self))
         let payload = try await connection.receive(exactly: payloadLength)
         return header + payload
+    }
+
+    /// Rejects buffers that are not exactly one complete IPv6 packet.
+    static func validatePacket(
+        _ packet: Data,
+        diagnosticName: String
+    ) throws {
+        guard packet.count >= 40 else {
+            throw RorkDeviceError.invalidInput(
+                "\(diagnosticName) packet is shorter than the 40-byte IPv6 header."
+            )
+        }
+        guard packet.first.map({ $0 >> 4 }) == 6 else {
+            throw RorkDeviceError.invalidInput(
+                "\(diagnosticName) only accepts IPv6 packets."
+            )
+        }
+
+        let payloadLength = try Int(
+            packet.bigEndianInteger(at: 4, as: UInt16.self)
+        )
+        guard packet.count == 40 + payloadLength else {
+            throw RorkDeviceError.invalidInput(
+                "\(diagnosticName) packet length does not match its IPv6 header."
+            )
+        }
+    }
+}
+
+/// Owns one negotiated CDTunnel byte stream and preserves packet boundaries.
+///
+/// A CDTunnel connection permits one reader and ordered writes concurrently.
+/// This wrapper scopes that concurrency guarantee to the packet protocol rather
+/// than claiming it for every `DeviceConnection` implementation.
+final class CDTunnelConnection: @unchecked Sendable {
+    /// Full-duplex stream carrying complete IPv6 packets.
+    private let connection: DeviceConnection
+
+    /// Human-readable tunnel name included in packet validation failures.
+    private let diagnosticName: String
+
+    /// Writer that prevents suspended sends from overlapping on the stream.
+    private let writer: CDTunnelPacketWriter
+
+    /// Creates a packet connection that owns the supplied byte stream.
+    init(
+        connection: DeviceConnection,
+        diagnosticName: String
+    ) {
+        self.connection = connection
+        self.diagnosticName = diagnosticName
+        writer = CDTunnelPacketWriter(connection: connection)
+    }
+
+    /// Validates and sends one complete IPv6 packet.
+    func sendPacket(_ packet: Data) async throws {
+        try CDTunnelProtocol.validatePacket(
+            packet,
+            diagnosticName: diagnosticName
+        )
+        try await writer.send(packet)
+    }
+
+    /// Receives one complete IPv6 packet using its header-declared length.
+    func receivePacket() async throws -> Data {
+        try await CDTunnelProtocol.receivePacket(from: connection)
+    }
+
+    /// Closes the owned byte stream.
+    func close() {
+        connection.close()
+    }
+}
+
+/// Serializes CDTunnel packet writes across actor reentrancy.
+///
+/// Actor isolation alone does not preserve stream framing because a suspended
+/// write allows another actor task to begin. The explicit write slot keeps each
+/// complete IPv6 packet contiguous on the underlying connection.
+private actor CDTunnelPacketWriter {
+    /// Byte stream shared by all packet senders.
+    private let connection: DeviceConnection
+
+    /// Whether a caller currently owns the write slot.
+    private var isWriteInProgress = false
+
+    /// Callers waiting to acquire the write slot in arrival order.
+    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Creates a writer for the supplied tunnel stream.
+    init(connection: DeviceConnection) {
+        self.connection = connection
+    }
+
+    /// Sends one packet after all earlier writes complete.
+    func send(_ packet: Data) async throws {
+        try Task.checkCancellation()
+        await acquireWriteSlot()
+        defer {
+            releaseWriteSlot()
+        }
+        try Task.checkCancellation()
+        try await connection.send(packet)
+    }
+
+    /// Suspends until this caller exclusively owns the transport write slot.
+    private func acquireWriteSlot() async {
+        guard isWriteInProgress else {
+            isWriteInProgress = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            writeWaiters.append(continuation)
+        }
+    }
+
+    /// Transfers ownership to the next waiter or marks the slot as available.
+    private func releaseWriteSlot() {
+        guard !writeWaiters.isEmpty else {
+            isWriteInProgress = false
+            return
+        }
+
+        writeWaiters.removeFirst().resume()
     }
 }
 

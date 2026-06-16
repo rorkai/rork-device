@@ -51,6 +51,14 @@ enum RemoteXPCValue: Equatable {
         return value
     }
 
+    /// Returns the associated Boolean without forcing callers to pattern match.
+    var booleanValue: Bool? {
+        guard case let .bool(value) = self else {
+            return nil
+        }
+        return value
+    }
+
     /// Converts integer and decimal-string representations to a native `Int`.
     var integerValue: Int? {
         switch self {
@@ -89,14 +97,14 @@ enum RemoteXPCMessageCodec {
     /// Object encoding version supported by this implementation.
     private static let objectVersion: UInt32 = 5
 
-    /// Largest RemoteXPC body accepted from the discovery connection.
+    /// Largest RemoteXPC body accepted from any device service.
     ///
-    /// Service advertisements are normally only a few kilobytes. The 16 MiB
-    /// ceiling leaves substantial headroom while preventing an untrusted peer
-    /// from driving unbounded buffering with a forged wrapper length.
-    private static let maximumDiscoveryBodyLength = 16 * 1024 * 1024
+    /// Discovery and CoreDevice responses are normally much smaller. The
+    /// 16 MiB ceiling leaves headroom for larger process lists while preventing
+    /// an untrusted peer from driving unbounded buffering with a forged length.
+    private static let maximumBodyLength = 16 * 1024 * 1024
 
-    /// RemoteXPC object tags supported by the discovery protocol.
+    /// RemoteXPC object tags supported by the device services in this package.
     private enum ObjectType: UInt32 {
         /// Explicit null value.
         case null = 0x00001000
@@ -172,9 +180,9 @@ enum RemoteXPCMessageCodec {
               bodyLength <= Int.max - 24 else {
             throw RorkDeviceError.protocolViolation("RemoteXPC message body is too large.")
         }
-        guard bodyLength <= maximumDiscoveryBodyLength else {
+        guard bodyLength <= maximumBodyLength else {
             throw RorkDeviceError.protocolViolation(
-                "RemoteXPC message body exceeds the 16 MiB discovery limit."
+                "RemoteXPC message body exceeds the 16 MiB limit."
             )
         }
 

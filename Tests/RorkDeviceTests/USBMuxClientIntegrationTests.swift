@@ -27,6 +27,119 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.connectedPorts, [62078])
     }
 
+    func testReadsPairingRecordAndSuppliesDeviceIdentifier() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon(pairingRecordData: recordData)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        let pairingRecord = try await client.pairingRecord(
+            for: "fake-device-1"
+        )
+
+        XCTAssertEqual(pairingRecord.udid, "fake-device-1")
+        XCTAssertEqual(pairingRecord.hostID, "host-1")
+        XCTAssertEqual(pairingRecord.systemBUID, "system-1")
+        XCTAssertEqual(pairingRecord.deviceCertificate, Data([1]))
+    }
+
+    func testRejectsPairingRecordForAnotherDeviceIdentifier() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "UDID": "another-device",
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon(pairingRecordData: recordData)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.pairingRecord(for: "fake-device-1")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidPairingRecord(
+                    "Pairing record UDID does not match the requested device."
+                )
+            )
+        }
+    }
+
+    func testRejectsPairingRecordWithNonStringDeviceIdentifier() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "UDID": Data([0x01]),
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon(pairingRecordData: recordData)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.pairingRecord(for: "fake-device-1")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidPairingRecord(
+                    "Pairing record UDID must be a string when present."
+                )
+            )
+        }
+    }
+
+    func testRejectsPairingRecordResponseWithFailureStatus() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon(
+            pairingRecordData: recordData,
+            pairingRecordStatus: 2
+        )
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.pairingRecord(for: "fake-device-1")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("usbmux ReadPairRecord failed with code 2.")
+            )
+        }
+    }
+
     func testDeviceEventsStreamsAttachAndDetachMessages() async throws {
         let attached = USBMuxDevice(
             deviceID: 7,

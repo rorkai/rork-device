@@ -106,10 +106,11 @@ public struct DeviceInfo: Equatable, Sendable {
     }
 }
 
-/// Installed application metadata returned by InstallationProxy.
+/// Installed application metadata returned by a device service.
 ///
-/// InstallationProxy exposes app records as property-list dictionaries. This
-/// value provides typed access to the fields most callers need while retaining
+/// Lockdown sessions populate this value from InstallationProxy, while Remote
+/// Service Discovery sessions use CoreDevice so developer-installed apps are
+/// included. The model provides typed access to common fields while retaining
 /// scalar raw values for diagnostics and custom workflows.
 public struct InstalledApplication: Equatable, Sendable {
     /// Bundle identifier, such as `com.example.app`.
@@ -119,22 +120,26 @@ public struct InstalledApplication: Equatable, Sendable {
     /// `CFBundleName`.
     public let displayName: String?
 
+    /// Executable name when the selected device service reports one.
+    public let executableName: String?
+
     /// Marketing version from `CFBundleShortVersionString`.
     public let version: String?
 
     /// Build version from `CFBundleVersion`.
     public let buildVersion: String?
 
-    /// Application type reported by InstallationProxy.
+    /// Application class reported or derived by the selected device service.
     public let applicationType: String?
 
     /// Scalar record values converted to sendable diagnostic descriptions.
     public let rawValues: [String: DiagnosticValue]
 
-    /// Creates typed application metadata from a raw InstallationProxy record.
+    /// Creates typed application metadata from a property-list-style record.
     public init(values: [String: Any]) {
         bundleIdentifier = values["CFBundleIdentifier"] as? String
         displayName = values["CFBundleDisplayName"] as? String ?? values["CFBundleName"] as? String
+        executableName = values["CFBundleExecutable"] as? String
         version = values["CFBundleShortVersionString"] as? String
         buildVersion = values["CFBundleVersion"] as? String
         applicationType = values["ApplicationType"] as? String

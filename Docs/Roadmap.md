@@ -83,12 +83,59 @@ Current limitations:
 - Remote pairing and RSD are library APIs; the CLI continues to use usbmux or a
   direct Lockdown endpoint.
 
+## 0.4.0: Remote Trust And Userspace Networking
+
+The fourth release owns the complete unprivileged CoreDevice route for a
+USB-connected device:
+
+- Require complete identity material, including the 16-byte identity resolving
+  key used by manual pair-setup.
+- Generate new Ed25519 identities with independent resolving keys and persist
+  them atomically with owner-only permissions.
+- Read the trusted Lockdown pairing record directly from local `usbmuxd`.
+- Preserve typed pairing rejection reasons instead of treating every error as
+  an unknown identity.
+- Enter manual pair setup only for authentication and unknown-peer responses.
+- Resolve the untrusted pairing service through Remote Service Discovery and
+  perform enrollment over RemoteXPC.
+- Start `CoreDeviceProxy` through an authenticated Lockdown session and
+  negotiate its private IPv6 packet link.
+- Run an embedded lwIP IPv6/TCP backend over the packet tunnel.
+- Expose device service ports through a loopback gateway compatible with the
+  destination-prefixed userspace protocol.
+- Represent both the userspace network and an existing external gateway through
+  the standard `DeviceTransport` abstraction.
+- Open Remote Service Discovery and all advertised service ports through the
+  same caller-supplied `DeviceTransport`.
+- Launch applications, list running processes, and terminate app processes
+  through CoreDevice's direct RemoteXPC app service.
+- Add `RemotePairingTrust.establishIfNeeded(for:using:discoveryPort:)` and the
+  matching trust progress model.
+- Add `rorkdevice tunnel start`, including identity creation, Lockdown pairing
+  record loading, tunnel supervision, trust enrollment, and a machine-readable
+  ready event.
+- Cover SRP-6a, OPACK metadata, RemoteXPC control messages, rejection handling,
+  packet forwarding, TCP behavior, gateway framing, and identity persistence
+  with deterministic protocol tests and physical-device verification.
+
+Current limitations:
+
+- The package reads existing Lockdown pairing records but does not yet create,
+  validate, or remove the host pairing established by the iPhone Trust dialog.
+- The embedded userspace backend currently exposes IPv6 TCP streams. It does
+  not provide a system packet interface, UDP sockets, or general IP routing.
+- The loopback gateway preamble is intentionally compatible with existing
+  device tools and is not authenticated; callers should not expose it on an
+  untrusted network.
+- The long-lived TLS-PSK packet tunnel still uses the Apple transport backend;
+  Windows and Linux need additional backends.
+
 ## Future Milestones
 
 The next milestones should expand service coverage without weakening the public
 API boundaries:
 
-- Pairing creation, validation, unpairing, and pairing-record storage.
+- Lockdown pairing creation, validation, unpairing, and pairing-record storage.
 - Portable cryptography and TLS-PSK transports for remote pairing on additional
   host platforms.
 - Packet-interface adapters for supported host environments.

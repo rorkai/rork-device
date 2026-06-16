@@ -3,8 +3,44 @@ import XCTest
 @testable import RorkDevice
 
 final class RemoteServiceDiscoveryTests: XCTestCase {
+    func testConnectsToRemoteServicesUsingDeviceTransport() async throws {
+        let discoveryConnection = FakeConnection(
+            inbound: try remoteServiceDiscoveryInbound()
+        )
+        var serviceResponses = Data()
+        serviceResponses.append(
+            try PropertyListMessageFramer.encode([
+                "Request": "RSDCheckin",
+            ])
+        )
+        serviceResponses.append(
+            try PropertyListMessageFramer.encode([
+                "Request": "StartService",
+            ])
+        )
+        let serviceConnection = FakeConnection(
+            inbound: serviceResponses
+        )
+        let transport = RemoteServiceTestTransport(connections: [
+            51_000: discoveryConnection,
+            51_001: serviceConnection,
+        ])
+
+        let session = try await DeviceClient().connect(
+            toRemoteServicesUsing: transport,
+            discoveryPort: 51_000,
+            label: "RorkAppInstaller"
+        )
+        let openedConnection = try await session.startService(.afc)
+
+        XCTAssertTrue(openedConnection === serviceConnection)
+        XCTAssertEqual(transport.requestedPorts, [51_000, 51_001])
+    }
+
     func testOpensRemoteXPCAndParsesAdvertisedServices() async throws {
-        let connection = FakeConnection(inbound: try XCTUnwrap(Data(base64Encoded: remoteServiceHandshakeWire)))
+        let connection = FakeConnection(
+            inbound: try remoteServiceDiscoveryInbound()
+        )
 
         let discovery = try await RemoteServiceDiscoverySession.open(over: connection)
 
@@ -28,18 +64,18 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
     func testReassemblesHandshakeSplitAcrossHTTP2DataFrames() async throws {
         let wrapper = try XCTUnwrap(Data(base64Encoded: remoteServiceHandshakeWrapper))
         let splitIndex = wrapper.count / 2
-        var inbound = makeHTTP2Frame(type: 0x04, streamID: 0)
+        var inbound = try remoteXPCSessionHandshakeInbound()
         inbound.append(
-            makeHTTP2Frame(
+            remoteXPCTestFrame(
                 type: 0x00,
-                streamID: 1,
+                streamIdentifier: 1,
                 payload: wrapper.prefix(splitIndex)
             )
         )
         inbound.append(
-            makeHTTP2Frame(
+            remoteXPCTestFrame(
                 type: 0x00,
-                streamID: 1,
+                streamIdentifier: 1,
                 payload: wrapper.dropFirst(splitIndex)
             )
         )
@@ -55,18 +91,18 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
         let wrapper = try XCTUnwrap(
             Data(base64Encoded: remoteServiceHandshakeWrapper)
         )
-        var inbound = makeHTTP2Frame(type: 0x04, streamID: 0)
+        var inbound = try remoteXPCSessionHandshakeInbound()
         inbound.append(
-            makeHTTP2Frame(
+            remoteXPCTestFrame(
                 type: 0x00,
-                streamID: 3,
+                streamIdentifier: 3,
                 payload: Data(repeating: 0xaa, count: 1024)
             )
         )
         inbound.append(
-            makeHTTP2Frame(
+            remoteXPCTestFrame(
                 type: 0x00,
-                streamID: 1,
+                streamIdentifier: 1,
                 payload: wrapper
             )
         )
@@ -78,7 +114,40 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
         XCTAssertEqual(discovery.directory.deviceIdentifier, "device-1")
     }
 
-    func testRejectsRemoteXPCBodyLargerThanDiscoveryLimit() throws {
+    func testRejectsTooManyMessagesWithoutAServiceDirectory() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        for identifier in 1...33 {
+            let message = try RemoteXPCMessageCodec.encode(
+                value: .dictionary([
+                    "MessageType": .string("NotAHandshake"),
+                ]),
+                flags: 0x00000101,
+                messageIdentifier: UInt64(identifier)
+            )
+            inbound.append(
+                remoteXPCTestFrame(
+                    type: 0x00,
+                    streamIdentifier: 1,
+                    payload: message
+                )
+            )
+        }
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await RemoteServiceDiscoverySession.open(
+                over: FakeConnection(inbound: inbound)
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "Remote Service Discovery received too many messages without a handshake."
+                )
+            )
+        }
+    }
+
+    func testRejectsRemoteXPCBodyLargerThanGlobalLimit() throws {
         var wrapper = Data()
         wrapper.appendLittleEndian(UInt32(0x29b00b92))
         wrapper.appendLittleEndian(UInt32(0))
@@ -91,34 +160,47 @@ final class RemoteServiceDiscoveryTests: XCTestCase {
             XCTAssertEqual(
                 error as? RorkDeviceError,
                 .protocolViolation(
-                    "RemoteXPC message body exceeds the 16 MiB discovery limit."
+                    "RemoteXPC message body exceeds the 16 MiB limit."
                 )
             )
         }
     }
 }
 
+private final class RemoteServiceTestTransport: DeviceTransport {
+    private let connections: [UInt16: DeviceConnection]
+    private(set) var requestedPorts: [UInt16] = []
+
+    init(connections: [UInt16: DeviceConnection]) {
+        self.connections = connections
+    }
+
+    func connect(to port: UInt16) async throws -> DeviceConnection {
+        requestedPorts.append(port)
+        guard let connection = connections[port] else {
+            throw RorkDeviceError.transport(
+                "No test connection for port \(port)."
+            )
+        }
+        return connection
+    }
+}
+
 private let remoteServiceHandshakeWrapper =
     "kguwKQEBAAAcAQAAAAAAAAAAAAAAAAAAQjcTQgUAAAAA8AAADAEAAAMAAABNZXNzYWdlVHlwZQAAkAAACgAAAEhhbmRzaGFrZQAAAFByb3BlcnRpZXMAAADwAAAoAAAAAQAAAFVuaXF1ZURldmljZUlEAAAAkAAACQAAAGRldmljZS0xAAAAAFNlcnZpY2VzAAAAAADwAACYAAAAAgAAAGNvbS5hcHBsZS5hZmMuc2hpbS5yZW1vdGUAAAAA8AAAHAAAAAEAAABQb3J0AAAAAACQAAAGAAAANTEwMDEAAABjb20uYXBwbGUubW9iaWxlLmluc3RhbGxhdGlvbl9wcm94eS5zaGltLnJlbW90ZQAA8AAAHAAAAAEAAABQb3J0AAAAAACQAAAGAAAANTEwMDIAAAA="
 
-private let remoteServiceHandshakeWire =
-    "AAAGBAAAAAAAAAQAEAAAAAE0AAAAAAABkguwKQEBAAAcAQAAAAAAAAAAAAAAAAAAQjcTQgUAAAAA8AAADAEAAAMAAABNZXNzYWdlVHlwZQAAkAAACgAAAEhhbmRzaGFrZQAAAFByb3BlcnRpZXMAAADwAAAoAAAAAQAAAFVuaXF1ZURldmljZUlEAAAAkAAACQAAAGRldmljZS0xAAAAAFNlcnZpY2VzAAAAAADwAACYAAAAAgAAAGNvbS5hcHBsZS5hZmMuc2hpbS5yZW1vdGUAAAAA8AAAHAAAAAEAAABQb3J0AAAAAACQAAAGAAAANTEwMDEAAABjb20uYXBwbGUubW9iaWxlLmluc3RhbGxhdGlvbl9wcm94eS5zaGltLnJlbW90ZQAA8AAAHAAAAAEAAABQb3J0AAAAAACQAAAGAAAANTEwMDIAAAA="
-
-private func makeHTTP2Frame(
-    type: UInt8,
-    flags: UInt8 = 0,
-    streamID: UInt32,
-    payload: some DataProtocol = Data()
-) -> Data {
-    let payload = Data(payload)
-    var frame = Data([
-        UInt8((payload.count >> 16) & 0xff),
-        UInt8((payload.count >> 8) & 0xff),
-        UInt8(payload.count & 0xff),
-        type,
-        flags,
-    ])
-    frame.appendBigEndian(streamID)
-    frame.append(payload)
-    return frame
+/// Builds a complete discovery stream after RemoteXPC channel startup.
+private func remoteServiceDiscoveryInbound() throws -> Data {
+    var inbound = try remoteXPCSessionHandshakeInbound()
+    let handshake = try XCTUnwrap(
+        Data(base64Encoded: remoteServiceHandshakeWrapper)
+    )
+    inbound.append(
+        remoteXPCTestFrame(
+            type: 0x00,
+            streamIdentifier: 1,
+            payload: handshake
+        )
+    )
+    return inbound
 }
