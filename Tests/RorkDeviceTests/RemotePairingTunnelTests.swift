@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import RorkDevice
@@ -256,12 +257,13 @@ private final class ConcurrentSendRecordingConnection: DeviceConnection {
 private func remotePairingIdentity() -> RemotePairingIdentity {
     RemotePairingIdentity(
         identifier: "test-host",
-        privateKeyData: Data(repeating: 1, count: 32)
+        privateKey: Curve25519.Signing.PrivateKey(),
+        identityResolvingKey: Data(repeating: 0x7a, count: 16)
     )
 }
 
-private func tunnelConfiguration() -> RemotePairingTunnelConfiguration {
-    RemotePairingTunnelConfiguration(
+private func tunnelConfiguration() -> CoreDeviceTunnelConfiguration {
+    CoreDeviceTunnelConfiguration(
         hostAddress: "fd00::1",
         deviceAddress: "fd00::2",
         networkMask: "ffff:ffff:ffff:ffff::",

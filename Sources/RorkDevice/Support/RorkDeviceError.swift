@@ -29,6 +29,9 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// Secure-session setup, certificate parsing, or TLS I/O failed.
     case secureSession(String)
 
+    /// The device rejected a remote-pairing protocol request.
+    case remotePairing(RemotePairingRejection)
+
     /// AFC returned a non-zero status code.
     case afcStatus(UInt64)
 
@@ -58,6 +61,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "The requested device connection requires a secure-session backend that is unavailable in this build."
         case let .secureSession(message):
             return "Secure session error: \(message)"
+        case let .remotePairing(rejection):
+            return rejection.description
         case let .afcStatus(status):
             return "AFC returned status \(status)."
         case let .heartbeat(message):

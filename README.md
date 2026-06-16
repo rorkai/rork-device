@@ -20,9 +20,17 @@ tests and clear public API boundaries.
   applications.
 - **Command-line tools** - the `rorkdevice` CLI supports device inspection,
   file access, app listing, provisioning-profile management, IPA installation,
-  and app removal.
-- **Pairing records** - parse existing Lockdown pairing-record plists and
-  preserve unknown fields for diagnostics.
+  app removal, and CoreDevice process launch and termination.
+- **Pairing records** - load the trusted Lockdown record stored by local
+  `usbmuxd`, parse pairing-record plists, and preserve unknown fields for
+  diagnostics.
+- **Remote identity lifecycle** - generate, validate, and atomically persist
+  complete CoreDevice identities with owner-only file permissions.
+- **Remote trust enrollment** - distinguish typed device rejections and
+  complete manual trust for newly generated or existing identities.
+- **CoreDevice userspace networking** - negotiate the Lockdown packet tunnel,
+  run an embedded IPv6/TCP backend, and expose device services through the
+  destination-prefixed loopback protocol used by existing device tools.
 - **SwiftNIO transports** - connect through local `usbmuxd` or a known direct
   Lockdown endpoint with non-blocking TCP and Unix-domain socket streams.
 - **Remote-pairing tunnels** - authenticate an existing remote-pairing identity,
@@ -30,7 +38,8 @@ tests and clear public API boundaries.
   packets through the negotiated link.
 - **Remote services** - connect to Remote Service Discovery through an active
   tunnel, complete its HTTP/2 and RemoteXPC handshake, and use the advertised
-  services through the same high-level `DeviceSession` APIs.
+  services through the same high-level `DeviceSession` APIs or any
+  `DeviceTransport` that reaches the tunnel's private service ports.
 - **Tunnel diagnostics** - inspect the negotiated network configuration and
   TLS cipher suite without coupling application behavior to transport-specific
   metadata.
@@ -50,7 +59,8 @@ tests and clear public API boundaries.
 - **Provisioning profiles** - install, remove, and copy CMS-wrapped
   `.mobileprovision` payloads through MISAgent.
 - **Application management** - browse installed apps, install staged IPA
-  packages, and uninstall apps through InstallationProxy.
+  packages, uninstall through InstallationProxy, and launch or terminate apps
+  through CoreDevice's direct RemoteXPC app service.
 - **Structured progress** - expose InstallationProxy progress events and typed
   protocol errors for application workflows.
 - **Protocol test harness** - validate usbmux, Lockdown, remote pairing,
@@ -60,8 +70,9 @@ tests and clear public API boundaries.
   info, provisioning-profile install/copy, IPA install, and IPA uninstall.
 
 See [Docs/Roadmap.md](Docs/Roadmap.md) for release scope, current limitations,
-and planned services such as pairing creation, Wi-Fi discovery, syslog, crash
-reports, debugserver, developer image mounting, backup, and restore.
+and planned services such as Lockdown pairing creation, Wi-Fi discovery,
+syslog, crash reports, debugserver, developer image mounting, backup, and
+restore.
 
 ## Installation
 
@@ -71,7 +82,7 @@ Add `rork-device` to the package dependencies:
 dependencies: [
     .package(
         url: "https://github.com/rorkai/rork-device.git",
-        from: "0.3.0"
+        from: "0.4.0"
     ),
 ]
 ```
@@ -113,12 +124,90 @@ try await session.installApplication(
 }
 ```
 
-## Remote Pairing Example
+## CoreDevice Userspace Tunnel
 
-Remote pairing requires a host identity that the device has already accepted.
-The tunnel API verifies that identity, negotiates an encrypted private IPv6
-link, and returns the network parameters needed by the application's packet
-interface:
+The complete local-device route can be built without an external tunnel
+process. `DeviceClient` reads the trusted Lockdown record from `usbmuxd`,
+`RemotePairingIdentity` owns the stable CoreDevice credential, and the
+userspace network exposes device TCP services without creating a privileged
+system interface:
+
+```swift
+import Foundation
+import RorkDevice
+
+let client = DeviceClient()
+let devices = try await client.discoverDevices()
+guard let device = devices.first else {
+    throw RorkDeviceError.invalidInput("No device found.")
+}
+
+let pairingRecord = try await client.pairingRecord(
+    for: device.identifier
+)
+let session = try await client.connect(
+    to: device,
+    using: pairingRecord
+)
+let identity = try RemotePairingIdentity.loadOrCreate(
+    at: URL(fileURLWithPath: "remote-pairing.plist")
+)
+let packetTunnel = try await session.openCoreDeviceTunnel()
+let network = try CoreDeviceUserspaceNetwork(tunnel: packetTunnel)
+let gateway = try await CoreDeviceUserspaceGateway.start(network: network)
+defer {
+    gateway.close()
+}
+
+try await RemotePairingTrust.establishIfNeeded(
+    for: identity,
+    using: network,
+    discoveryPort: network.configuration.serviceDiscoveryPort
+)
+
+let remoteSession = try await client.connect(
+    toRemoteServicesUsing: network,
+    discoveryPort: network.configuration.serviceDiscoveryPort
+)
+try await remoteSession.launchApplication(
+    bundleIdentifier: "com.example.app",
+    options: ApplicationLaunchOptions(
+        arguments: ["--diagnostic"],
+        environment: ["EXAMPLE_MODE": "test"],
+        terminateExistingProcess: true
+    )
+)
+
+print("Device:", network.configuration.deviceAddress)
+print("RSD port:", network.configuration.serviceDiscoveryPort)
+print("Gateway:", "\(gateway.host):\(gateway.port)")
+```
+
+`loadOrCreate(at:)` writes a binary property list with mode `0600` and returns
+the same identity on later launches. The first trust attempt may require the
+user to approve the identity on the iPhone; later attempts verify the stored
+identity without repeating enrollment.
+
+`CoreDeviceUserspaceGateway` accepts the 20-byte destination preamble used by
+userspace-aware device tools: the device's 16-byte IPv6 address followed by a
+little-endian 32-bit service port. Keep the listener on loopback unless the
+application adds its own access control.
+
+The CLI owns the same lifecycle and prints a newline-delimited JSON endpoint
+after the tunnel and trust checks are ready:
+
+```bash
+rorkdevice tunnel start \
+  --udid 00008140-000000000000001C \
+  --identity remote-pairing.plist
+```
+
+## Direct Remote-Pairing Tunnel
+
+For applications that already have a direct remote-pairing control endpoint,
+`RemotePairingTunnel` verifies an accepted identity, negotiates an encrypted
+private IPv6 link, and returns the network parameters needed by the
+application's packet interface:
 
 ```swift
 import Foundation
@@ -128,9 +217,6 @@ guard RemotePairingTunnel.isSupported else {
     throw RorkDeviceError.secureSessionUnsupported
 }
 
-let identity = try RemotePairingIdentity(
-    contentsOf: URL(fileURLWithPath: "remote-pairing.plist")
-)
 let tunnel = try await RemotePairingTunnel.connect(
     to: "10.7.0.1",
     using: identity
@@ -167,8 +253,10 @@ advertised service. Network Extension integrations on Apple platforms can use
 `connect(to:port:using:through:requestedMaximumTransmissionUnit:timeout:)` to
 bind the control and TLS connections to a specific `NWInterface`.
 
-Remote pairing and Remote Service Discovery are library APIs in `0.3.0`. The
-CLI continues to use usbmux or a direct Lockdown endpoint.
+The direct remote-pairing path remains independent from the Lockdown
+CoreDevice userspace network. Applications can choose the route appropriate to
+their process and platform while reusing the same identity, trust, and
+`DeviceSession` APIs.
 
 ## Platform Support
 
@@ -184,7 +272,7 @@ network connection.
 
 Platform-specific remote-pairing transport selection is isolated behind an
 internal boundary so a portable backend can be added later without changing
-the high-level tunnel or `DeviceSession` APIs. Version `0.3.0` does not include
+the high-level tunnel or `DeviceSession` APIs. Version `0.4.0` does not include
 a Windows or Linux backend.
 
 ## Usage
@@ -199,11 +287,21 @@ rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
 rorkdevice files list / --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist
+rorkdevice launch com.example.app --kill-existing \
+  --userspace-device-address fd92:fbe0:acf3::2 \
+  --userspace-gateway-port 60112 \
+  --remote-service-discovery-port 54130
+rorkdevice terminate com.example.app \
+  --userspace-device-address fd92:fbe0:acf3::2 \
+  --userspace-gateway-port 60112 \
+  --remote-service-discovery-port 54130
 rorkdevice profiles install Profile.mobileprovision --pairing-record pairing.plist
 rorkdevice profiles copy --output-directory Profiles --pairing-record pairing.plist
 rorkdevice profiles remove PROFILE-UUID --pairing-record pairing.plist
 rorkdevice install App.ipa --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice uninstall com.example.app --pairing-record pairing.plist
+rorkdevice remote-pairing trust --identity selfIdentity.plist --device-address fd01:172:3c68::1 --discovery-port 54130 --gateway-port 60106
+rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist
 ```
 
 Direct/tunnel Lockdown endpoints can be selected explicitly:
@@ -228,6 +326,8 @@ SUBCOMMANDS:
   install                 Install an IPA.
   uninstall               Uninstall an app by bundle identifier.
   profiles                Manage provisioning profiles.
+  remote-pairing          Manage the identity used by CoreDevice remote pairing.
+  tunnel                  Open and expose CoreDevice packet tunnels.
 
   See 'rorkdevice help <subcommand>' for detailed help.
 ```

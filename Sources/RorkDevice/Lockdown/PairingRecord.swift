@@ -3,8 +3,10 @@ import Foundation
 /// Existing Lockdown pairing record used to authenticate with a device.
 ///
 /// A pairing record is the trust material created when a host pairs with an iOS
-/// device. `rork-device` 0.1.0 reads this material and uses it for
-/// `StartSession`; it does not create new pairings yet.
+/// device. `rork-device` can load it from a property list or retrieve the copy
+/// stored by local `usbmuxd`, then use it for `StartSession`. Creating a new
+/// Lockdown host pairing and driving the iPhone Trust dialog remain separate
+/// responsibilities.
 ///
 /// The parser accepts standard plist data and preserves a diagnostic view of
 /// unknown fields in `rawValues` so platform-specific records can be inspected

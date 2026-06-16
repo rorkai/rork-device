@@ -3,10 +3,13 @@ import Foundation
 /// Opens a byte stream to one port advertised by Remote Service Discovery.
 typealias RemoteServiceConnectionFactory = (_ host: String, _ port: UInt16) async throws -> DeviceConnection
 
+/// Opens a byte stream to an advertised port on the backend's fixed route.
+private typealias BoundRemoteServiceConnectionFactory = (_ port: UInt16) async throws -> DeviceConnection
+
 /// Resolves and opens services from a live Remote Service Discovery session.
 final class RemoteServiceSessionBackend: DeviceSessionBackend {
-    /// Device-side address reachable through the active packet tunnel.
-    private let host: String
+    /// RSD sessions can open CoreDevice services without Lockdown check-in.
+    let usesRemoteServiceDiscovery = true
 
     /// Service map advertised by the retained discovery session.
     private let directory: RemoteServiceDirectory
@@ -17,8 +20,11 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     /// Strong reference that keeps the advertisement's service ports valid.
     private let retainedDiscoverySession: RemoteServiceDiscoverySession?
 
-    /// Injectable connection factory used for service streams and tests.
-    private let openConnection: RemoteServiceConnectionFactory
+    /// Route-bound connection factory used for every advertised service port.
+    private let openConnection: BoundRemoteServiceConnectionFactory
+
+    /// Formats a service port using the route that carries its connection.
+    private let endpointDescription: (UInt16) -> String
 
     /// Creates a backend bound to one live discovery advertisement.
     init(
@@ -30,11 +36,33 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             try await TCPDeviceConnection.connect(to: host, port: port)
         }
     ) {
-        self.host = host
         self.directory = directory
         self.label = label
         retainedDiscoverySession = discoverySession
-        self.openConnection = openConnection
+        self.openConnection = { port in
+            try await openConnection(host, port)
+        }
+        endpointDescription = { port in
+            remoteServiceEndpointDescription(host: host, port: port)
+        }
+    }
+
+    /// Creates a backend whose discovery and service ports share one transport.
+    init(
+        transport: any DeviceTransport,
+        directory: RemoteServiceDirectory,
+        label: String,
+        retaining discoverySession: RemoteServiceDiscoverySession
+    ) {
+        self.directory = directory
+        self.label = label
+        retainedDiscoverySession = discoverySession
+        openConnection = { port in
+            try await transport.connect(to: port)
+        }
+        endpointDescription = { port in
+            "port \(port) through the supplied transport"
+        }
     }
 
     /// Returns the device identifier supplied by the discovery handshake.
@@ -44,6 +72,25 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             values["UniqueDeviceID"] = deviceIdentifier
         }
         return DeviceInfo(values: values)
+    }
+
+    /// Opens an exact RSD service without applying the shim check-in protocol.
+    ///
+    /// CoreDevice services such as `com.apple.coredevice.appservice` begin with
+    /// RemoteXPC immediately. Sending the Lockdown-compatible check-in used by
+    /// `.shim.remote` services would corrupt that protocol stream.
+    func startRemoteService(
+        named serviceName: String
+    ) async throws -> DeviceConnection {
+        guard let port = directory.services[serviceName] else {
+            throw RorkDeviceError.protocolViolation(
+                "Remote service directory does not advertise \(serviceName)."
+            )
+        }
+        return try await connect(
+            to: serviceName,
+            port: port
+        )
     }
 
     /// Connects to an advertised service and completes its two-message RSD check-in.
@@ -57,25 +104,35 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             )
         }
 
-        let connection: DeviceConnection
-        do {
-            connection = try await openConnection(host, port)
-        } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect \(advertisedName) on \(host):\(port): \(describeDeviceSessionError(error))"
-            )
-        }
+        let connection = try await connect(
+            to: advertisedName,
+            port: port
+        )
 
         do {
             try await performCheckIn(
                 over: connection,
                 serviceName: advertisedName,
-                endpoint: remoteServiceEndpointDescription(host: host, port: port)
+                endpoint: endpointDescription(port)
             )
             return connection
         } catch {
             connection.close()
             throw error
+        }
+    }
+
+    /// Opens an advertised endpoint and adds service context to transport errors.
+    private func connect(
+        to serviceName: String,
+        port: UInt16
+    ) async throws -> DeviceConnection {
+        do {
+            return try await openConnection(port)
+        } catch {
+            throw RorkDeviceError.transport(
+                "Failed to connect \(serviceName) on \(endpointDescription(port)): \(describeDeviceSessionError(error))"
+            )
         }
     }
 

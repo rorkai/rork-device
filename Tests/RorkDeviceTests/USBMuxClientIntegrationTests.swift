@@ -27,6 +27,32 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.connectedPorts, [62078])
     }
 
+    func testReadsPairingRecordAndSuppliesDeviceIdentifier() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon(pairingRecordData: recordData)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        let pairingRecord = try await client.pairingRecord(
+            for: "fake-device-1"
+        )
+
+        XCTAssertEqual(pairingRecord.udid, "fake-device-1")
+        XCTAssertEqual(pairingRecord.hostID, "host-1")
+        XCTAssertEqual(pairingRecord.systemBUID, "system-1")
+        XCTAssertEqual(pairingRecord.deviceCertificate, Data([1]))
+    }
+
     func testDeviceEventsStreamsAttachAndDetachMessages() async throws {
         let attached = USBMuxDevice(
             deviceID: 7,

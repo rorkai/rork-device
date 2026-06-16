@@ -4,6 +4,240 @@ import XCTest
 @testable import RorkDevice
 
 final class RemotePairingProtocolTests: XCTestCase {
+    func testTrustEstablishmentReturnsWhenTheIdentityAlreadyVerifies() async throws {
+        let scenario = try pairingScenario()
+
+        try await scenario.client.establishTrustIfNeeded()
+
+        XCTAssertEqual(scenario.connection.sent.count, 3)
+    }
+
+    func testTrustEstablishmentPairsAnUnknownIdentity() async throws {
+        let signingKey = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: Data((1...32).map(UInt8.init))
+        )
+        let identity = RemotePairingIdentity(
+            identifier: "test-host",
+            privateKey: signingKey,
+            identityResolvingKey: Data(repeating: 0x7a, count: 16)
+        )
+        let hostAgreementKey = try Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: Data((33...64).map(UInt8.init))
+        )
+        let deviceAgreementKey = try Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: Data((65...96).map(UInt8.init))
+        )
+        let sessionKey = try protocolData(
+            hexadecimal:
+                "e0071ef3951ca250799e6fc77df75a8c62a5b4bfc9424743fd699fef2ddc4780"
+                + "bd303b0188fc985d79c45aa350705c2883caca77e18710d960e9f6dfe9c44278"
+        )
+        let setupEncryptionKey = HKDF<SHA512>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: sessionKey),
+            salt: Data("Pair-Setup-Encrypt-Salt".utf8),
+            info: Data("Pair-Setup-Encrypt-Info".utf8),
+            outputByteCount: 32
+        )
+        let encryptedDeviceInfo = try seal(
+            Data([0x01]),
+            using: setupEncryptionKey,
+            nonce: Data([0, 0, 0, 0]) + Data("PS-Msg06".utf8)
+        )
+        let encryptedUnlockResponse = try seal(
+            JSONSerialization.data(withJSONObject: [
+                "response": [
+                    "_1": [
+                        "createRemoteUnlockKey": [:],
+                    ],
+                ],
+            ]),
+            using: mainCipher(
+                secret: sessionKey,
+                info: "ServerEncrypt-main"
+            ),
+            sequence: 0
+        )
+
+        var inbound = Data()
+        inbound.append(try frame(plain: [
+            "response": [
+                "_1": [
+                    "handshake": [
+                        "_0": [:],
+                    ],
+                ],
+            ],
+        ]))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x06, value: Data([0x02])),
+            TLV8Field(
+                type: 0x03,
+                value: deviceAgreementKey.publicKey.rawRepresentation
+            ),
+        ])))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x07, value: Data([0x04])),
+        ])))
+        inbound.append(try frame(plain: [:]))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x06, value: Data([0x02])),
+            TLV8Field(
+                type: 0x03,
+                value: try protocolData(hexadecimal: """
+                    7e6059797918050391cb91311f49917a79581a54f73e39ac88268e4429af6c89
+                    aa16693cef2afa53246006db729bc89423aaef8a7598608c50183a80a8bdc651
+                    4576d1005125b1fcac3fcbe4ba83e24c96521b390d8e4e5c3d853995df7a69f4
+                    e1cf9e39aa213a8b6da6c2f024bae6174124f5807c37d127c14880701fec3898
+                    cd652559fa7aaaae76e60e30c21d4ec4d947b426e88e31dea1bf9888aefc2494
+                    3c485f71fefd530620c1ba6ae76557130ef8c2fdf134ffb3838bead0dee14a65
+                    bcaa2442566278b5542c9c0e7b5737f94331e6dcd6da91607ea3b71863b86d3
+                    f04a73dac1d2aa3dfe29c2c273cff7a953355fb3ea59e450d8f909ae098c3926
+                    58a45855367136624912eca0bf9022dcb4ee404cc77bbc99c235e020b1a07d017
+                    ba94e69c82e3ff78c2474cf2fa9239697f99ea511765516987e3256a9d510418
+                    6aba6f210ff99bac02e36a8018e9999b042b70a05ee1b22e92291532c34bc043
+                    487486e2c855373c963fe354389ed981c6d3c072af4a8739b8908f704e45b724
+                    """)
+            ),
+            TLV8Field(
+                type: 0x02,
+                value: try protocolData(
+                    hexadecimal: "000102030405060708090a0b0c0d0e0f"
+                )
+            ),
+        ])))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x06, value: Data([0x04])),
+            TLV8Field(
+                type: 0x04,
+                value: try protocolData(
+                    hexadecimal:
+                        "82aea05a663dfe562e4b6d7755fb4bcff5fd6a6f94fb540c82971cf8246ac081"
+                        + "1dff3588bcdbe24d1e2dee9f265ab9ab971e62d5d08091676522a4e0900ab51a"
+                )
+            ),
+        ])))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x06, value: Data([0x06])),
+            TLV8Field(type: 0x05, value: encryptedDeviceInfo),
+        ])))
+        inbound.append(try RemotePairingFrameCodec.encode([
+            "message": [
+                "streamEncrypted": [
+                    "_0": encryptedUnlockResponse.base64EncodedString(),
+                ],
+            ],
+        ]))
+
+        let connection = FakeConnection(inbound: inbound)
+        let client = RemotePairingProtocolClient(
+            connection: connection,
+            identity: identity,
+            ephemeralKey: hostAgreementKey,
+            makeSRPClient: {
+                try RemotePairingSRPClient(
+                    privateKey: Data((1...32).map(UInt8.init))
+                )
+            }
+        )
+
+        try await client.establishTrustIfNeeded()
+
+        XCTAssertEqual(connection.sent.count, 8)
+        let setupStart = try pairingEnvelope(in: connection.sent[4])
+        XCTAssertEqual(setupStart.kind, "setupManualPairing")
+        XCTAssertTrue(setupStart.startsNewSession)
+        XCTAssertEqual(
+            try TLV8.decode(setupStart.data).value(for: 0x06),
+            Data([0x01])
+        )
+        let setupProof = try pairingEnvelope(in: connection.sent[5])
+        XCTAssertEqual(
+            try TLV8.decode(setupProof.data).value(for: 0x06),
+            Data([0x03])
+        )
+        let setupIdentity = try pairingEnvelope(in: connection.sent[6])
+        XCTAssertEqual(
+            try TLV8.decode(setupIdentity.data).value(for: 0x06),
+            Data([0x05])
+        )
+    }
+
+    func testTrustEstablishmentStartsPairSetupAfterAuthenticationRejection() async throws {
+        let scenario = try rejectedVerificationScenario(errorCode: 0x02)
+
+        await XCTAssertThrowsErrorAsync({
+            try await scenario.client.establishTrustIfNeeded()
+        }) { _ in }
+
+        XCTAssertEqual(scenario.connection.sent.count, 5)
+        let setupStart = try pairingEnvelope(in: scenario.connection.sent[4])
+        XCTAssertEqual(setupStart.kind, "setupManualPairing")
+        XCTAssertTrue(setupStart.startsNewSession)
+    }
+
+    func testTrustEstablishmentPreservesBackoffRejection() async throws {
+        let scenario = try rejectedVerificationScenario(
+            errorCode: 0x03,
+            retryDelay: Data([30])
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await scenario.client.establishTrustIfNeeded()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remotePairing(.backoff(retryDelay: .seconds(30)))
+            )
+        }
+
+        XCTAssertEqual(scenario.connection.sent.count, 4)
+    }
+
+    func testTrustEstablishmentPreservesMaximumPeersRejection() async throws {
+        let scenario = try rejectedVerificationScenario(errorCode: 0x05)
+
+        await XCTAssertThrowsErrorAsync({
+            try await scenario.client.establishTrustIfNeeded()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remotePairing(.maximumPeers)
+            )
+        }
+
+        XCTAssertEqual(scenario.connection.sent.count, 4)
+    }
+
+    func testTrustEstablishmentPreservesMaximumAttemptsRejection() async throws {
+        let scenario = try rejectedVerificationScenario(errorCode: 0x06)
+
+        await XCTAssertThrowsErrorAsync({
+            try await scenario.client.establishTrustIfNeeded()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remotePairing(.maximumAttempts)
+            )
+        }
+
+        XCTAssertEqual(scenario.connection.sent.count, 4)
+    }
+
+    func testTrustEstablishmentPreservesUnrecognizedRejection() async throws {
+        let scenario = try rejectedVerificationScenario(errorCode: 0x7f)
+
+        await XCTAssertThrowsErrorAsync({
+            try await scenario.client.establishTrustIfNeeded()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remotePairing(.unrecognized(code: 0x7f))
+            )
+        }
+
+        XCTAssertEqual(scenario.connection.sent.count, 4)
+    }
+
     func testPairVerifyCreatesAuthenticatedTCPListener() async throws {
         let scenario = try pairingScenario()
 
@@ -97,7 +331,8 @@ final class RemotePairingProtocolTests: XCTestCase {
         let signingKey = Curve25519.Signing.PrivateKey()
         let identity = RemotePairingIdentity(
             identifier: "test-host",
-            privateKeyData: signingKey.rawRepresentation
+            privateKey: signingKey,
+            identityResolvingKey: Data(repeating: 0x7a, count: 16)
         )
         let hostAgreementKey = Curve25519.KeyAgreement.PrivateKey()
         let deviceAgreementKey = Curve25519.KeyAgreement.PrivateKey()
@@ -130,7 +365,7 @@ final class RemotePairingProtocolTests: XCTestCase {
         } catch {
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .protocolViolation("Remote pairing rejected this host identity with error 4.")
+                .remotePairing(.unknownPeer)
             )
         }
     }
@@ -174,7 +409,8 @@ private func pairingScenario(
     )
     let identity = RemotePairingIdentity(
         identifier: "test-host",
-        privateKeyData: signingKey.rawRepresentation
+        privateKey: signingKey,
+        identityResolvingKey: Data(repeating: 0x7a, count: 16)
     )
     let hostAgreementKey = try Curve25519.KeyAgreement.PrivateKey(
         rawRepresentation: Data((33...64).map(UInt8.init))
@@ -250,6 +486,57 @@ private func pairingScenario(
     )
 }
 
+/// Creates a pair-verification exchange that ends with a device rejection.
+private func rejectedVerificationScenario(
+    errorCode: UInt8,
+    retryDelay: Data = Data()
+) throws -> (client: RemotePairingProtocolClient, connection: FakeConnection) {
+    let signingKey = Curve25519.Signing.PrivateKey()
+    let identity = RemotePairingIdentity(
+        identifier: "test-host",
+        privateKey: signingKey,
+        identityResolvingKey: Data(repeating: 0x7a, count: 16)
+    )
+    let deviceAgreementKey = Curve25519.KeyAgreement.PrivateKey()
+
+    var rejectionFields = [
+        TLV8Field(type: 0x07, value: Data([errorCode])),
+    ]
+    if !retryDelay.isEmpty {
+        rejectionFields.append(
+            TLV8Field(type: 0x08, value: retryDelay)
+        )
+    }
+
+    var inbound = Data()
+    inbound.append(try frame(plain: [
+        "response": [
+            "_1": [
+                "handshake": [
+                    "_0": [:],
+                ],
+            ],
+        ],
+    ]))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x02])),
+        TLV8Field(
+            type: 0x03,
+            value: deviceAgreementKey.publicKey.rawRepresentation
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode(rejectionFields)))
+
+    let connection = FakeConnection(inbound: inbound)
+    return (
+        RemotePairingProtocolClient(
+            connection: connection,
+            identity: identity
+        ),
+        connection
+    )
+}
+
 private func frame(plain: [String: Any]) throws -> Data {
     try RemotePairingFrameCodec.encode([
         "message": [
@@ -280,6 +567,12 @@ private func sequenceNumber(in frame: Data) throws -> Int {
 }
 
 private func pairingData(in frame: Data) throws -> Data {
+    try pairingEnvelope(in: frame).data
+}
+
+private func pairingEnvelope(
+    in frame: Data
+) throws -> (data: Data, kind: String?, startsNewSession: Bool) {
     let object = try decodeFrame(frame)
     let message = try XCTUnwrap(object["message"] as? [String: Any])
     let plain = try XCTUnwrap(message["plain"] as? [String: Any])
@@ -289,7 +582,11 @@ private func pairingData(in frame: Data) throws -> Data {
     let pairingData = try XCTUnwrap(eventPayload["pairingData"] as? [String: Any])
     let pairingPayload = try XCTUnwrap(pairingData["_0"] as? [String: Any])
     let base64 = try XCTUnwrap(pairingPayload["data"] as? String)
-    return try XCTUnwrap(Data(base64Encoded: base64))
+    return (
+        try XCTUnwrap(Data(base64Encoded: base64)),
+        pairingPayload["kind"] as? String,
+        pairingPayload["startNewSession"] as? Bool ?? false
+    )
 }
 
 private func decodeFrame(_ frame: Data) throws -> [String: Any] {
@@ -312,10 +609,18 @@ private func seal(_ plaintext: Data, using key: SymmetricKey, sequence: UInt64) 
     var nonceData = Data()
     nonceData.appendLittleEndian(sequence)
     nonceData.append(Data(repeating: 0, count: 4))
+    return try seal(plaintext, using: key, nonce: nonceData)
+}
+
+private func seal(
+    _ plaintext: Data,
+    using key: SymmetricKey,
+    nonce: Data
+) throws -> Data {
     let sealed = try ChaChaPoly.seal(
         plaintext,
         using: key,
-        nonce: try ChaChaPoly.Nonce(data: nonceData)
+        nonce: try ChaChaPoly.Nonce(data: nonce)
     )
     return sealed.ciphertext + sealed.tag
 }
@@ -333,4 +638,28 @@ private func open(_ ciphertextAndTag: Data, using key: SymmetricKey, nonce: Data
         tag: ciphertextAndTag.suffix(16)
     )
     return try ChaChaPoly.open(box, using: key)
+}
+
+private func protocolData(hexadecimal value: String) throws -> Data {
+    let hexadecimal = value.filter { !$0.isWhitespace }
+    guard hexadecimal.count.isMultiple(of: 2) else {
+        throw RorkDeviceError.invalidInput(
+            "Hexadecimal fixture has an odd number of digits."
+        )
+    }
+
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(hexadecimal.count / 2)
+    var index = hexadecimal.startIndex
+    while index < hexadecimal.endIndex {
+        let nextIndex = hexadecimal.index(index, offsetBy: 2)
+        guard let byte = UInt8(hexadecimal[index..<nextIndex], radix: 16) else {
+            throw RorkDeviceError.invalidInput(
+                "Hexadecimal fixture contains a non-hexadecimal digit."
+            )
+        }
+        bytes.append(byte)
+        index = nextIndex
+    }
+    return Data(bytes)
 }

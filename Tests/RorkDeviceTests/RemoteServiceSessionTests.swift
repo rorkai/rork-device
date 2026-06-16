@@ -3,6 +3,34 @@ import XCTest
 @testable import RorkDevice
 
 final class RemoteServiceSessionTests: XCTestCase {
+    func testStartsDirectRemoteXPCServiceWithoutShimCheckIn() async throws {
+        let connection = FakeConnection()
+        let connections = RemoteServiceConnectionRecorder(
+            connection: connection
+        )
+        let backend = RemoteServiceSessionBackend(
+            host: "fd00::2",
+            directory: RemoteServiceDirectory(
+                deviceIdentifier: "device-1",
+                services: [
+                    "com.apple.coredevice.appservice": 51_000,
+                ]
+            ),
+            label: "RorkAppInstaller",
+            openConnection: connections.connect
+        )
+
+        let openedConnection = try await backend.startRemoteService(
+            named: "com.apple.coredevice.appservice"
+        )
+
+        XCTAssertTrue(openedConnection === connection)
+        XCTAssertEqual(connections.endpoints, [
+            RemoteServiceEndpoint(host: "fd00::2", port: 51_000),
+        ])
+        XCTAssertTrue(connection.sent.isEmpty)
+    }
+
     func testStartsShimServiceAfterRSDCheckin() async throws {
         let connection = FakeConnection(inbound: try checkinResponses())
         let connections = RemoteServiceConnectionRecorder(connection: connection)

@@ -7,7 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.3.0"
+    public static let version = "0.4.0"
 }
 
 /// High-level entry point for device discovery and service sessions.
@@ -62,6 +62,21 @@ public final class DeviceClient {
                 properties: device.properties
             )
         }
+    }
+
+    /// Reads the Lockdown pairing record stored by the local usbmux daemon.
+    ///
+    /// This is the host credential created when the user trusted the computer.
+    /// It is retrieved independently of device discovery, so callers may cache
+    /// a discovered `Device` while still loading the latest stored pairing
+    /// material immediately before opening a Lockdown session.
+    ///
+    /// - Parameter deviceIdentifier: Device UDID used as the usbmux record key.
+    /// - Returns: Validated pairing material for the selected device.
+    public func pairingRecord(
+        for deviceIdentifier: String
+    ) async throws -> PairingRecord {
+        try await usbmuxClient.pairingRecord(for: deviceIdentifier)
     }
 
     /// Streams device attach and detach events from the local usbmux endpoint.
@@ -183,6 +198,62 @@ public final class DeviceClient {
         return DeviceSession(
             backend: RemoteServiceSessionBackend(
                 host: host,
+                directory: discoverySession.directory,
+                label: label,
+                retaining: discoverySession
+            )
+        )
+    }
+
+    /// Opens a live Remote Service Discovery session through a device transport.
+    ///
+    /// Use this overload when an embedded userspace network or another
+    /// transport already knows how to reach device-side ports. Discovery and
+    /// every advertised service connection use the same transport, so callers
+    /// do not need to expose the device's private IPv6 address through the host
+    /// network stack.
+    ///
+    /// The returned session retains the discovery connection that owns the
+    /// advertised service ports. The caller must retain and eventually close
+    /// the supplied transport's underlying tunnel or network for at least as
+    /// long as the session is in use.
+    ///
+    /// - Parameters:
+    ///   - transport: Route capable of opening device-side TCP service ports.
+    ///   - discoveryPort: Remote Service Discovery port negotiated for the
+    ///     active tunnel.
+    ///   - label: Client label included in each service check-in request.
+    /// - Returns: A session backed by the device's live RSD advertisement.
+    /// - Throws: Transport failures while opening discovery or advertised
+    ///   services, plus malformed HTTP/2, RemoteXPC, or RSD protocol errors.
+    public func connect(
+        toRemoteServicesUsing transport: any DeviceTransport,
+        discoveryPort: UInt16,
+        label: String = "rorkdevice"
+    ) async throws -> DeviceSession {
+        guard discoveryPort > 0 else {
+            throw RorkDeviceError.invalidInput(
+                "Remote Service Discovery requires a nonzero port."
+            )
+        }
+
+        let connection: DeviceConnection
+        do {
+            connection = try await transport.connect(
+                to: discoveryPort
+            )
+        } catch {
+            throw RorkDeviceError.transport(
+                "Failed to connect Remote Service Discovery through the supplied transport on port \(discoveryPort): \(describeDeviceSessionError(error))"
+            )
+        }
+
+        let discoverySession = try await RemoteServiceDiscoverySession.open(
+            over: connection
+        )
+        return DeviceSession(
+            backend: RemoteServiceSessionBackend(
+                transport: transport,
                 directory: discoverySession.directory,
                 label: label,
                 retaining: discoverySession

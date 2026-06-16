@@ -17,7 +17,11 @@ struct RorkDeviceCommand: AsyncParsableCommand {
             Files.self,
             Install.self,
             Uninstall.self,
+            Launch.self,
+            Terminate.self,
             Profiles.self,
+            RemotePairingCommand.self,
+            TunnelCommand.self,
         ]
     )
 }
@@ -33,18 +37,41 @@ struct ConnectionOptions: ParsableArguments {
     @Option(help: "Direct Lockdown port.")
     var port: UInt16 = 62078
 
-    @Option(help: "Existing Lockdown pairing record plist.")
+    @Option(
+        help:
+            "Existing Lockdown pairing record plist. Defaults to the record stored by usbmuxd."
+    )
     var pairingRecord: String?
+
+    @Option(
+        help:
+            "Device IPv6 address selected by an existing CoreDevice userspace gateway."
+    )
+    var userspaceDeviceAddress: String?
+
+    @Option(help: "Host running an existing CoreDevice userspace gateway.")
+    var userspaceGatewayHost = "127.0.0.1"
+
+    @Option(help: "Port of an existing CoreDevice userspace gateway.")
+    var userspaceGatewayPort: UInt16?
+
+    @Option(
+        help:
+            "Remote Service Discovery port exposed through the userspace gateway."
+    )
+    var remoteServiceDiscoveryPort: UInt16?
 
     /// Rejects connection-option combinations that cannot be honored together.
     func validate() throws {
         try validateConnectionOptions()
     }
 
-    /// Loads and validates the pairing record option.
+    /// Loads and validates an explicitly supplied pairing record.
     func pairingRecordValue() throws -> PairingRecord {
         guard let pairingRecord else {
-            throw ValidationError("--pairing-record is required for this command.")
+            throw ValidationError(
+                "--pairing-record is required for direct Lockdown connections."
+            )
         }
         return try PairingRecord.load(from: URL(fileURLWithPath: pairingRecord))
     }
@@ -52,10 +79,55 @@ struct ConnectionOptions: ParsableArguments {
     /// Opens a direct or usbmux-backed session from parsed CLI options.
     func session(label: String = "rorkdevice") async throws -> DeviceSession {
         try validateConnectionOptions()
+        if usesUserspaceRemoteServiceRoute {
+            guard let userspaceDeviceAddress,
+                  let userspaceGatewayPort,
+                  let remoteServiceDiscoveryPort else {
+                throw ValidationError(
+                    "The userspace route requires --userspace-device-address, --userspace-gateway-port, and --remote-service-discovery-port."
+                )
+            }
+            let transport = try CoreDeviceUserspaceTransport(
+                deviceAddress: userspaceDeviceAddress,
+                gatewayHost: userspaceGatewayHost,
+                gatewayPort: userspaceGatewayPort
+            )
+            return try await DeviceClient().connect(
+                toRemoteServicesUsing: transport,
+                discoveryPort: remoteServiceDiscoveryPort,
+                label: label
+            )
+        }
+        return try await connectedSession(label: label).session
+    }
+
+    /// Opens a session and returns the selected device identifier.
+    ///
+    /// usbmux-backed commands use the daemon's stored pairing record when no
+    /// file was supplied. Direct endpoints cannot query usbmux for the remote
+    /// host and therefore continue to require `--pairing-record`.
+    func connectedSession(
+        label: String = "rorkdevice"
+    ) async throws -> (
+        session: DeviceSession,
+        deviceIdentifier: String
+    ) {
+        try validateConnectionOptions()
+        guard !usesUserspaceRemoteServiceRoute else {
+            throw ValidationError(
+                "This command requires a Lockdown connection and cannot reuse an existing userspace gateway."
+            )
+        }
         let client = DeviceClient()
-        let pairing = try pairingRecordValue()
         if let host {
-            return try await client.connect(to: host, port: port, using: pairing, label: label)
+            let pairing = try pairingRecordValue()
+            let session = try await client.connect(
+                to: host,
+                port: port,
+                using: pairing,
+                label: label
+            )
+            return (session, pairing.udid)
         }
 
         let devices = try await client.discoverDevices()
@@ -68,17 +140,74 @@ struct ConnectionOptions: ParsableArguments {
         guard let selected else {
             throw ValidationError("No matching device found.")
         }
-        return try await client.connect(to: selected, using: pairing, label: label)
+        let pairing: PairingRecord
+        if pairingRecord != nil {
+            pairing = try pairingRecordValue()
+        } else {
+            pairing = try await client.pairingRecord(
+                for: selected.identifier
+            )
+        }
+        let session = try await client.connect(
+            to: selected,
+            using: pairing,
+            label: label
+        )
+        return (session, selected.identifier)
     }
 
     /// Shared implementation for parse-time and runtime connection validation.
     private func validateConnectionOptions() throws {
+        if usesUserspaceRemoteServiceRoute {
+            guard userspaceDeviceAddress != nil,
+                  let userspaceGatewayPort,
+                  let remoteServiceDiscoveryPort else {
+                throw ValidationError(
+                    "The userspace route requires --userspace-device-address, --userspace-gateway-port, and --remote-service-discovery-port."
+                )
+            }
+            guard !userspaceGatewayHost.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty else {
+                throw ValidationError(
+                    "--userspace-gateway-host cannot be empty."
+                )
+            }
+            guard userspaceGatewayPort > 0 else {
+                throw ValidationError(
+                    "--userspace-gateway-port must be greater than zero."
+                )
+            }
+            guard remoteServiceDiscoveryPort > 0 else {
+                throw ValidationError(
+                    "--remote-service-discovery-port must be greater than zero."
+                )
+            }
+            guard host == nil,
+                  udid == nil,
+                  pairingRecord == nil,
+                  port == 62078 else {
+                throw ValidationError(
+                    "Userspace gateway options cannot be combined with Lockdown connection options."
+                )
+            }
+            return
+        }
+
         if host != nil, udid != nil {
             throw ValidationError("--udid cannot be used with --host because direct Lockdown connections skip usbmux discovery.")
         }
         if host == nil, port != 62078 {
             throw ValidationError("--port requires --host.")
         }
+    }
+
+    /// Whether any option selects an already running userspace gateway.
+    private var usesUserspaceRemoteServiceRoute: Bool {
+        userspaceDeviceAddress != nil ||
+        userspaceGatewayPort != nil ||
+        remoteServiceDiscoveryPort != nil ||
+        userspaceGatewayHost != "127.0.0.1"
     }
 }
 
@@ -148,6 +277,265 @@ struct Watch: AsyncParsableCommand {
                 print("detached\t\(value)")
             }
         }
+    }
+}
+
+/// Parent command for remote-pairing identity operations.
+struct RemotePairingCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remote-pairing",
+        abstract: "Manage the identity used by CoreDevice remote pairing.",
+        subcommands: [
+            RemotePairingTrustCommand.self,
+        ]
+    )
+}
+
+/// Ensures that an iPhone trusts a remote-pairing identity.
+struct RemotePairingTrustCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "trust",
+        abstract: "Verify an identity or complete the iPhone trust flow."
+    )
+
+    @Option(
+        name: .customLong("identity"),
+        help: "Remote-pairing identity property list."
+    )
+    var identityPath: String
+
+    @Option(help: "Device IPv6 address inside the userspace tunnel.")
+    var deviceAddress: String
+
+    @Option(help: "Remote Service Discovery port reported by the active tunnel.")
+    var discoveryPort: UInt16
+
+    @Option(help: "Host running the CoreDevice userspace gateway.")
+    var gatewayHost = "127.0.0.1"
+
+    @Option(help: "Local CoreDevice userspace gateway port.")
+    var gatewayPort: UInt16
+
+    /// Rejects zero-valued ports before opening a connection.
+    func validate() throws {
+        guard discoveryPort > 0 else {
+            throw ValidationError(
+                "--discovery-port must be greater than zero."
+            )
+        }
+        guard gatewayPort > 0 else {
+            throw ValidationError("--gateway-port must be greater than zero.")
+        }
+    }
+
+    /// Verifies the identity and waits for manual trust when required.
+    func run() async throws {
+        let identity = try RemotePairingIdentity(
+            contentsOf: URL(fileURLWithPath: identityPath)
+        )
+        let transport = try CoreDeviceUserspaceTransport(
+            deviceAddress: deviceAddress,
+            gatewayHost: gatewayHost,
+            gatewayPort: gatewayPort
+        )
+        try await RemotePairingTrust.establishIfNeeded(
+            for: identity,
+            using: transport,
+            discoveryPort: discoveryPort
+        )
+        print("Remote-pairing identity is trusted.")
+    }
+}
+
+/// Parent command for CoreDevice packet-tunnel operations.
+struct TunnelCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tunnel",
+        abstract: "Open and expose CoreDevice packet tunnels.",
+        subcommands: [
+            TunnelStartCommand.self,
+        ]
+    )
+}
+
+/// Starts a complete userspace tunnel and its local service gateway.
+struct TunnelStartCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "start",
+        abstract:
+            "Start a CoreDevice userspace network and loopback TCP gateway."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Option(
+        name: .customLong("identity"),
+        help:
+            "Stable remote-pairing identity plist. A new identity is created when the file does not exist."
+    )
+    var identityPath: String
+
+    @Option(help: "Local address for the userspace service gateway.")
+    var gatewayHost = "127.0.0.1"
+
+    @Option(
+        help:
+            "Local gateway port. Zero asks the operating system for an available port."
+    )
+    var gatewayPort: UInt16 = 0
+
+    @Option(
+        name: .customLong("mtu"),
+        help: "Maximum IPv6 packet size requested from CoreDevice."
+    )
+    var maximumTransmissionUnit: UInt16 = 1_280
+
+    /// Rejects tunnel settings that cannot form a valid IPv6 link.
+    func validate() throws {
+        try connection.validate()
+        guard !gatewayHost.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            throw ValidationError("--gateway-host cannot be empty.")
+        }
+        guard maximumTransmissionUnit >= 1_280 else {
+            throw ValidationError("--mtu must be at least 1280.")
+        }
+    }
+
+    /// Opens the packet tunnel, establishes trust, and serves until terminated.
+    func run() async throws {
+        let identityURL = URL(fileURLWithPath: identityPath)
+            .standardizedFileURL
+        try FileManager.default.createDirectory(
+            at: identityURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let identity = try RemotePairingIdentity.loadOrCreate(
+            at: identityURL
+        )
+        writeTunnelProgress(
+            "Loaded remote-pairing identity \(identity.identifier)."
+        )
+        let connected = try await connection.connectedSession(
+            label: "rorkdevice-tunnel"
+        )
+        writeTunnelProgress(
+            "Opened Lockdown session for \(connected.deviceIdentifier)."
+        )
+        let tunnel = try await connected.session.openCoreDeviceTunnel(
+            requestedMaximumTransmissionUnit:
+                maximumTransmissionUnit
+        )
+        writeTunnelProgress(
+            "Negotiated CoreDevice tunnel to \(tunnel.configuration.deviceAddress):\(tunnel.configuration.serviceDiscoveryPort)."
+        )
+
+        let network: CoreDeviceUserspaceNetwork
+        do {
+            network = try CoreDeviceUserspaceNetwork(tunnel: tunnel)
+        } catch {
+            tunnel.close()
+            throw error
+        }
+
+        let gateway: CoreDeviceUserspaceGateway
+        do {
+            gateway = try await CoreDeviceUserspaceGateway.start(
+                network: network,
+                host: gatewayHost,
+                port: gatewayPort
+            )
+        } catch {
+            network.close()
+            throw error
+        }
+        defer {
+            gateway.close()
+        }
+        writeTunnelProgress(
+            "Listening on \(gateway.host):\(gateway.port)."
+        )
+
+        try await RemotePairingTrust.establishIfNeeded(
+            for: identity,
+            using: network,
+            discoveryPort:
+                network.configuration.serviceDiscoveryPort,
+            progress: writeRemotePairingProgress
+        )
+        try writeTunnelReadyEvent(
+            deviceIdentifier: connected.deviceIdentifier,
+            identityPath: identityURL.path,
+            network: network,
+            gateway: gateway
+        )
+
+        try await withTaskCancellationHandler {
+            try await gateway.waitUntilClosed()
+        } onCancel: {
+            gateway.close()
+        }
+    }
+}
+
+/// Machine-readable event emitted once a tunnel can accept local clients.
+private struct TunnelReadyEvent: Encodable {
+    let event = "ready"
+    let address: String
+    let rsdPort: UInt16
+    let udid: String
+    let userspaceTun = true
+    let userspaceTunHost: String
+    let userspaceTunPort: UInt16
+    let identityPath: String
+}
+
+/// Writes one newline-delimited ready event without stdout buffering.
+private func writeTunnelReadyEvent(
+    deviceIdentifier: String,
+    identityPath: String,
+    network: CoreDeviceUserspaceNetwork,
+    gateway: CoreDeviceUserspaceGateway
+) throws {
+    let event = TunnelReadyEvent(
+        address: network.configuration.deviceAddress,
+        rsdPort: network.configuration.serviceDiscoveryPort,
+        udid: deviceIdentifier,
+        userspaceTunHost: gateway.host,
+        userspaceTunPort: gateway.port,
+        identityPath: identityPath
+    )
+    var data = try JSONEncoder().encode(event)
+    data.append(0x0a)
+    try FileHandle.standardOutput.write(contentsOf: data)
+}
+
+/// Writes human-readable tunnel progress separately from machine-readable stdout.
+private func writeTunnelProgress(_ message: String) {
+    guard let data = "rorkdevice: \(message)\n".data(using: .utf8) else {
+        return
+    }
+    try? FileHandle.standardError.write(contentsOf: data)
+}
+
+/// Converts typed trust phases into concise operator-facing CLI diagnostics.
+private func writeRemotePairingProgress(
+    _ progress: RemotePairingTrust.Progress
+) {
+    switch progress {
+    case .openingServiceDiscovery:
+        writeTunnelProgress("Opening Remote Service Discovery.")
+    case .openingPairingService:
+        writeTunnelProgress("Opening the remote-pairing service.")
+    case .verifyingIdentity:
+        writeTunnelProgress("Verifying the remote-pairing identity.")
+    case .enrollingIdentity:
+        writeTunnelProgress(
+            "Waiting for the iPhone to approve the remote-pairing identity."
+        )
+    case .established:
+        writeTunnelProgress("Remote-pairing trust is established.")
     }
 }
 
@@ -337,7 +725,7 @@ struct Apps: AsyncParsableCommand {
     )
 }
 
-/// Lists installed applications through InstallationProxy.
+/// Lists installed applications through the selected session backend.
 struct AppsList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -407,6 +795,97 @@ struct Uninstall: AsyncParsableCommand {
         try await session.uninstallApplication(bundleIdentifier: bundleIdentifier) { event in
             print(event.status)
         }
+    }
+}
+
+/// Launches an installed application through CoreDevice's app service.
+struct Launch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "launch",
+        abstract: "Launch an installed app."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Flag(
+        name: .customLong("kill-existing"),
+        help: "Terminate an existing app process before launching."
+    )
+    var killExisting = false
+
+    @Option(
+        name: .customLong("arg"),
+        parsing: .unconditionalSingleValue,
+        help: "Argument passed to the app. May be repeated."
+    )
+    var arguments: [String] = []
+
+    @Option(
+        name: .customLong("env"),
+        parsing: .unconditionalSingleValue,
+        help: "Environment entry in KEY=VALUE form. May be repeated."
+    )
+    var environment: [String] = []
+
+    @Argument(help: "Bundle identifier.")
+    var bundleIdentifier: String
+
+    /// Rejects malformed environment assignments before opening the device.
+    func validate() throws {
+        _ = try parsedEnvironment()
+    }
+
+    /// Opens the selected RSD session and launches the requested application.
+    func run() async throws {
+        let session = try await connection.session()
+        let processIdentifier = try await session.launchApplication(
+            bundleIdentifier: bundleIdentifier,
+            options: ApplicationLaunchOptions(
+                arguments: arguments,
+                environment: try parsedEnvironment(),
+                terminateExistingProcess: killExisting
+            )
+        )
+        print(processIdentifier)
+    }
+
+    /// Converts repeated `KEY=VALUE` arguments into CoreDevice environment data.
+    private func parsedEnvironment() throws -> [String: String] {
+        try environment.reduce(into: [:]) { result, assignment in
+            let parts = assignment.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            guard parts.count == 2, !parts[0].isEmpty else {
+                throw ValidationError(
+                    "--env values must use non-empty KEY=VALUE syntax."
+                )
+            }
+            result[String(parts[0])] = String(parts[1])
+        }
+    }
+}
+
+/// Terminates an installed application's running CoreDevice processes.
+struct Terminate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "terminate",
+        abstract: "Terminate a running app."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "Bundle identifier.")
+    var bundleIdentifier: String
+
+    /// Opens the selected RSD session and terminates matching app processes.
+    func run() async throws {
+        let session = try await connection.session()
+        let terminated = try await session.terminateApplication(
+            bundleIdentifier: bundleIdentifier
+        )
+        print(terminated ? "Terminated." : "Application is not running.")
     }
 }
 
