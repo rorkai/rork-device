@@ -161,6 +161,9 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         ) { _ in
             GatewayTestConnection(response: Data())
         }
+        defer {
+            gateway.close()
+        }
         await fulfillment(of: [monitorStarted], timeout: 1)
         let waitTask = Task {
             try await gateway.waitUntilClosed()
