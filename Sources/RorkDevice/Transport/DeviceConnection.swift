@@ -26,7 +26,11 @@ public protocol DeviceConnection: AnyObject {
 ///
 /// Socket-backed connections expose this for protocols that can consume
 /// currently available bytes without waiting for a larger fixed-size frame.
-protocol PartialReceiveDeviceConnection: DeviceConnection {
+///
+/// Conforming connections support one reader while ordered writes run from
+/// another task. This full-duplex guarantee lets forwarding code move bytes in
+/// both directions without claiming that every `DeviceConnection` is sendable.
+protocol PartialReceiveDeviceConnection: DeviceConnection, Sendable {
     /// Receives at least one byte and at most `byteCount` bytes.
     func receive(upTo byteCount: Int) async throws -> Data
 }

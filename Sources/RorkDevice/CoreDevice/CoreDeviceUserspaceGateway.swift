@@ -40,6 +40,12 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Long-lived task accepting clients until the gateway closes.
     private var acceptTask: Task<Void, Error>?
 
+    /// Task that closes the listener when the owned packet network terminates.
+    private var networkMonitorTask: Task<Void, Never>?
+
+    /// Preserves an underlying network failure until the waiter observes it.
+    private let networkFailure = FirstErrorStorage()
+
     /// Whether listener and network teardown has already begun.
     private var isClosed = false
 
@@ -54,6 +60,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             NIOAsyncChannel<ByteBuffer, ByteBuffer>,
             Never
         >,
+        waitUntilNetworkCloses: (@Sendable () async throws -> Void)?,
         connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
     ) {
         self.host = host
@@ -68,6 +75,17 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 expectedDeviceAddress: expectedDeviceAddress,
                 connectionFactory: connectionFactory
             )
+        }
+        if let waitUntilNetworkCloses {
+            let networkFailure = self.networkFailure
+            networkMonitorTask = Task {
+                do {
+                    try await waitUntilNetworkCloses()
+                } catch {
+                    networkFailure.record(error)
+                }
+                server.channel.close(promise: nil)
+            }
         }
     }
 
@@ -96,26 +114,36 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             deviceAddress: network.configuration.deviceAddress,
             host: host,
             port: port,
-            ownedNetwork: network
-        ) { destinationPort in
-            try await network.connect(to: destinationPort)
-        }
+            ownedNetwork: network,
+            waitUntilNetworkCloses: {
+                try await network.waitUntilClosed()
+            },
+            connectionFactory: { destinationPort in
+                try await network.connect(to: destinationPort)
+            }
+        )
     }
 
-    /// Waits until the listener closes or its accept loop fails.
+    /// Waits until the gateway or its owned userspace network closes.
     ///
     /// Long-running command-line tools can await this method after publishing
     /// the gateway endpoint. Explicit `close()` completes the wait normally;
-    /// unexpected listener failures are rethrown.
+    /// listener failures and terminal packet-network failures are rethrown.
     public func waitUntilClosed() async throws {
         let task = closeLock.withLock { acceptTask }
         do {
             try await task?.value
         } catch {
+            if let terminalError = networkFailure.error {
+                throw terminalError
+            }
             let closedExplicitly = closeLock.withLock { isClosed }
             guard closedExplicitly else {
                 throw error
             }
+        }
+        if let terminalError = networkFailure.error {
+            throw terminalError
         }
     }
 
@@ -123,29 +151,43 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     ///
     /// Calling this method more than once is safe.
     public func close() {
-        let task: Task<Void, Error>? = closeLock.withLock {
+        let tasks: (
+            acceptLoop: Task<Void, Error>?,
+            networkMonitor: Task<Void, Never>?
+        )? = closeLock.withLock {
             guard !isClosed else {
                 return nil
             }
             isClosed = true
-            let task = acceptTask
+            let tasks = (
+                acceptLoop: acceptTask,
+                networkMonitor: networkMonitorTask
+            )
             acceptTask = nil
-            return task
+            networkMonitorTask = nil
+            return tasks
         }
-        guard let task else {
+        guard let tasks else {
             return
         }
 
-        task.cancel()
+        tasks.acceptLoop?.cancel()
+        tasks.networkMonitor?.cancel()
         server.channel.close(promise: nil)
         ownedNetwork?.close()
     }
 
-    /// Starts a gateway with an injectable destination connector for tests.
+    /// Starts a gateway with injectable transport behavior for tests.
+    ///
+    /// `waitUntilNetworkCloses` models the owned packet network's terminal
+    /// signal without requiring a physical tunnel or userspace TCP/IP stack. It
+    /// returns after orderly shutdown and throws the failure that ended the
+    /// network.
     static func start(
         deviceAddress: String,
         host: String,
         port: UInt16,
+        waitUntilNetworkCloses: (@Sendable () async throws -> Void)? = nil,
         connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
     ) async throws -> CoreDeviceUserspaceGateway {
         try await start(
@@ -153,6 +195,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             host: host,
             port: port,
             ownedNetwork: nil,
+            waitUntilNetworkCloses: waitUntilNetworkCloses,
             connectionFactory: connectionFactory
         )
     }
@@ -163,6 +206,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         host: String,
         port: UInt16,
         ownedNetwork: CoreDeviceUserspaceNetwork?,
+        waitUntilNetworkCloses: (@Sendable () async throws -> Void)?,
         connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
     ) async throws -> CoreDeviceUserspaceGateway {
         let expectedDeviceAddress = try ipv6AddressBytes(
@@ -202,6 +246,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             expectedDeviceAddress: expectedDeviceAddress,
             ownedNetwork: ownedNetwork,
             server: server,
+            waitUntilNetworkCloses: waitUntilNetworkCloses,
             connectionFactory: connectionFactory
         )
     }
@@ -268,9 +313,17 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     )
                 }
 
-                let connection = try await connectionFactory(
+                let openedConnection = try await connectionFactory(
                     destinationPort
                 )
+                guard let connection =
+                    openedConnection as? any PartialReceiveDeviceConnection
+                else {
+                    openedConnection.close()
+                    throw RorkDeviceError.transport(
+                        "CoreDevice gateway requires a full-duplex connection with partial reads."
+                    )
+                }
                 defer {
                     connection.close()
                 }
@@ -285,14 +338,8 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     defer {
                         channel.channel.close(promise: nil)
                     }
-                    guard let partialConnection =
-                        connection as? PartialReceiveDeviceConnection else {
-                        throw RorkDeviceError.transport(
-                            "CoreDevice userspace gateway requires a connection that supports partial reads."
-                        )
-                    }
                     while !Task.isCancelled {
-                        let data = try await partialConnection.receive(
+                        let data = try await connection.receive(
                             upTo: 64 * 1_024
                         )
                         guard !data.isEmpty else {
@@ -327,6 +374,33 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             }
         } catch {
             channel.channel.close(promise: nil)
+        }
+    }
+}
+
+/// Thread-safe storage that preserves the first asynchronously reported error.
+///
+/// The network monitor closes the NIO listener to release the accept loop.
+/// `waitUntilClosed()` then reads this storage so callers receive the packet
+/// network's actual terminal error instead of an incidental channel-close error.
+private final class FirstErrorStorage: @unchecked Sendable {
+    /// Protects first-error publication across the monitor and waiter tasks.
+    private let lock = NSLock()
+
+    /// First terminal network failure, if the network did not close explicitly.
+    private var storedError: Error?
+
+    /// Thread-safe snapshot of the first recorded error.
+    var error: Error? {
+        lock.withLock { storedError }
+    }
+
+    /// Records `error` unless another task has already published one.
+    func record(_ error: Error) {
+        lock.withLock {
+            if storedError == nil {
+                storedError = error
+            }
         }
     }
 }

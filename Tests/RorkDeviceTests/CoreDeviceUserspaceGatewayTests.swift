@@ -145,6 +145,32 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
 
         try await waitTask.value
     }
+
+    func testWaitUntilClosedThrowsWhenUserspaceNetworkFails() async throws {
+        let networkError = RorkDeviceError.transport(
+            "CoreDevice packet pump stopped."
+        )
+        let gateway = try await CoreDeviceUserspaceGateway.start(
+            deviceAddress: "fd00::1",
+            host: "127.0.0.1",
+            port: 0,
+            waitUntilNetworkCloses: {
+                throw networkError
+            }
+        ) { _ in
+            GatewayTestConnection(response: Data())
+        }
+        defer {
+            gateway.close()
+        }
+
+        do {
+            try await gateway.waitUntilClosed()
+            XCTFail("Expected the gateway to surface the network failure.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, networkError)
+        }
+    }
 }
 
 private actor RequestedPortRecorder {

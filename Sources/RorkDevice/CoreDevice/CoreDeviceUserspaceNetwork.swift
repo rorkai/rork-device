@@ -34,6 +34,9 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     /// Whether the network has already released its tunnel and stack.
     private var isClosed = false
 
+    /// Completion observed by owners that must follow packet-pump lifetime.
+    private let termination = CoreDeviceUserspaceNetworkTermination()
+
     /// Creates and starts a userspace network over an opened packet tunnel.
     ///
     /// The instance takes ownership of `tunnel`; callers should close the
@@ -68,7 +71,7 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
                     try await tunnel.sendPacket(packet)
                 }
             } catch {
-                self?.close(after: error)
+                self?.close(with: error)
             }
         }
         inboundTask = Task { [weak self, tunnel, stack] in
@@ -78,7 +81,7 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
                     try await stack.receivePacket(packet)
                 }
             } catch {
-                self?.close(after: error)
+                self?.close(with: error)
             }
         }
     }
@@ -105,11 +108,20 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     ///
     /// Calling this method more than once is safe.
     public func close() {
-        close(after: nil)
+        close(with: nil)
+    }
+
+    /// Waits until explicit closure or a packet-pump failure ends the network.
+    ///
+    /// Explicit closure completes normally. A failure from either packet pump
+    /// is rethrown so long-running gateways can terminate instead of retaining
+    /// a listener backed by a dead tunnel.
+    func waitUntilClosed() async throws {
+        try await termination.wait()
     }
 
     /// Tears down the complete network after explicit closure or pump failure.
-    private func close(after error: Error?) {
+    private func close(with error: Error?) {
         let shouldClose = closeLock.withLock {
             guard !isClosed else {
                 return false
@@ -128,5 +140,57 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
         inboundTask = nil
         stack.close(with: error)
         tunnel.close()
+        termination.finish(with: error)
+    }
+}
+
+/// One-shot completion shared by userspace-network owners.
+///
+/// Packet pumps can fail on independent tasks while a gateway is suspended in
+/// another task. This object stores the first terminal result and resumes every
+/// waiter outside its lock.
+private final class CoreDeviceUserspaceNetworkTermination: @unchecked Sendable {
+    /// Protects the terminal result and registered waiters.
+    private let lock = NSLock()
+
+    /// First explicit-close or failure result delivered by the network.
+    private var result: Result<Void, Error>?
+
+    /// Owners suspended until the network reaches a terminal state.
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+
+    /// Suspends until the network closes, then returns or rethrows its failure.
+    func wait() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            let terminalResult: Result<Void, Error>? = lock.withLock {
+                if let result = self.result {
+                    return result
+                }
+                waiters.append(continuation)
+                return nil
+            }
+            if let terminalResult {
+                continuation.resume(with: terminalResult)
+            }
+        }
+    }
+
+    /// Publishes the first terminal result to current and future waiters.
+    func finish(with error: Error?) {
+        let result: Result<Void, Error> = error.map { .failure($0) }
+            ?? .success(())
+        let waiters: [CheckedContinuation<Void, Error>] = lock.withLock {
+            guard self.result == nil else {
+                return []
+            }
+            self.result = result
+            let waiters = self.waiters
+            self.waiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters {
+            waiter.resume(with: result)
+        }
     }
 }

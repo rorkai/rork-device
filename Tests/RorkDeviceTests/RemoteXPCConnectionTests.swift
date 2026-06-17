@@ -165,6 +165,59 @@ final class RemoteXPCConnectionTests: XCTestCase {
         }
     }
 
+    func testPreservesTheHTTP2ErrorCodeWhenThePeerResetsAStream() async throws {
+        var resetPayload = Data()
+        resetPayload.appendBigEndian(UInt32(0x08))
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x03,
+                streamIdentifier: 1,
+                payload: resetPayload
+            )
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await remoteXPC.receive()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remoteXPCStreamReset(
+                    streamIdentifier: 1,
+                    errorCode: 0x08
+                )
+            )
+        }
+    }
+
+    func testRejectsAStreamResetWithoutACompleteHTTP2ErrorCode() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x03,
+                streamIdentifier: 1,
+                payload: Data([0x08])
+            )
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await remoteXPC.receive()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "RemoteXPC HTTP/2 RST_STREAM payload must contain a 32-bit error code."
+                )
+            )
+        }
+    }
+
     func testConcurrentSendsReserveDistinctMessageIdentifiers() async throws {
         let sendBlocked = expectation(
             description: "The first application send is suspended."

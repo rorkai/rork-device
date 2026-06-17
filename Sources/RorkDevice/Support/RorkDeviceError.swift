@@ -19,6 +19,13 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// The peer returned malformed or unexpected protocol data.
     case protocolViolation(String)
 
+    /// The peer terminated one RemoteXPC HTTP/2 stream and supplied the
+    /// protocol error code carried by `RST_STREAM`.
+    case remoteXPCStreamReset(
+        streamIdentifier: UInt32,
+        errorCode: UInt32
+    )
+
     /// Lockdown returned a failure response.
     case lockdown(String)
 
@@ -55,6 +62,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Transport error: \(message)"
         case let .protocolViolation(message):
             return "Protocol violation: \(message)"
+        case let .remoteXPCStreamReset(streamIdentifier, errorCode):
+            return "RemoteXPC reset HTTP/2 stream \(streamIdentifier) with error code \(errorCode)."
         case let .lockdown(message):
             return "Lockdown error: \(message)"
         case .secureSessionUnsupported:
