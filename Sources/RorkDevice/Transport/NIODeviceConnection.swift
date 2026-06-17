@@ -15,8 +15,14 @@ import NIOTLS
 /// parsers.
 ///
 /// Writes go directly to the channel, so `send` completes only after the bytes
-/// have been flushed to the socket.
-final class NIODeviceConnection: DeviceConnection, PartialReceiveDeviceConnection {
+/// have been flushed to the socket. Mutable lifecycle state is lock-protected,
+/// and inbound reads are actor-isolated, which permits one reader and a writer
+/// to use the connection concurrently.
+final class NIODeviceConnection:
+    DeviceConnection,
+    PartialReceiveDeviceConnection,
+    @unchecked Sendable
+{
     /// Error reported to callers once the owner closes the stream locally.
     static let closedError = RorkDeviceError.transport("Connection is closed.")
 

@@ -36,6 +36,18 @@ public enum RemotePairingTrust {
     private static let untrustedTunnelServiceName =
         "com.apple.internal.dt.coredevice.untrusted.tunnelservice"
 
+    /// Delays before verification attempts after enrollment resets its stream.
+    ///
+    /// The first attempt is immediate. Later attempts cover the short interval
+    /// in which the device has accepted the identity but has not yet published
+    /// it to a newly opened remote-pairing service.
+    private static let enrollmentRecoveryDelays: [Duration] = [
+        .zero,
+        .milliseconds(500),
+        .seconds(1),
+        .seconds(2),
+    ]
+
     /// Establishes device trust for an identity when it is not already known.
     ///
     /// An unrecognized identity cannot use the device's trusted pairing
@@ -91,17 +103,66 @@ public enum RemotePairingTrust {
     /// Resolves the untrusted service and performs pairing over RemoteXPC.
     ///
     /// The injected connection factory keeps discovery and service lifetimes
-    /// testable without exposing transport internals in the public API.
+    /// testable without exposing transport internals in the public API. Retry
+    /// delays include the wait before each fresh verification, so a leading
+    /// `.zero` performs the first recovery attempt immediately.
     static func establishIfNeeded(
         for identity: RemotePairingIdentity,
         discoveryPort: UInt16,
         progress: (Progress) -> Void = { _ in },
+        verificationRetryDelays: [Duration] =
+            Self.enrollmentRecoveryDelays,
+        sleep: (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
         openConnection: (UInt16) async throws -> DeviceConnection
     ) async throws {
+        var didBeginEnrollment = false
+        do {
+            try await withPairingClient(
+                for: identity,
+                discoveryPort: discoveryPort,
+                progress: progress,
+                openConnection: openConnection,
+                operation: { client in
+                    try await client.establishTrustIfNeeded {
+                        didBeginEnrollment = true
+                        progress(.enrollingIdentity)
+                    }
+                }
+            )
+        } catch {
+            guard didBeginEnrollment,
+                  let deviceError = error as? RorkDeviceError,
+                  case .remoteXPCStreamReset = deviceError else {
+                throw error
+            }
+            try await verifyTrustAfterEnrollmentReset(
+                for: identity,
+                discoveryPort: discoveryPort,
+                retryDelays: verificationRetryDelays,
+                sleep: sleep,
+                openConnection: openConnection,
+                streamResetError: error
+            )
+        }
+        progress(.established)
+    }
+
+    /// Opens one complete RSD and untrusted pairing-service session.
+    ///
+    /// Every invocation owns fresh discovery and RemoteXPC connections. This
+    /// matters after enrollment because the device may terminate both service
+    /// streams while retaining the newly approved identity.
+    private static func withPairingClient<Success>(
+        for identity: RemotePairingIdentity,
+        discoveryPort: UInt16,
+        progress: (Progress) -> Void,
+        openConnection: (UInt16) async throws -> DeviceConnection,
+        operation: (RemotePairingProtocolClient) async throws -> Success
+    ) async throws -> Success {
         progress(.openingServiceDiscovery)
-        let discoveryConnection = try await openConnection(
-            discoveryPort
-        )
+        let discoveryConnection = try await openConnection(discoveryPort)
         let discovery = try await RemoteServiceDiscoverySession.open(
             over: discoveryConnection
         )
@@ -126,12 +187,72 @@ public enum RemotePairingTrust {
             channel.close()
         }
         progress(.verifyingIdentity)
-        try await RemotePairingProtocolClient(
-            channel: channel,
-            identity: identity
-        ).establishTrustIfNeeded {
-            progress(.enrollingIdentity)
+        return try await operation(
+            RemotePairingProtocolClient(
+                channel: channel,
+                identity: identity
+            )
+        )
+    }
+
+    /// Confirms enrollment on fresh service connections without repeating setup.
+    ///
+    /// Authentication and unknown-peer responses remain retryable briefly
+    /// because they can reflect propagation delay after approval. Transport and
+    /// subsequent stream resets are retried for the same reason. Device rate
+    /// limits, capacity failures, malformed responses, and cryptographic errors
+    /// leave immediately.
+    private static func verifyTrustAfterEnrollmentReset(
+        for identity: RemotePairingIdentity,
+        discoveryPort: UInt16,
+        retryDelays: [Duration],
+        sleep: (Duration) async throws -> Void,
+        openConnection: (UInt16) async throws -> DeviceConnection,
+        streamResetError: Error
+    ) async throws {
+        guard !retryDelays.isEmpty else {
+            throw streamResetError
         }
-        progress(.established)
+
+        for (index, delay) in retryDelays.enumerated() {
+            if delay != .zero {
+                try await sleep(delay)
+            }
+            do {
+                try await withPairingClient(
+                    for: identity,
+                    discoveryPort: discoveryPort,
+                    progress: { _ in },
+                    openConnection: openConnection,
+                    operation: { client in
+                        try await client.verifyTrust()
+                    }
+                )
+                return
+            } catch {
+                let hasNextAttempt = index + 1 < retryDelays.count
+                guard hasNextAttempt,
+                      isRetryableEnrollmentRecoveryError(error) else {
+                    throw error
+                }
+            }
+        }
+    }
+
+    /// Identifies failures that can occur while approved trust is propagating.
+    private static func isRetryableEnrollmentRecoveryError(
+        _ error: Error
+    ) -> Bool {
+        guard let deviceError = error as? RorkDeviceError else {
+            return false
+        }
+        switch deviceError {
+        case .transport, .remoteXPCStreamReset:
+            return true
+        case let .remotePairing(rejection):
+            return rejection.allowsPairSetup
+        default:
+            return false
+        }
     }
 }

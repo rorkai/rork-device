@@ -7,7 +7,11 @@ import Foundation
 /// the lifetime of the instance. It exposes packets rather than service byte
 /// streams; applications can attach a userspace network backend or another
 /// packet consumer appropriate for their platform.
-public final class CoreDeviceTunnel {
+///
+/// The tunnel supports one active packet reader while concurrent sends are
+/// serialized internally, allowing a userspace network to run independent
+/// inbound and outbound packet pumps.
+public final class CoreDeviceTunnel: Sendable {
     /// Network parameters negotiated with the connected device.
     public let configuration: CoreDeviceTunnelConfiguration
 

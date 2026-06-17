@@ -36,7 +36,7 @@ final class RemoteXPCConnection {
         case headers = 0x01
 
         /// Reports that the peer terminated a stream.
-        case resetStream = 0x03
+        case streamReset = 0x03
 
         /// Exchanges HTTP/2 connection settings.
         case settings = 0x04
@@ -200,9 +200,18 @@ final class RemoteXPCConnection {
                     )
                 }
 
-            case .resetStream:
-                throw RorkDeviceError.protocolViolation(
-                    "RemoteXPC reset HTTP/2 stream \(frame.streamIdentifier)."
+            case .streamReset:
+                guard frame.payload.count == MemoryLayout<UInt32>.size else {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC HTTP/2 RST_STREAM payload must contain a 32-bit error code."
+                    )
+                }
+                let errorCode: UInt32 = try frame.payload.bigEndianInteger(
+                    at: 0
+                )
+                throw RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: frame.streamIdentifier,
+                    errorCode: errorCode
                 )
 
             case .goAway:

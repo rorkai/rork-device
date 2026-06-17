@@ -99,6 +99,16 @@ final class RemotePairingProtocolClient {
         }
     }
 
+    /// Verifies that the device recognizes the identity without starting setup.
+    ///
+    /// Trust enrollment may end by resetting its RemoteXPC stream after the
+    /// device stores the identity. A fresh connection must only verify that
+    /// identity; re-entering setup could display another approval prompt.
+    func verifyTrust() async throws {
+        try await beginPairVerification()
+        _ = try await verifyIdentity()
+    }
+
     /// Starts the wire-protocol handshake and verifies the expected response shape.
     private func beginPairVerification() async throws {
         try await sendPlain([
