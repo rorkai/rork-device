@@ -146,6 +146,31 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         try await waitTask.value
     }
 
+    func testExplicitCloseDoesNotSurfaceNetworkMonitorCancellation() async throws {
+        let monitorStarted = expectation(
+            description: "The network monitor started waiting."
+        )
+        let gateway = try await CoreDeviceUserspaceGateway.start(
+            deviceAddress: "fd00::1",
+            host: "127.0.0.1",
+            port: 0,
+            waitUntilNetworkCloses: {
+                monitorStarted.fulfill()
+                try await Task.sleep(for: .seconds(30))
+            }
+        ) { _ in
+            GatewayTestConnection(response: Data())
+        }
+        await fulfillment(of: [monitorStarted], timeout: 1)
+        let waitTask = Task {
+            try await gateway.waitUntilClosed()
+        }
+
+        gateway.close()
+
+        try await waitTask.value
+    }
+
     func testWaitUntilClosedThrowsWhenUserspaceNetworkFails() async throws {
         let networkError = RorkDeviceError.transport(
             "CoreDevice packet pump stopped."
@@ -170,6 +195,22 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? RorkDeviceError, networkError)
         }
+    }
+
+    func testWaitUntilClosedCompletesNormallyWhenUserspaceNetworkCloses() async throws {
+        let gateway = try await CoreDeviceUserspaceGateway.start(
+            deviceAddress: "fd00::1",
+            host: "127.0.0.1",
+            port: 0,
+            waitUntilNetworkCloses: {}
+        ) { _ in
+            GatewayTestConnection(response: Data())
+        }
+        defer {
+            gateway.close()
+        }
+
+        try await gateway.waitUntilClosed()
     }
 }
 

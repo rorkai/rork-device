@@ -43,8 +43,8 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Task that closes the listener when the owned packet network terminates.
     private var networkMonitorTask: Task<Void, Never>?
 
-    /// Preserves an underlying network failure until the waiter observes it.
-    private let networkFailure = FirstErrorStorage()
+    /// Preserves the owned network's terminal result until a waiter observes it.
+    private let networkTermination = GatewayNetworkTermination()
 
     /// Whether listener and network teardown has already begun.
     private var isClosed = false
@@ -77,12 +77,19 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             )
         }
         if let waitUntilNetworkCloses {
-            let networkFailure = self.networkFailure
+            let networkTermination = self.networkTermination
             networkMonitorTask = Task {
                 do {
                     try await waitUntilNetworkCloses()
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    networkTermination.finish(with: .success(()))
                 } catch {
-                    networkFailure.record(error)
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    networkTermination.finish(with: .failure(error))
                 }
                 server.channel.close(promise: nil)
             }
@@ -134,16 +141,17 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         do {
             try await task?.value
         } catch {
-            if let terminalError = networkFailure.error {
-                throw terminalError
+            if let networkResult = networkTermination.result {
+                try networkResult.get()
+                return
             }
             let closedExplicitly = closeLock.withLock { isClosed }
             guard closedExplicitly else {
                 throw error
             }
         }
-        if let terminalError = networkFailure.error {
-            throw terminalError
+        if let networkResult = networkTermination.result {
+            try networkResult.get()
         }
     }
 
@@ -378,28 +386,28 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     }
 }
 
-/// Thread-safe storage that preserves the first asynchronously reported error.
+/// One-shot storage for the userspace network monitor's terminal result.
 ///
-/// The network monitor closes the NIO listener to release the accept loop.
-/// `waitUntilClosed()` then reads this storage so callers receive the packet
-/// network's actual terminal error instead of an incidental channel-close error.
-private final class FirstErrorStorage: @unchecked Sendable {
-    /// Protects first-error publication across the monitor and waiter tasks.
+/// The monitor publishes its result before closing the NIO listener. This lets
+/// `waitUntilClosed()` distinguish orderly network shutdown from failure and
+/// prefer that outcome over errors caused by releasing the accept loop.
+private final class GatewayNetworkTermination: @unchecked Sendable {
+    /// Protects terminal-result publication across monitor and waiter tasks.
     private let lock = NSLock()
 
-    /// First terminal network failure, if the network did not close explicitly.
-    private var storedError: Error?
+    /// First result published by the network monitor.
+    private var terminalResult: Result<Void, Error>?
 
-    /// Thread-safe snapshot of the first recorded error.
-    var error: Error? {
-        lock.withLock { storedError }
+    /// Thread-safe snapshot of the network monitor's terminal result.
+    var result: Result<Void, Error>? {
+        lock.withLock { terminalResult }
     }
 
-    /// Records `error` unless another task has already published one.
-    func record(_ error: Error) {
+    /// Publishes `result` unless the monitor has already reached a terminal state.
+    func finish(with result: Result<Void, Error>) {
         lock.withLock {
-            if storedError == nil {
-                storedError = error
+            if terminalResult == nil {
+                terminalResult = result
             }
         }
     }
