@@ -356,6 +356,8 @@ SUBCOMMANDS:
   list                    List devices reported by local usbmuxd.
   watch                   Watch usbmux device attach and detach events.
   info                    Print basic Lockdown device information.
+  pairing                 Validate the host pairing used by Lockdown.
+  developer-mode          Prepare Developer Mode setup on an iOS device.
   files                   Manage files through AFC or HouseArrest.
   apps                    Manage installed apps.
   install                 Install an IPA.
