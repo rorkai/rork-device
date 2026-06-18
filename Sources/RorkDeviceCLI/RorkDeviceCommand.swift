@@ -280,6 +280,9 @@ struct List: AsyncParsableCommand {
     @Flag(help: "List only devices attached over USB.")
     var usb = false
 
+    @Flag(help: "Include connection metadata in JSON output.")
+    var details = false
+
     @Flag(help: "Print device identifiers as a JSON array.")
     var json = false
 
@@ -290,7 +293,9 @@ struct List: AsyncParsableCommand {
             : discoveredDevices
         if json {
             try FileHandle.standardOutput.write(
-                contentsOf: deviceListJSON(devices)
+                contentsOf: details
+                    ? detailedDeviceListJSON(devices)
+                    : deviceListJSON(devices)
             )
             try FileHandle.standardOutput.write(
                 contentsOf: Data([0x0a])
@@ -302,7 +307,13 @@ struct List: AsyncParsableCommand {
             return
         }
         for device in devices {
-            print(device.identifier)
+            if details {
+                print(
+                    "\(device.identifier)\t\(deviceConnectionType(device) ?? "unknown")"
+                )
+            } else {
+                print(device.identifier)
+            }
         }
     }
 }
@@ -326,6 +337,45 @@ func deviceListJSON(_ devices: [Device]) throws -> Data {
     return try encoder.encode(devices.map(\.identifier))
 }
 
+/// Encodes device routes and usbmux properties for discovery consumers.
+///
+/// The detailed shape preserves multiple transport observations and lets
+/// callers distinguish USB from network visibility without invoking Lockdown.
+func detailedDeviceListJSON(_ devices: [Device]) throws -> Data {
+    let entries = devices.map { device in
+        DetailedDeviceListEntry(
+            udid: device.identifier,
+            connectionType: deviceConnectionType(device),
+            properties: device.properties
+        )
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(entries)
+}
+
+/// Machine-readable device entry emitted by `list --details --json`.
+private struct DetailedDeviceListEntry: Encodable {
+    /// Stable device identifier reported by usbmux.
+    let udid: String
+
+    /// Normalized transport name when usbmux reports one.
+    let connectionType: String?
+
+    /// Scalar usbmux discovery properties.
+    let properties: [String: String]
+}
+
+/// Normalizes usbmux transport metadata for JSON and event output.
+private func deviceConnectionType(_ device: Device) -> String? {
+    guard let value = device.properties["ConnectionType"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty else {
+        return nil
+    }
+    return value.lowercased()
+}
+
 /// Streams device attach and detach events from local usbmux.
 struct Watch: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -333,8 +383,17 @@ struct Watch: AsyncParsableCommand {
         abstract: "Watch usbmux device attach and detach events."
     )
 
+    @Flag(help: "Print one JSON object per event.")
+    var json = false
+
     func run() async throws {
         for try await event in DeviceClient().deviceEvents() {
+            if json {
+                var data = try deviceEventJSON(event)
+                data.append(0x0a)
+                try FileHandle.standardOutput.write(contentsOf: data)
+                continue
+            }
             switch event {
             case .attached(let device):
                 print("attached\t\(device.identifier)")
@@ -346,18 +405,174 @@ struct Watch: AsyncParsableCommand {
     }
 }
 
+/// Encodes one device event for newline-delimited stream consumers.
+func deviceEventJSON(_ event: DeviceEvent) throws -> Data {
+    let value: DeviceEventOutput
+    switch event {
+    case let .attached(device):
+        value = DeviceEventOutput(
+            event: "attached",
+            udid: device.identifier,
+            connectionType: deviceConnectionType(device),
+            properties: device.properties
+        )
+    case let .detached(identifier, _):
+        value = DeviceEventOutput(
+            event: "detached",
+            udid: identifier,
+            connectionType: nil,
+            properties: nil
+        )
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(value)
+}
+
+/// Stable JSON shape emitted by `watch --json`.
+private struct DeviceEventOutput: Encodable {
+    /// Lowercase event kind.
+    let event: String
+
+    /// Device identifier when usbmux includes it.
+    let udid: String?
+
+    /// Normalized transport for attach events.
+    let connectionType: String?
+
+    /// Scalar usbmux properties for attach events.
+    let properties: [String: String]?
+}
+
 /// Groups diagnostics for the Lockdown pairing stored by local usbmux.
 ///
-/// These commands validate existing host trust. They do not create or replace
-/// a pairing record, which keeps Trust-dialog ownership with explicit flows.
+/// These commands establish, validate, and export host trust explicitly.
 struct PairingCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pairing",
         abstract: "Validate the host pairing used by Lockdown.",
         subcommands: [
+            PairingEstablish.self,
+            PairingExport.self,
             PairingValidate.self,
         ]
     )
+}
+
+/// Creates or refreshes the selected device's stored host pairing.
+///
+/// The command waits for the user to respond to the Trust dialog and reuses one
+/// generated identity for every check. Successful pairing is persisted through
+/// usbmux before the command exits.
+struct PairingEstablish: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "establish",
+        abstract: "Establish and save host trust for a USB device."
+    )
+
+    @Option(help: "Device UDID. Defaults to the first USB device.")
+    var udid: String?
+
+    @Option(help: "Seconds to wait for the device-side Trust decision.")
+    var trustTimeout = 120.0
+
+    /// Rejects timeouts that cannot represent a bounded wait.
+    func validate() throws {
+        guard trustTimeout.isFinite, trustTimeout >= 0 else {
+            throw ValidationError(
+                "--trust-timeout must be a nonnegative finite number."
+            )
+        }
+    }
+
+    /// Runs the complete pairing transaction and reports user-action phases.
+    func run() async throws {
+        let client = DeviceClient()
+        let device = try await selectedUSBDevice(
+            from: client,
+            udid: udid
+        )
+        _ = try await client.pair(
+            with: device,
+            trustTimeout: .milliseconds(
+                Int64(trustTimeout * 1_000)
+            )
+        ) { progress in
+            writePairingProgress(progress)
+        }
+        print("Pairing is established for \(device.identifier).")
+    }
+}
+
+/// Exports the complete pairing record stored by usbmux.
+struct PairingExport: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "export",
+        abstract: "Export the stored host pairing record."
+    )
+
+    @Option(help: "Device UDID. Defaults to the first USB device.")
+    var udid: String?
+
+    @Option(
+        name: .customLong("output"),
+        help: "Destination property-list path. Defaults to standard output."
+    )
+    var outputPath: String?
+
+    /// Writes a complete XML property list without narrowing its fields.
+    func run() async throws {
+        let client = DeviceClient()
+        let device = try await selectedUSBDevice(
+            from: client,
+            udid: udid
+        )
+        let record = try await client.pairingRecord(
+            for: device.identifier
+        )
+        let data = try record.propertyListData()
+        if let outputPath {
+            let destination = URL(fileURLWithPath: outputPath)
+                .standardizedFileURL
+            try data.write(to: destination, options: .atomic)
+            print(destination.path)
+        } else {
+            try FileHandle.standardOutput.write(contentsOf: data)
+        }
+    }
+}
+
+/// Resolves one cable-attached device for pairing-specific commands.
+private func selectedUSBDevice(
+    from client: DeviceClient,
+    udid: String?
+) async throws -> Device {
+    let devices = try await client.discoverDevices()
+        .filter(isUSBDevice)
+    let selected = udid.map { expected in
+        devices.first { $0.identifier == expected }
+    } ?? devices.first
+    guard let selected else {
+        throw ValidationError("No matching USB device found.")
+    }
+    return selected
+}
+
+/// Writes pairing phases to stderr so stdout remains command output.
+private func writePairingProgress(_ progress: DevicePairingProgress) {
+    let message: String
+    switch progress {
+    case .waitingForUserConfirmation:
+        message = "Waiting for the iPhone to trust this Mac."
+    case .savingPairingRecord:
+        message = "Saving the accepted pairing record."
+    }
+    guard let data = "rorkdevice: \(message)\n".data(
+        using: .utf8
+    ) else {
+        return
+    }
+    try? FileHandle.standardError.write(contentsOf: data)
 }
 
 /// Verifies that the selected device accepts the stored host pairing.
@@ -414,9 +629,33 @@ struct DeveloperModeCommand: AsyncParsableCommand {
         commandName: "developer-mode",
         abstract: "Prepare Developer Mode setup on an iOS device.",
         subcommands: [
+            DeveloperModeStatus.self,
             DeveloperModeReveal.self,
         ]
     )
+}
+
+/// Reads the current Developer Mode state without changing device settings.
+struct DeveloperModeStatus: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Read whether Developer Mode is enabled."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Flag(help: "Print the Boolean result as JSON.")
+    var json = false
+
+    func run() async throws {
+        let enabled = try await connection.session()
+            .isDeveloperModeEnabled()
+        if json {
+            print(enabled ? "true" : "false")
+        } else {
+            print(enabled ? "enabled" : "disabled")
+        }
+    }
 }
 
 /// Reveals the Developer Mode setting without enabling it automatically.

@@ -15,6 +15,10 @@ protocol DeviceSessionBackend {
     /// Returns the device information available through this transport.
     func fetchDeviceInfo() async throws -> DeviceInfo
 
+    /// Reads whether Developer Mode is enabled when the backend exposes the
+    /// Lockdown AMFI value domain.
+    func isDeveloperModeEnabled() async throws -> Bool
+
     /// Opens a service stream that is ready for its service-specific protocol.
     func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection
 
@@ -30,6 +34,13 @@ extension DeviceSessionBackend {
     /// Lockdown-backed sessions do not have a direct RSD service directory.
     var usesRemoteServiceDiscovery: Bool {
         false
+    }
+
+    /// Remote Service Discovery does not expose Lockdown value domains.
+    func isDeveloperModeEnabled() async throws -> Bool {
+        throw RorkDeviceError.protocolViolation(
+            "Developer Mode status requires a Lockdown session."
+        )
     }
 
     /// Rejects direct Remote Service Discovery access for non-RSD backends.
@@ -70,6 +81,11 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     /// Reads the default Lockdown value domain into the public device model.
     func fetchDeviceInfo() async throws -> DeviceInfo {
         DeviceInfo(values: try await lockdown.deviceValues())
+    }
+
+    /// Reads Developer Mode from Lockdown's AMFI value domain.
+    func isDeveloperModeEnabled() async throws -> Bool {
+        try await lockdown.developerModeStatus()
     }
 
     /// Requests a service from Lockdown and returns a protocol-ready stream.

@@ -33,9 +33,14 @@ final class RorkDeviceCLITests: XCTestCase {
     }
 
     func testListCommandParsesUSBFilter() throws {
-        let command = try List.parse(["--usb", "--json"])
+        let command = try List.parse([
+            "--usb",
+            "--details",
+            "--json",
+        ])
 
         XCTAssertTrue(command.usb)
+        XCTAssertTrue(command.details)
         XCTAssertTrue(command.json)
     }
 
@@ -72,6 +77,54 @@ final class RorkDeviceCLITests: XCTestCase {
         )
 
         XCTAssertEqual(identifiers, ["device-1", "device-2"])
+    }
+
+    func testDetailedDeviceListJSONPreservesConnectionMetadata() throws {
+        let data = try detailedDeviceListJSON([
+            Device(
+                identifier: "device-1",
+                connection: .usbmux(deviceID: 7),
+                properties: [
+                    "ConnectionType": "USB",
+                    "ProductID": "1234",
+                ]
+            ),
+        ])
+        let entries = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data)
+                as? [[String: Any]]
+        )
+
+        XCTAssertEqual(entries.first?["udid"] as? String, "device-1")
+        XCTAssertEqual(
+            entries.first?["connectionType"] as? String,
+            "usb"
+        )
+        XCTAssertEqual(
+            (entries.first?["properties"] as? [String: String])?[
+                "ProductID"
+            ],
+            "1234"
+        )
+    }
+
+    func testDeviceEventJSONEncodesAttachMetadata() throws {
+        let data = try deviceEventJSON(.attached(Device(
+            identifier: "device-1",
+            connection: .usbmux(deviceID: 7),
+            properties: ["ConnectionType": "Network"]
+        )))
+        let event = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        )
+
+        XCTAssertEqual(event["event"] as? String, "attached")
+        XCTAssertEqual(event["udid"] as? String, "device-1")
+        XCTAssertEqual(
+            event["connectionType"] as? String,
+            "network"
+        )
     }
 
     func testInstallCommandParsesUserspaceRemoteServiceRoute() throws {
@@ -234,6 +287,35 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.udid, "device-1")
     }
 
+    func testPairingEstablishCommandParsesDeviceIdentifierAndTimeout() throws {
+        let command = try PairingEstablish.parse([
+            "--udid", "device-1",
+            "--trust-timeout", "90",
+        ])
+
+        XCTAssertEqual(command.udid, "device-1")
+        XCTAssertEqual(command.trustTimeout, 90)
+    }
+
+    func testPairingExportCommandParsesOptionalOutputPath() throws {
+        let command = try PairingExport.parse([
+            "--udid", "device-1",
+            "--output", "pairing.plist",
+        ])
+
+        XCTAssertEqual(command.udid, "device-1")
+        XCTAssertEqual(command.outputPath, "pairing.plist")
+    }
+
+    func testPairingExportDefaultsToStandardOutput() throws {
+        let command = try PairingExport.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.udid, "device-1")
+        XCTAssertNil(command.outputPath)
+    }
+
     func testPairingValidationRejectsUnexpectedDeviceIdentifier() {
         let info = DeviceInfo(values: [
             "UniqueDeviceID": "device-2",
@@ -264,6 +346,16 @@ final class RorkDeviceCLITests: XCTestCase {
         ])
 
         XCTAssertEqual(command.connection.udid, "device-1")
+    }
+
+    func testDeveloperModeStatusCommandParsesJSONOutput() throws {
+        let command = try DeveloperModeStatus.parse([
+            "--udid", "device-1",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
+        XCTAssertTrue(command.json)
     }
 
     func testProfilesCopyCommandParsesOutputDirectoryAndLegacyMode() throws {

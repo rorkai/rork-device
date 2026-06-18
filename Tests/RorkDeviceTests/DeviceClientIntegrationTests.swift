@@ -3,6 +3,54 @@ import XCTest
 @testable import RorkDevice
 
 final class DeviceClientIntegrationTests: XCTestCase {
+    func testPairsAfterDeviceTrustApprovalAndSavesTheAcceptedRecord() async throws {
+        let daemon = try FakeUSBMuxDaemon(pairingResponses: [
+            [
+                "Request": "Pair",
+                "Error": "PairingDialogResponsePending",
+            ],
+            [
+                "Request": "Pair",
+                "EscrowBag": Data([7, 8, 9]),
+            ],
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let progress = EventRecorder<DevicePairingProgress>()
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+
+        let pairingRecord = try await client.pair(
+            with: device,
+            trustTimeout: .seconds(1),
+            retryInterval: .zero
+        ) {
+            progress.append($0)
+        }
+
+        XCTAssertEqual(daemon.pairingAttemptCount, 2)
+        XCTAssertEqual(
+            progress.values,
+            [.waitingForUserConfirmation, .savingPairingRecord]
+        )
+        XCTAssertEqual(pairingRecord.escrowBag, Data([7, 8, 9]))
+        XCTAssertEqual(
+            daemon.savedPairingRecordIdentifier,
+            device.identifier
+        )
+        XCTAssertEqual(
+            try PairingRecord.parse(
+                XCTUnwrap(daemon.savedPairingRecordData)
+            ),
+            pairingRecord
+        )
+    }
+
     func testStreamsDeviceEventsThroughFakeUSBMuxDaemon() async throws {
         let daemon = try FakeUSBMuxDaemon(deviceEvents: [
             .attached(USBMuxDevice(
@@ -145,6 +193,13 @@ final class DeviceClientIntegrationTests: XCTestCase {
         defer { heartbeat.stop() }
 
         XCTAssertTrue(daemon.connectedPorts.contains(4567))
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        // The client completes its socket write before the fake peer is
+        // guaranteed to have consumed and recorded the command.
+        while daemon.heartbeatReplies.isEmpty, clock.now < deadline {
+            try await clock.sleep(for: .milliseconds(5))
+        }
         XCTAssertEqual(daemon.heartbeatReplies, ["Polo"])
     }
 

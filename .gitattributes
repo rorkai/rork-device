@@ -1,1 +1,2 @@
 Sources/RorkDeviceLwIP/Vendor/** linguist-vendored whitespace=-trailing-space
+ThirdPartyLicenses/** linguist-vendored whitespace=-trailing-space,-blank-at-eof

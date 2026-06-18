@@ -1,35 +1,54 @@
 # Third-Party Notices
 
-## lwIP
+This distribution includes the open-source components listed below. The
+versions shown are the versions resolved by Swift Package Manager for this
+release.
 
-`rork-device` includes selected source files from lwIP 2.2.1 to provide an
-IPv6/TCP userspace network backend.
+The Apache License 2.0 text is available in the repository's
+[LICENSE](LICENSE) file. Exact attribution notices and non-Apache license texts
+that must accompany binary distributions are preserved under
+[ThirdPartyLicenses](ThirdPartyLicenses).
 
-Source: https://github.com/lwip-tcpip/lwip/tree/STABLE-2_2_1_RELEASE
+## Apache License 2.0 Components
 
-License:
+- [Swift Argument Parser 1.8.1](https://github.com/apple/swift-argument-parser)
+- [SwiftNIO 2.100.0](https://github.com/apple/swift-nio)
+- [SwiftNIO SSL 2.37.1](https://github.com/apple/swift-nio-ssl)
+- [Swift Certificates 1.10.1](https://github.com/apple/swift-certificates)
+- [Swift Crypto 3.12.5](https://github.com/apple/swift-crypto)
+- [Swift ASN.1 1.7.1](https://github.com/apple/swift-asn1)
+- [Swift Atomics 1.3.0](https://github.com/apple/swift-atomics)
+- [Swift Collections 1.5.1](https://github.com/apple/swift-collections)
+- [Swift System 1.6.4](https://github.com/apple/swift-system)
 
-> Copyright (c) 2001, 2002 Swedish Institute of Computer Science.
-> All rights reserved.
->
-> Redistribution and use in source and binary forms, with or without
-> modification, are permitted provided that the following conditions are met:
->
-> 1. Redistributions of source code must retain the above copyright notice,
->    this list of conditions and the following disclaimer.
-> 2. Redistributions in binary form must reproduce the above copyright notice,
->    this list of conditions and the following disclaimer in the documentation
->    and/or other materials provided with the distribution.
-> 3. The name of the author may not be used to endorse or promote products
->    derived from this software without specific prior written permission.
->
-> THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
-> WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-> MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
-> EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-> SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-> PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
-> OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-> WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
-> OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
-> OF THE POSSIBILITY OF SUCH DAMAGE.
+The upstream attribution notices that apply to these components and their
+incorporated works are reproduced in:
+
+- [SwiftNIO-NOTICE.txt](ThirdPartyLicenses/SwiftNIO-NOTICE.txt)
+- [SwiftNIOSSL-NOTICE.txt](ThirdPartyLicenses/SwiftNIOSSL-NOTICE.txt)
+- [SwiftCrypto-NOTICE.txt](ThirdPartyLicenses/SwiftCrypto-NOTICE.txt)
+- [SwiftCertificates-NOTICE.txt](ThirdPartyLicenses/SwiftCertificates-NOTICE.txt)
+- [SwiftASN1-NOTICE.txt](ThirdPartyLicenses/SwiftASN1-NOTICE.txt)
+
+## Other Components
+
+### BigInt 5.7.0
+
+[BigInt](https://github.com/attaswift/BigInt) is distributed under the MIT
+License. The complete license text is reproduced in
+[BigInt-LICENSE.md](ThirdPartyLicenses/BigInt-LICENSE.md).
+
+### BoringSSL
+
+SwiftNIO SSL statically incorporates
+[BoringSSL](https://boringssl.googlesource.com/boringssl/) source derived from
+revision `817ab07ebb53da35afea409ab9328f578492832d`. BoringSSL contains code under
+ISC, OpenSSL, SSLeay, and additional compatible license terms. The complete
+license file for that revision is reproduced in
+[BoringSSL-LICENSE.txt](ThirdPartyLicenses/BoringSSL-LICENSE.txt).
+
+### lwIP 2.2.1
+
+Selected source files from [lwIP](https://github.com/lwip-tcpip/lwip) provide
+the IPv6/TCP userspace network backend. The complete BSD-style license text is
+reproduced in [lwIP-LICENSE.txt](ThirdPartyLicenses/lwIP-LICENSE.txt).
