@@ -13,6 +13,8 @@ struct RorkDeviceCommand: AsyncParsableCommand {
             List.self,
             Watch.self,
             Info.self,
+            PairingCommand.self,
+            DeveloperModeCommand.self,
             Apps.self,
             Files.self,
             Install.self,
@@ -275,8 +277,26 @@ struct List: AsyncParsableCommand {
         abstract: "List devices reported by local usbmuxd."
     )
 
+    @Flag(help: "List only devices attached over USB.")
+    var usb = false
+
+    @Flag(help: "Print device identifiers as a JSON array.")
+    var json = false
+
     func run() async throws {
-        let devices = try await DeviceClient().discoverDevices()
+        let discoveredDevices = try await DeviceClient().discoverDevices()
+        let devices = usb
+            ? discoveredDevices.filter(isUSBDevice)
+            : discoveredDevices
+        if json {
+            try FileHandle.standardOutput.write(
+                contentsOf: deviceListJSON(devices)
+            )
+            try FileHandle.standardOutput.write(
+                contentsOf: Data([0x0a])
+            )
+            return
+        }
         if devices.isEmpty {
             print("No devices found.")
             return
@@ -285,6 +305,25 @@ struct List: AsyncParsableCommand {
             print(device.identifier)
         }
     }
+}
+
+/// Returns whether usbmux reports a physical USB attachment for a device.
+///
+/// usbmux can advertise the same physical device through both USB and network
+/// records. Callers can use this distinction when an operation requires direct
+/// cable access to local pairing material or a user-facing Trust prompt.
+func isUSBDevice(_ device: Device) -> Bool {
+    device.properties["ConnectionType"]?.caseInsensitiveCompare("USB")
+        == .orderedSame
+}
+
+/// Encodes device identifiers for machine-readable discovery consumers.
+///
+/// The JSON form intentionally omits transport details so callers receive the
+/// same stable array shape regardless of the usbmux protocol revision.
+func deviceListJSON(_ devices: [Device]) throws -> Data {
+    let encoder = JSONEncoder()
+    return try encoder.encode(devices.map(\.identifier))
 }
 
 /// Streams device attach and detach events from local usbmux.
@@ -304,6 +343,98 @@ struct Watch: AsyncParsableCommand {
                 print("detached\t\(value)")
             }
         }
+    }
+}
+
+/// Groups diagnostics for the Lockdown pairing stored by local usbmux.
+///
+/// These commands validate existing host trust. They do not create or replace
+/// a pairing record, which keeps Trust-dialog ownership with explicit flows.
+struct PairingCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "pairing",
+        abstract: "Validate the host pairing used by Lockdown.",
+        subcommands: [
+            PairingValidate.self,
+        ]
+    )
+}
+
+/// Verifies that the selected device accepts the stored host pairing.
+///
+/// A successful command proves that the pairing record can establish an
+/// authenticated Lockdown session and that the session identifies the device
+/// selected by the caller.
+struct PairingValidate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "validate",
+        abstract: "Validate the stored host pairing for a device."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    func run() async throws {
+        let connected = try await connection.connectedSession()
+        let info = try await connected.session.fetchDeviceInfo()
+        try validatePairingIdentity(
+            info,
+            expectedDeviceIdentifier: connected.deviceIdentifier
+        )
+        print("Pairing is valid for \(connected.deviceIdentifier).")
+    }
+}
+
+/// Checks that Lockdown authenticated the physical device selected by usbmux.
+///
+/// Establishing the session proves the host credentials were accepted. The
+/// identifier check additionally prevents a stale or mismatched pairing record
+/// from being treated as valid for a different device.
+func validatePairingIdentity(
+    _ info: DeviceInfo,
+    expectedDeviceIdentifier: String
+) throws {
+    guard let actualDeviceIdentifier = info.uniqueDeviceID else {
+        throw RorkDeviceError.protocolViolation(
+            "Lockdown pairing validation did not return UniqueDeviceID."
+        )
+    }
+    guard actualDeviceIdentifier == expectedDeviceIdentifier else {
+        throw RorkDeviceError.invalidPairingRecord(
+            "Lockdown returned device \(actualDeviceIdentifier), expected \(expectedDeviceIdentifier)."
+        )
+    }
+}
+
+/// Groups user-controlled Developer Mode setup operations.
+///
+/// The command group exposes preparation steps only. Enabling Developer Mode,
+/// restarting iOS, and confirming the post-restart prompt remain user actions.
+struct DeveloperModeCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "developer-mode",
+        abstract: "Prepare Developer Mode setup on an iOS device.",
+        subcommands: [
+            DeveloperModeReveal.self,
+        ]
+    )
+}
+
+/// Reveals the Developer Mode setting without enabling it automatically.
+///
+/// The selected device must already trust the host because the command opens
+/// the authenticated AMFI Lockdown service.
+struct DeveloperModeReveal: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "reveal",
+        abstract: "Reveal Developer Mode in the device Settings app."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    func run() async throws {
+        let session = try await connection.session()
+        try await session.revealDeveloperMode()
+        print("Developer Mode is available in Settings.")
     }
 }
 
@@ -586,15 +717,37 @@ struct Info: AsyncParsableCommand {
 
     @OptionGroup var connection: ConnectionOptions
 
+    @Flag(help: "Print the complete scalar Lockdown value dictionary as JSON.")
+    var json = false
+
     func run() async throws {
         let session = try await connection.session()
         let info = try await session.fetchDeviceInfo()
+        if json {
+            try FileHandle.standardOutput.write(
+                contentsOf: lockdownInfoJSON(info)
+            )
+            try FileHandle.standardOutput.write(
+                contentsOf: Data([0x0a])
+            )
+            return
+        }
         print("UDID: \(info.uniqueDeviceID ?? "-")")
         print("Name: \(info.deviceName ?? "-")")
         print("Product: \(info.productType ?? "-")")
         print("Version: \(info.productVersion ?? "-")")
         print("Build: \(info.buildVersion ?? "-")")
     }
+}
+
+/// Encodes scalar Lockdown values for machine-readable CLI consumers.
+///
+/// The output remains a flat dictionary with the original Lockdown key names
+/// so clients can consume newer scalar keys without requiring a CLI release.
+func lockdownInfoJSON(_ info: DeviceInfo) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(info.rawValues)
 }
 
 /// Parent command for AFC and HouseArrest file operations.

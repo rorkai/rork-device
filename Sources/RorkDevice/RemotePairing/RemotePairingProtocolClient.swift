@@ -24,6 +24,9 @@ private struct VerifiedRemotePairingKeys {
 
 /// Drives pair verification and asks the device to allocate a tunnel listener.
 final class RemotePairingProtocolClient {
+    /// Host label advertised in remote-pairing identity and session metadata.
+    private static let pairingHostName = "rork-device"
+
     /// Outer transport used to exchange remote-pairing messages.
     private let channel: any RemotePairingControlChannel
 
@@ -328,7 +331,7 @@ final class RemotePairingProtocolClient {
             "btAddr": "00:00:00:00:00:00",
             "mac": Data(repeating: 0, count: 6),
             "model": "RorkDevice",
-            "name": "Rork Companion",
+            "name": Self.pairingHostName,
             "remotepairing_serial_number": identity.identifier,
         ])
         let identityData = TLV8.encode([
@@ -355,7 +358,7 @@ final class RemotePairingProtocolClient {
             ]),
             kind: "setupManualPairing",
             startsNewSession: false,
-            sendingHost: "Rork Companion"
+            sendingHost: Self.pairingHostName
         )
 
         let response = try TLV8.decode(try await receivePairingData())

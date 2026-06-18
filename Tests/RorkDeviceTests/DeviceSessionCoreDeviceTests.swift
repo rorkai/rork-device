@@ -7,10 +7,12 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
         let connection = try coreDeviceAppServiceConnection(responses: [
             .array([
                 .dictionary([
-                    "bundleIdentifier": .string("app.rork.max.dev"),
-                    "name": .string("Rork Max Dev"),
+                    "bundleIdentifier": .string(
+                        "com.example.developer-app"
+                    ),
+                    "name": .string("Example Developer App"),
                     "path": .string(
-                        "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                        "/private/var/containers/Bundle/Application/UUID/Example Developer App.app"
                     ),
                     "isDeveloperApp": .bool(true),
                     "isFirstParty": .bool(false),
@@ -29,7 +31,7 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
 
         XCTAssertEqual(
             applications.map(\.bundleIdentifier),
-            ["app.rork.max.dev"]
+            ["com.example.developer-app"]
         )
         XCTAssertEqual(
             applications.map(\.applicationType),
@@ -47,10 +49,12 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
             responses: [
                 .array([
                     .dictionary([
-                        "bundleIdentifier": .string("app.rork.max.dev"),
-                        "name": .string("Rork Max Dev"),
+                        "bundleIdentifier": .string(
+                            "com.example.developer-app"
+                        ),
+                        "name": .string("Example Developer App"),
                         "path": .string(
-                            "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                            "/private/var/containers/Bundle/Application/UUID/Example Developer App.app"
                         ),
                         "isDeveloperApp": .bool(true),
                         "isFirstParty": .bool(false),
@@ -66,7 +70,7 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
                         "processIdentifier": .int64(6_303),
                         "executableURL": .dictionary([
                             "relative": .string(
-                                "file:///private/var/containers/Bundle/Application/UUID/Rork%20Max%20Dev.app/Rork%20Max%20Dev"
+                                "file:///private/var/containers/Bundle/Application/UUID/Example%20Developer%20App.app/Example%20Developer%20App"
                             ),
                         ]),
                     ]),
@@ -86,7 +90,7 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
         let session = DeviceSession(backend: backend)
 
         let terminated = try await session.terminateApplication(
-            bundleIdentifier: "app.rork.max.dev"
+            bundleIdentifier: "com.example.developer-app"
         )
 
         XCTAssertTrue(terminated)
@@ -106,10 +110,12 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
             responses: [
                 .array([
                     .dictionary([
-                        "bundleIdentifier": .string("app.rork.max.dev"),
-                        "name": .string("Rork Max Dev"),
+                        "bundleIdentifier": .string(
+                            "com.example.developer-app"
+                        ),
+                        "name": .string("Example Developer App"),
                         "path": .string(
-                            "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                            "/private/var/containers/Bundle/Application/UUID/Example Developer App.app"
                         ),
                         "isDeveloperApp": .bool(true),
                         "isFirstParty": .bool(false),
@@ -132,7 +138,7 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
         let session = DeviceSession(backend: backend)
 
         let terminated = try await session.terminateApplication(
-            bundleIdentifier: "app.rork.max.dev"
+            bundleIdentifier: "com.example.developer-app"
         )
 
         XCTAssertFalse(terminated)

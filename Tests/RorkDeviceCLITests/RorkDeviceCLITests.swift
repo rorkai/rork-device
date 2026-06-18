@@ -1,3 +1,4 @@
+import RorkDevice
 import XCTest
 @testable import RorkDeviceCLI
 
@@ -13,6 +14,8 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("launch"))
         XCTAssertTrue(help.contains("terminate"))
         XCTAssertTrue(help.contains("profiles"))
+        XCTAssertTrue(help.contains("pairing"))
+        XCTAssertTrue(help.contains("developer-mode"))
         XCTAssertTrue(help.contains("remote-pairing"))
         XCTAssertTrue(help.contains("tunnel"))
     }
@@ -27,6 +30,48 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
         XCTAssertEqual(command.ipaPath, "App.ipa")
         XCTAssertEqual(command.bundleIdentifier, "com.example.app")
+    }
+
+    func testListCommandParsesUSBFilter() throws {
+        let command = try List.parse(["--usb", "--json"])
+
+        XCTAssertTrue(command.usb)
+        XCTAssertTrue(command.json)
+    }
+
+    func testUSBFilterAcceptsOnlyUSBDevices() {
+        let usbDevice = Device(
+            identifier: "usb-device",
+            connection: .usbmux(deviceID: 1),
+            properties: ["ConnectionType": "USB"]
+        )
+        let networkDevice = Device(
+            identifier: "network-device",
+            connection: .usbmux(deviceID: 2),
+            properties: ["ConnectionType": "Network"]
+        )
+
+        XCTAssertTrue(isUSBDevice(usbDevice))
+        XCTAssertFalse(isUSBDevice(networkDevice))
+    }
+
+    func testDeviceListJSONEncodesIdentifiers() throws {
+        let data = try deviceListJSON([
+            Device(
+                identifier: "device-1",
+                connection: .usbmux(deviceID: 1)
+            ),
+            Device(
+                identifier: "device-2",
+                connection: .usbmux(deviceID: 2)
+            ),
+        ])
+
+        let identifiers = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String]
+        )
+
+        XCTAssertEqual(identifiers, ["device-1", "device-2"])
     }
 
     func testInstallCommandParsesUserspaceRemoteServiceRoute() throws {
@@ -140,11 +185,13 @@ final class RorkDeviceCLITests: XCTestCase {
             "--host", "127.0.0.1",
             "--port", "62079",
             "--pairing-record", "pairing.plist",
+            "--json",
         ])
 
         XCTAssertEqual(command.connection.host, "127.0.0.1")
         XCTAssertEqual(command.connection.port, 62079)
         XCTAssertEqual(command.connection.pairingRecord, "pairing.plist")
+        XCTAssertTrue(command.json)
     }
 
     func testInfoCommandRejectsHostAndUDIDTogether() {
@@ -160,6 +207,63 @@ final class RorkDeviceCLITests: XCTestCase {
             "--port", "62079",
             "--pairing-record", "pairing.plist",
         ]))
+    }
+
+    func testLockdownInfoJSONPreservesScalarLockdownKeys() throws {
+        let info = DeviceInfo(values: [
+            "UniqueDeviceID": "device-1",
+            "DeviceClass": "iPhone",
+            "ProductVersion": "26.5.1",
+        ])
+
+        let data = try lockdownInfoJSON(info)
+        let values = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: String]
+        )
+
+        XCTAssertEqual(values["UniqueDeviceID"], "device-1")
+        XCTAssertEqual(values["DeviceClass"], "iPhone")
+        XCTAssertEqual(values["ProductVersion"], "26.5.1")
+    }
+
+    func testPairingValidateCommandParsesDeviceIdentifier() throws {
+        let command = try PairingValidate.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
+    }
+
+    func testPairingValidationRejectsUnexpectedDeviceIdentifier() {
+        let info = DeviceInfo(values: [
+            "UniqueDeviceID": "device-2",
+        ])
+
+        XCTAssertThrowsError(
+            try validatePairingIdentity(
+                info,
+                expectedDeviceIdentifier: "device-1"
+            )
+        )
+    }
+
+    func testPairingValidationRequiresDeviceIdentifierFromLockdown() {
+        let info = DeviceInfo(values: [:])
+
+        XCTAssertThrowsError(
+            try validatePairingIdentity(
+                info,
+                expectedDeviceIdentifier: "device-1"
+            )
+        )
+    }
+
+    func testDeveloperModeRevealCommandParsesDeviceIdentifier() throws {
+        let command = try DeveloperModeReveal.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
     }
 
     func testProfilesCopyCommandParsesOutputDirectoryAndLegacyMode() throws {

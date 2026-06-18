@@ -8,10 +8,12 @@ final class CoreDeviceApplicationServiceTests: XCTestCase {
             value: .dictionary([
                 "CoreDevice.output": .array([
                     .dictionary([
-                        "bundleIdentifier": .string("app.rork.max.dev"),
-                        "name": .string("Rork Max Dev"),
+                        "bundleIdentifier": .string(
+                            "com.example.developer-app"
+                        ),
+                        "name": .string("Example Developer App"),
                         "path": .string(
-                            "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app"
+                            "/private/var/containers/Bundle/Application/UUID/Example Developer App.app"
                         ),
                         "version": .string("1.0.18"),
                         "bundleVersion": .string("20"),
@@ -44,10 +46,10 @@ final class CoreDeviceApplicationServiceTests: XCTestCase {
 
         XCTAssertEqual(applications, [
             CoreDeviceApplication(
-                bundleIdentifier: "app.rork.max.dev",
-                displayName: "Rork Max Dev",
+                bundleIdentifier: "com.example.developer-app",
+                displayName: "Example Developer App",
                 bundlePath:
-                    "/private/var/containers/Bundle/Application/UUID/Rork Max Dev.app",
+                    "/private/var/containers/Bundle/Application/UUID/Example Developer App.app",
                 version: "1.0.18",
                 buildVersion: "20",
                 isDeveloperApplication: true,

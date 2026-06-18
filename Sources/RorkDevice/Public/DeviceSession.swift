@@ -53,6 +53,28 @@ public final class DeviceSession {
         try await backend.fetchDeviceInfo()
     }
 
+    /// Makes the Developer Mode setting visible in the device's Settings app.
+    ///
+    /// This operation does not enable Developer Mode or restart the device. It
+    /// asks the AMFI Lockdown service to reveal the user-controlled setting so
+    /// the user can finish the process in Settings > Privacy & Security.
+    ///
+    /// The device must already trust the host because the AMFI service is
+    /// opened through the authenticated Lockdown session.
+    ///
+    /// - Throws: A Lockdown error when iOS rejects the request, a protocol
+    ///   violation when the service returns an incomplete response, or a
+    ///   transport error when the service connection fails.
+    public func revealDeveloperMode() async throws {
+        let connection = try await startService(.developerMode)
+        defer {
+            connection.close()
+        }
+        try await DeveloperModeClient(
+            connection: connection
+        ).reveal()
+    }
+
     /// Opens a modeled device service on the active session route.
     ///
     /// This overload covers services modeled by rork-device. Use
@@ -482,6 +504,9 @@ public enum LockdownServiceName: String, Sendable {
     /// CoreDevice packet proxy used to negotiate a private IPv6 link.
     case coreDeviceProxy =
         "com.apple.internal.devicecompute.CoreDeviceProxy"
+
+    /// AMFI service used to reveal the Developer Mode setting.
+    case developerMode = "com.apple.amfi.lockdown"
 
     /// Device heartbeat service, used to keep tunnel-backed sessions alive.
     case heartbeat = "com.apple.mobile.heartbeat"
