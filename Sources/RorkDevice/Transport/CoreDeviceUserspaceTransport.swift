@@ -26,7 +26,8 @@ public struct CoreDeviceUserspaceTransport: DeviceTransport, Sendable {
     ///
     /// - Parameters:
     ///   - deviceAddress: Device IPv6 address reported by CoreDevice.
-    ///   - gatewayHost: Gateway host. Companion normally uses loopback.
+    ///   - gatewayHost: Host running the userspace gateway. Use loopback when
+    ///     the gateway runs on the same machine.
     ///   - gatewayPort: Local TCP port reported for the userspace gateway.
     ///   - connectionTimeout: Maximum duration for opening a gateway connection.
     /// - Throws: `RorkDeviceError.invalidInput` when the device address, host,

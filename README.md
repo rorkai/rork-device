@@ -24,6 +24,12 @@ tests and clear public API boundaries.
 - **Pairing records** - load the trusted Lockdown record stored by local
   `usbmuxd`, parse pairing-record plists, and preserve unknown fields for
   diagnostics.
+- **Pairing validation** - authenticate the stored host pairing, complete its
+  secure Lockdown session, and verify that Lockdown reports the expected
+  physical device identifier.
+- **Developer Mode setup** - reveal the Developer Mode setting through the
+  authenticated AMFI Lockdown service without enabling it or restarting the
+  device automatically.
 - **Remote identity lifecycle** - generate, validate, and atomically persist
   complete CoreDevice identities with owner-only file permissions.
 - **Remote trust enrollment** - distinguish typed device rejections and
@@ -49,7 +55,8 @@ tests and clear public API boundaries.
   a public `SecureSessionUpgrader` protocol, with a SwiftNIO SSL backend enabled
   by default for the package's built-in transports.
 - **Lockdown values** - query common device identity and OS metadata through a
-  typed `DeviceInfo` summary.
+  typed `DeviceInfo` summary or emit the complete scalar dictionary as
+  machine-readable CLI JSON.
 - **AFC staging** - create `/PublicStaging` and upload IPA files or in-memory
   IPA bytes before installation.
 - **AFC file access** - list directories, read file metadata, download files,
@@ -82,7 +89,7 @@ Add `rork-device` to the package dependencies:
 dependencies: [
     .package(
         url: "https://github.com/rorkai/rork-device.git",
-        from: "0.4.0"
+        from: "0.5.0"
     ),
 ]
 ```
@@ -201,6 +208,34 @@ rorkdevice tunnel start \
   --udid 00008140-000000000000001C \
   --identity remote-pairing.plist
 ```
+
+## Device Diagnostics
+
+The CLI can replace common USB discovery and Lockdown diagnostic helpers
+without loading a separate device-communication library:
+
+```bash
+# List only devices physically attached over USB.
+rorkdevice list --usb
+
+# Verify that the stored host pairing authenticates the expected device.
+rorkdevice pairing validate \
+  --udid 00008140-000000000000001C
+
+# Return the scalar Lockdown value dictionary with its original key names.
+rorkdevice info \
+  --udid 00008140-000000000000001C \
+  --json
+
+# Reveal the user-controlled Developer Mode setting.
+rorkdevice developer-mode reveal \
+  --udid 00008140-000000000000001C
+```
+
+Pairing validation does not create a new host pairing or display the iPhone
+Trust dialog. It validates pairing material that already exists in the local
+usbmux daemon. Developer Mode reveal similarly leaves enablement and any device
+restart under the user's control.
 
 ## Direct Remote-Pairing Tunnel
 

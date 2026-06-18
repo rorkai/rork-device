@@ -328,7 +328,7 @@ final class RemotePairingProtocolClient {
             "btAddr": "00:00:00:00:00:00",
             "mac": Data(repeating: 0, count: 6),
             "model": "RorkDevice",
-            "name": "Rork Companion",
+            "name": "rork-device",
             "remotepairing_serial_number": identity.identifier,
         ])
         let identityData = TLV8.encode([
@@ -355,7 +355,7 @@ final class RemotePairingProtocolClient {
             ]),
             kind: "setupManualPairing",
             startsNewSession: false,
-            sendingHost: "Rork Companion"
+            sendingHost: "rork-device"
         )
 
         let response = try TLV8.decode(try await receivePairingData())
