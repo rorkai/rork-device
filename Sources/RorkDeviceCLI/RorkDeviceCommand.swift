@@ -353,9 +353,10 @@ struct Watch: AsyncParsableCommand {
 struct PairingCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pairing",
-        abstract: "Validate the host pairing used by Lockdown.",
+        abstract: "Inspect and configure the host pairing used by Lockdown.",
         subcommands: [
             PairingValidate.self,
+            PairingEnableWireless.self,
         ]
     )
 }
@@ -381,6 +382,27 @@ struct PairingValidate: AsyncParsableCommand {
             expectedDeviceIdentifier: connected.deviceIdentifier
         )
         print("Pairing is valid for \(connected.deviceIdentifier).")
+    }
+}
+
+/// Enables the device's wireless Lockdown route for the paired host.
+///
+/// The command must connect through authenticated Lockdown, normally over USB,
+/// before iOS will accept the wireless preference change.
+struct PairingEnableWireless: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "enable-wireless",
+        abstract: "Allow the paired host to connect over Wi-Fi."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    func run() async throws {
+        let connected = try await connection.connectedSession()
+        try await connected.session.enableWirelessConnections()
+        print(
+            "Wireless Lockdown is enabled for \(connected.deviceIdentifier)."
+        )
     }
 }
 

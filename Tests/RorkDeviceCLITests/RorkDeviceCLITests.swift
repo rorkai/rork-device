@@ -234,6 +234,14 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.udid, "device-1")
     }
 
+    func testPairingEnableWirelessCommandParsesDeviceIdentifier() throws {
+        let command = try PairingEnableWireless.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
+    }
+
     func testPairingValidationRejectsUnexpectedDeviceIdentifier() {
         let info = DeviceInfo(values: [
             "UniqueDeviceID": "device-2",

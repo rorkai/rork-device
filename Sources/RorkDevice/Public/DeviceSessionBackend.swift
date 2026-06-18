@@ -15,6 +15,9 @@ protocol DeviceSessionBackend {
     /// Returns the device information available through this transport.
     func fetchDeviceInfo() async throws -> DeviceInfo
 
+    /// Enables host connections through the device's wireless Lockdown route.
+    func enableWirelessConnections() async throws
+
     /// Opens a service stream that is ready for its service-specific protocol.
     func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection
 
@@ -30,6 +33,13 @@ extension DeviceSessionBackend {
     /// Lockdown-backed sessions do not have a direct RSD service directory.
     var usesRemoteServiceDiscovery: Bool {
         false
+    }
+
+    /// Rejects wireless Lockdown configuration for non-Lockdown backends.
+    func enableWirelessConnections() async throws {
+        throw RorkDeviceError.protocolViolation(
+            "Wireless connections can only be configured through a Lockdown session."
+        )
     }
 
     /// Rejects direct Remote Service Discovery access for non-RSD backends.
@@ -70,6 +80,15 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     /// Reads the default Lockdown value domain into the public device model.
     func fetchDeviceInfo() async throws -> DeviceInfo {
         DeviceInfo(values: try await lockdown.deviceValues())
+    }
+
+    /// Enables the wireless Lockdown route used by local device tunnels.
+    func enableWirelessConnections() async throws {
+        try await lockdown.setValue(
+            true,
+            domain: "com.apple.mobile.wireless_lockdown",
+            key: "EnableWifiConnections"
+        )
     }
 
     /// Requests a service from Lockdown and returns a protocol-ready stream.

@@ -7,7 +7,10 @@ import Foundation
 /// `DeviceClient` and `DeviceSession`; use `LockdownClient` directly when you
 /// need custom Lockdown requests or protocol tests.
 public final class LockdownClient {
+    /// Byte stream carrying framed Lockdown property lists.
     private let connection: DeviceConnection
+
+    /// Client label included in device-side diagnostics.
     private let label: String
 
     /// Creates a Lockdown client over an existing Lockdown connection.
@@ -86,6 +89,37 @@ public final class LockdownClient {
             throw RorkDeviceError.protocolViolation("Lockdown GetValue response is missing Value.")
         }
         return value
+    }
+
+    /// Sets a Lockdown value by optional domain and key.
+    ///
+    /// The value must be representable in an Apple property list. Domain and
+    /// key values are sent as-is so callers can configure newer Lockdown
+    /// settings without waiting for a dedicated wrapper API.
+    ///
+    /// - Parameters:
+    ///   - value: Property-list value written by Lockdown.
+    ///   - domain: Optional Lockdown preference domain.
+    ///   - key: Optional key within the selected domain.
+    func setValue(
+        _ value: Any,
+        domain: String? = nil,
+        key: String? = nil
+    ) async throws {
+        var request: [String: Any] = [
+            "Label": label,
+            "Request": "SetValue",
+            "Value": value,
+        ]
+        if let domain {
+            request["Domain"] = domain
+        }
+        if let key {
+            request["Key"] = key
+        }
+
+        let response = try await self.request(request)
+        try checkResult(response, request: "SetValue")
     }
 
     /// Starts a Lockdown service and returns its port descriptor.
