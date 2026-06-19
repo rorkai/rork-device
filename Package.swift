@@ -22,14 +22,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
         .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.100.0")),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", .upToNextMajor(from: "2.37.1")),
-        .package(
-            url: "https://github.com/apple/swift-certificates.git",
-            from: "1.17.0"
-        ),
-        .package(
-            url: "https://github.com/apple/swift-crypto.git",
-            from: "4.0.0"
-        ),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/attaswift/BigInt.git", .upToNextMajor(from: "5.7.0")),
     ],
     targets: [
