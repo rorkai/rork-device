@@ -356,13 +356,9 @@ final class RemoteXPCConnection: @unchecked Sendable {
         ])
         frame.appendBigEndian(streamIdentifier & 0x7fff_ffff)
         frame.append(payload)
-        await writeCoordinator.acquire()
-        do {
-            try await connection.send(frame)
-            await writeCoordinator.release()
-        } catch {
-            await writeCoordinator.release()
-            throw error
+        let encodedFrame = frame
+        try await writeCoordinator.withExclusiveAccess { [self] in
+            try await connection.send(encodedFrame)
         }
     }
 
@@ -438,8 +434,21 @@ private actor RemoteXPCWriteCoordinator {
     /// Callers waiting to acquire the write slot in arrival order.
     private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Executes an asynchronous operation while owning the transport write slot.
+    ///
+    /// The slot remains reserved across suspension points so another frame
+    /// cannot begin writing to the same byte stream. It is released when the
+    /// operation returns or throws, including cancellation errors.
+    func withExclusiveAccess<Result: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        await acquire()
+        defer { release() }
+        return try await operation()
+    }
+
     /// Suspends until this caller exclusively owns the transport write slot.
-    func acquire() async {
+    private func acquire() async {
         guard isWriteInProgress else {
             isWriteInProgress = true
             return
@@ -450,7 +459,7 @@ private actor RemoteXPCWriteCoordinator {
     }
 
     /// Transfers ownership to the next waiter or marks the slot as available.
-    func release() {
+    private func release() {
         guard !writeWaiters.isEmpty else {
             isWriteInProgress = false
             return

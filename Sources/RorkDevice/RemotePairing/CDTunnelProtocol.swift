@@ -194,14 +194,9 @@ final class CDTunnelConnection: @unchecked Sendable {
             diagnosticName: diagnosticName
         )
         try Task.checkCancellation()
-        await writeCoordinator.acquire()
-        do {
+        try await writeCoordinator.withExclusiveAccess { [self] in
             try Task.checkCancellation()
             try await connection.send(packet)
-            await writeCoordinator.release()
-        } catch {
-            await writeCoordinator.release()
-            throw error
         }
     }
 
@@ -229,8 +224,21 @@ private actor CDTunnelWriteCoordinator {
     /// Callers waiting to acquire the write slot in arrival order.
     private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Executes an asynchronous operation while owning the transport write slot.
+    ///
+    /// The slot remains reserved across suspension points so another packet
+    /// cannot begin writing to the same byte stream. It is released when the
+    /// operation returns or throws, including cancellation errors.
+    func withExclusiveAccess<Result: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        await acquire()
+        defer { release() }
+        return try await operation()
+    }
+
     /// Suspends until this caller exclusively owns the transport write slot.
-    func acquire() async {
+    private func acquire() async {
         guard isWriteInProgress else {
             isWriteInProgress = true
             return
@@ -242,7 +250,7 @@ private actor CDTunnelWriteCoordinator {
     }
 
     /// Transfers ownership to the next waiter or marks the slot as available.
-    func release() {
+    private func release() {
         guard !writeWaiters.isEmpty else {
             isWriteInProgress = false
             return
