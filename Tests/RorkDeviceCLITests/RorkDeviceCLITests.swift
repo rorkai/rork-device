@@ -331,6 +331,15 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("export"))
         XCTAssertTrue(help.contains("remove"))
         XCTAssertTrue(help.contains("validate"))
+        XCTAssertTrue(help.contains("enable-wireless"))
+    }
+
+    func testPairingEnableWirelessCommandParsesDeviceIdentifier() throws {
+        let command = try PairingEnableWireless.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
     }
 
     func testPairingValidationRejectsUnexpectedDeviceIdentifier() {

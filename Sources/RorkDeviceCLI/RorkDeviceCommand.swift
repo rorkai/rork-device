@@ -446,8 +446,8 @@ private struct DeviceEventOutput: Encodable {
 
 /// Groups lifecycle operations for the Lockdown pairing stored by local usbmux.
 ///
-/// These commands establish, validate, export, and remove host trust
-/// explicitly.
+/// These commands establish, validate, export, and remove host trust, and
+/// configure the device's wireless Lockdown route.
 struct PairingCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pairing",
@@ -457,6 +457,7 @@ struct PairingCommand: AsyncParsableCommand {
             PairingExport.self,
             PairingRemove.self,
             PairingValidate.self,
+            PairingEnableWireless.self,
         ]
     )
 }
@@ -627,6 +628,27 @@ struct PairingValidate: AsyncParsableCommand {
             expectedDeviceIdentifier: connected.deviceIdentifier
         )
         print("Pairing is valid for \(connected.deviceIdentifier).")
+    }
+}
+
+/// Enables the device's wireless Lockdown route for the paired host.
+///
+/// The command must connect through authenticated Lockdown, normally over USB,
+/// before iOS will accept the wireless preference change.
+struct PairingEnableWireless: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "enable-wireless",
+        abstract: "Allow the paired host to connect over Wi-Fi."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    func run() async throws {
+        let connected = try await connection.connectedSession()
+        try await connected.session.enableWirelessConnections()
+        print(
+            "Wireless Lockdown is enabled for \(connected.deviceIdentifier)."
+        )
     }
 }
 

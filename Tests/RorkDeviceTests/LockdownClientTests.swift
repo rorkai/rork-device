@@ -108,6 +108,33 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertEqual(values["DeviceName"] as? String, "Test Phone")
     }
 
+    func testSetValueSendsLockdownRequest() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Result": "Success",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection, label: "tests")
+
+        try await client.setValue(
+            true,
+            domain: "com.apple.mobile.wireless_lockdown",
+            key: "EnableWifiConnections"
+        )
+
+        let request = try XCTUnwrap(decodedSentPlist(connection.sent[0]))
+        XCTAssertEqual(request["Request"] as? String, "SetValue")
+        XCTAssertEqual(request["Label"] as? String, "tests")
+        XCTAssertEqual(
+            request["Domain"] as? String,
+            "com.apple.mobile.wireless_lockdown"
+        )
+        XCTAssertEqual(
+            request["Key"] as? String,
+            "EnableWifiConnections"
+        )
+        XCTAssertEqual(request["Value"] as? Bool, true)
+    }
+
     func testStartServiceParsesServiceDescriptor() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Result": "Success",
@@ -280,6 +307,7 @@ final class LockdownClientTests: XCTestCase {
     }
 }
 
+/// Creates a complete synthetic Lockdown pairing record.
 private func pairingRecordData() throws -> Data {
     try PropertyListSerialization.data(
         fromPropertyList: [
@@ -297,6 +325,7 @@ private func pairingRecordData() throws -> Data {
     )
 }
 
+/// Decodes one framed property-list request captured by a fake connection.
 private func decodedSentPlist(_ data: Data) throws -> [String: Any]? {
     let payload = data.dropFirst(4)
     return try PropertyListSerialization.propertyList(from: Data(payload), options: [], format: nil) as? [String: Any]

@@ -19,6 +19,9 @@ protocol DeviceSessionBackend {
     /// Lockdown AMFI value domain.
     func isDeveloperModeEnabled() async throws -> Bool
 
+    /// Enables host connections through the device's wireless Lockdown route.
+    func enableWirelessConnections() async throws
+
     /// Opens a service stream that is ready for its service-specific protocol.
     func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection
 
@@ -40,6 +43,13 @@ extension DeviceSessionBackend {
     func isDeveloperModeEnabled() async throws -> Bool {
         throw RorkDeviceError.protocolViolation(
             "Developer Mode status requires a Lockdown session."
+        )
+    }
+
+    /// Rejects wireless Lockdown configuration for non-Lockdown backends.
+    func enableWirelessConnections() async throws {
+        throw RorkDeviceError.protocolViolation(
+            "Wireless connections can only be configured through a Lockdown session."
         )
     }
 
@@ -86,6 +96,15 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     /// Reads Developer Mode from Lockdown's AMFI value domain.
     func isDeveloperModeEnabled() async throws -> Bool {
         try await lockdown.developerModeStatus()
+    }
+
+    /// Enables the wireless Lockdown route used by local device tunnels.
+    func enableWirelessConnections() async throws {
+        try await lockdown.setValue(
+            true,
+            domain: "com.apple.mobile.wireless_lockdown",
+            key: "EnableWifiConnections"
+        )
     }
 
     /// Requests a service from Lockdown and returns a protocol-ready stream.

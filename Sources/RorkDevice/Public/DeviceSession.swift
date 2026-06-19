@@ -65,6 +65,21 @@ public final class DeviceSession {
         try await backend.isDeveloperModeEnabled()
     }
 
+    /// Enables host connections through the device's wireless Lockdown route.
+    ///
+    /// This is the programmatic equivalent of enabling "Show this iPhone when
+    /// on Wi-Fi" in Finder. It is required by local VPN-based workflows that
+    /// expose the device's Lockdown endpoint back to an app on the same iPhone.
+    ///
+    /// The session must use an authenticated Lockdown connection, normally over
+    /// USB. Remote Service Discovery sessions cannot change this device setting.
+    ///
+    /// - Throws: A Lockdown error when iOS rejects the setting, or a protocol
+    ///   error when the session is not backed by Lockdown.
+    public func enableWirelessConnections() async throws {
+        try await backend.enableWirelessConnections()
+    }
+
     /// Makes the Developer Mode setting visible in the device's Settings app.
     ///
     /// This operation does not enable Developer Mode or restart the device. It
