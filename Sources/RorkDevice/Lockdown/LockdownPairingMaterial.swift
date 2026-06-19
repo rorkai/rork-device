@@ -1,6 +1,6 @@
+import CryptoExtras
 import Foundation
 import X509
-import _CryptoExtras
 
 /// Generates the certificate chain and private keys used by Lockdown pairing.
 ///

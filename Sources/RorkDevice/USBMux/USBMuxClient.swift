@@ -51,10 +51,9 @@ public enum USBMuxDeviceEvent: Equatable, Sendable {
 /// A client can be reused for independent usbmux control requests. Each request
 /// opens its own daemon connection, while `deviceEvents()` owns one long-lived
 /// listen connection for the lifetime of the returned async sequence.
-public final class USBMuxClient {
+public final class USBMuxClient: Sendable {
     private let endpoint: USBMuxEndpoint
-    private let tagLock = NSLock()
-    private var nextTag: UInt32 = 1
+    private let requestTagGenerator = USBMuxRequestTagGenerator()
 
     /// Creates a usbmux client for a local or forwarded endpoint.
     ///
@@ -355,7 +354,7 @@ public final class USBMuxClient {
 
     /// Sends a usbmux request over an existing connection.
     private func request(_ dictionary: [String: Any], connection: DeviceConnection) async throws -> [String: Any] {
-        let tag = nextRequestTag()
+        let tag = await requestTagGenerator.next()
         let payload = try PropertyListCodec.encode(dictionary, format: .xml)
         try await connection.send(try USBMuxPacket(tag: tag, payload: payload).encoded())
         return try await readResponseDictionary(from: connection)
@@ -380,12 +379,20 @@ public final class USBMuxClient {
         }
         return response
     }
+}
 
-    /// Returns the next non-zero request tag.
-    private func nextRequestTag() -> UInt32 {
-        tagLock.lock()
-        defer { tagLock.unlock() }
+/// Allocates nonzero usbmux request tags across concurrent control operations.
+///
+/// Every control request owns a separate daemon connection, so tag allocation
+/// is the only mutable state shared by `USBMuxClient` operations. Actor
+/// isolation keeps that state race-free without placing the entire client
+/// behind one executor.
+private actor USBMuxRequestTagGenerator {
+    /// Tag reserved for the next request.
+    private var nextTag: UInt32 = 1
 
+    /// Returns one tag and advances the sequence, skipping zero after overflow.
+    func next() -> UInt32 {
         let tag = nextTag
         nextTag &+= 1
         if nextTag == 0 {
@@ -401,7 +408,11 @@ public final class USBMuxClient {
 /// it does not automatically unblock a transport read. This helper lets the
 /// termination handler close the socket even while the task is suspended in
 /// `receive(exactly:)`.
-private final class USBMuxListenConnectionState {
+///
+/// The producer task and termination handler may access this state concurrently.
+/// The lock protects connection ownership and cancellation state, and socket
+/// closure is the only operation performed outside that critical section.
+private final class USBMuxListenConnectionState: @unchecked Sendable {
     private let lock = NSLock()
     private var connection: DeviceConnection?
     private var cancelled = false

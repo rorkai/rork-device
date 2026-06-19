@@ -267,15 +267,22 @@ private final class SecureSessionStartTLSHandler: ChannelInboundHandler {
             capacity: SecureSessionTestServer.upgradeResponse.count
         )
         response.writeBytes(SecureSessionTestServer.upgradeResponse)
+        let loopBoundContext = context.loopBound
+        let loopBoundSelf = NIOLoopBound(
+            self,
+            eventLoop: context.eventLoop
+        )
         context.writeAndFlush(wrapOutboundOut(response)).whenComplete { result in
+            let context = loopBoundContext.value
+            let handler = loopBoundSelf.value
             switch result {
             case .success:
                 do {
                     try context.pipeline.syncOperations.addHandler(
-                        NIOSSLServerHandler(context: self.tlsContext),
+                        NIOSSLServerHandler(context: handler.tlsContext),
                         position: .first
                     )
-                    self.isSecure = true
+                    handler.isSecure = true
                 } catch {
                     context.fireErrorCaught(error)
                     context.close(promise: nil)

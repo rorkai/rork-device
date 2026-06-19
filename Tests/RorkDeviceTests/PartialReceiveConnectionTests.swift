@@ -143,7 +143,10 @@ final class PartialReceiveConnectionTests: XCTestCase {
 }
 
 /// One-shot TCP server that accepts a single client and sends fixed bytes.
-private final class TCPDataServer {
+///
+/// The detached accept thread reads immutable socket and payload state.
+/// `lock` protects the only mutable lifecycle flag shared with `stop()`.
+private final class TCPDataServer: @unchecked Sendable {
     /// Bound TCP port in host byte order.
     let port: UInt16
 
@@ -239,7 +242,10 @@ private final class TCPDataServer {
 }
 
 /// One-shot Unix-domain server that accepts a single client and sends fixed bytes.
-private final class UnixDataServer {
+///
+/// The detached accept thread reads immutable socket, path, and payload state.
+/// `lock` protects the only mutable lifecycle flag shared with `stop()`.
+private final class UnixDataServer: @unchecked Sendable {
     /// Filesystem path for the temporary Unix-domain socket.
     let path: String
 
@@ -372,7 +378,10 @@ private func assertTransportError(
 }
 
 /// Scripted TCP server that optionally records a request, then streams chunks.
-private final class TCPScriptedServer {
+///
+/// The detached accept thread reads immutable script configuration. `lock`
+/// protects the recorded request and lifecycle state shared with the test task.
+private final class TCPScriptedServer: @unchecked Sendable {
     /// Bound TCP port in host byte order.
     let port: UInt16
 

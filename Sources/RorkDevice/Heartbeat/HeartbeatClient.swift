@@ -82,9 +82,14 @@ public final class HeartbeatClient {
 /// such as AFC uploads or InstallationProxy installs. The responder owns the
 /// heartbeat service connection and automatically replies to each heartbeat
 /// message until `stop()` is called or the object is released.
-public final class DeviceHeartbeat {
-    /// Low-level heartbeat protocol client.
-    private let client: HeartbeatClient
+///
+/// The responder may be retained across tasks. It performs protocol reads and
+/// replies on one internal task, while `stop()` may be called from any task to
+/// cancel that work and close the connection. Repeated calls to `stop()` are
+/// safe.
+public final class DeviceHeartbeat: @unchecked Sendable {
+    /// Sendable worker that owns the heartbeat protocol client.
+    private let worker: HeartbeatResponseWorker
 
     /// Protects lifecycle state that can be touched by `stop()` and startup.
     private let lock = NSLock()
@@ -97,7 +102,7 @@ public final class DeviceHeartbeat {
 
     /// Creates a retained heartbeat responder around a protocol client.
     init(client: HeartbeatClient) {
-        self.client = client
+        worker = HeartbeatResponseWorker(client: client)
     }
 
     deinit {
@@ -121,13 +126,13 @@ public final class DeviceHeartbeat {
         lock.unlock()
 
         task?.cancel()
-        client.close()
+        worker.close()
     }
 
     /// Waits for the first heartbeat message, then starts the response loop.
     func start(firstMessageTimeout: Duration) async throws {
-        let firstMessageTask = Task {
-            try await client.respondToNextMessage()
+        let firstMessageTask = Task { [worker] in
+            try await worker.respondToNextMessage()
         }
 
         do {
@@ -136,24 +141,24 @@ public final class DeviceHeartbeat {
             }
         } catch {
             firstMessageTask.cancel()
-            client.close()
+            worker.close()
             throw error
         }
 
-        let task = Task { [client] in
+        let task = Task { [worker] in
             while !Task.isCancelled {
                 do {
-                    _ = try await client.respondToNextMessage()
+                    _ = try await worker.respondToNextMessage()
                 } catch {
                     break
                 }
             }
-            client.close()
+            worker.close()
         }
 
         guard setResponseTaskIfRunning(task) else {
             task.cancel()
-            client.close()
+            worker.close()
             return
         }
     }
@@ -170,14 +175,40 @@ public final class DeviceHeartbeat {
     }
 }
 
+/// Task-safe owner of the heartbeat service connection.
+///
+/// Exactly one startup or response-loop task calls
+/// `respondToNextMessage()`. The lifecycle owner may call `close()` from
+/// another executor to interrupt that task, matching the thread-safe,
+/// idempotent closure contract of package-created device connections.
+private final class HeartbeatResponseWorker: @unchecked Sendable {
+    /// Protocol client used exclusively by the response task.
+    private let client: HeartbeatClient
+
+    /// Creates a worker that takes responsibility for the client lifecycle.
+    init(client: HeartbeatClient) {
+        self.client = client
+    }
+
+    /// Receives and answers one heartbeat message.
+    func respondToNextMessage() async throws -> Duration {
+        try await client.respondToNextMessage()
+    }
+
+    /// Closes the service connection to interrupt pending protocol work.
+    func close() {
+        client.close()
+    }
+}
+
 /// Runs an async operation with a heartbeat-specific timeout.
 ///
 /// Heartbeat startup should fail promptly if the device never sends the initial
 /// interval message. This helper races the operation against `Task.sleep` and
 /// cancels the losing task.
-private func withHeartbeatTimeout<T>(
+private func withHeartbeatTimeout<T: Sendable>(
     _ timeout: Duration,
-    operation: @escaping () async throws -> T
+    operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
         group.addTask {

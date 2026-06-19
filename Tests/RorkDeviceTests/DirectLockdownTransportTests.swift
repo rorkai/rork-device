@@ -41,7 +41,11 @@ final class DirectLockdownTransportTests: XCTestCase {
     }
 }
 
-private final class OneShotTCPServer {
+/// Thread-safe one-shot server used by direct Lockdown transport tests.
+///
+/// The detached accept thread shares the listening descriptor with `stop()`.
+/// Its only mutable result and lifecycle state are protected by `lock`.
+private final class OneShotTCPServer: @unchecked Sendable {
     let port: UInt16
 
     private let fd: Int32

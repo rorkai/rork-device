@@ -1,8 +1,8 @@
+import CryptoExtras
 import Foundation
 import NIOSSL
 import XCTest
 import X509
-import _CryptoExtras
 @testable import RorkDevice
 
 final class LockdownPairingMaterialTests: XCTestCase {

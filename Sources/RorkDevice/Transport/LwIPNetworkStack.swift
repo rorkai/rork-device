@@ -92,7 +92,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
         to remoteAddress: String,
         port: UInt16,
         timeout: Duration
-    ) async throws -> DeviceConnection {
+    ) async throws -> some DeviceConnection & Sendable {
         guard port > 0 else {
             throw RorkDeviceError.invalidInput(
                 "CoreDevice userspace network requires a nonzero device port."

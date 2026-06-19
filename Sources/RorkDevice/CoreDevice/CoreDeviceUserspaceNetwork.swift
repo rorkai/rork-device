@@ -6,6 +6,11 @@ import Foundation
 /// userspace TCP backend, and exposes device service ports through the standard
 /// `DeviceTransport` API. It does not create a system network interface or
 /// require elevated privileges.
+///
+/// The network may be shared across tasks and can open independent device
+/// service connections concurrently. Packet forwarding is managed internally.
+/// `close()` may be called from any task and is idempotent; closing the network
+/// ends its packet pumps and invalidates active and future service connections.
 public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Sendable {
     /// Network parameters negotiated by the owned CoreDevice tunnel.
     public let configuration: CoreDeviceTunnelConfiguration
@@ -94,9 +99,9 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
             outbound.continuation.yield(packet)
         }
 
-        outboundTask = Task { [weak self, tunnel] in
+        outboundTask = Task { [weak self, tunnel, stream = outbound.stream] in
             do {
-                for await packet in outbound.stream {
+                for await packet in stream {
                     try Task.checkCancellation()
                     try await tunnel.sendPacket(packet)
                 }
@@ -175,7 +180,7 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
 }
 
 /// Packet-tunnel operations required by the userspace TCP/IP network.
-private protocol CoreDevicePacketTunnel: AnyObject {
+private protocol CoreDevicePacketTunnel: AnyObject, Sendable {
     /// Network parameters negotiated for the tunnel.
     var configuration: CoreDeviceTunnelConfiguration { get }
 

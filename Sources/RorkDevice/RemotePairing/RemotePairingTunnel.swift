@@ -12,7 +12,11 @@ import Network
 ///
 /// Keep the instance alive while using RSD-backed `DeviceSession` connections.
 /// Closing the tunnel invalidates every service socket routed through it.
-public final class RemotePairingTunnel {
+///
+/// The tunnel may be shared across tasks, and concurrent packet writes are
+/// serialized. Call `receivePacket()` from at most one task at a time.
+/// `close()` may be called from any task and is idempotent.
+public final class RemotePairingTunnel: @unchecked Sendable {
     /// Whether the default transport can establish a remote-pairing tunnel.
     ///
     /// The connection API remains available in builds without a compatible

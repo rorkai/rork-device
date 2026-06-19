@@ -175,8 +175,8 @@ final class CDTunnelConnection: @unchecked Sendable {
     /// Human-readable tunnel name included in packet validation failures.
     private let diagnosticName: String
 
-    /// Writer that prevents suspended sends from overlapping on the stream.
-    private let writer: CDTunnelPacketWriter
+    /// Coordinator that prevents suspended sends from overlapping on the stream.
+    private let writeCoordinator = CDTunnelWriteCoordinator()
 
     /// Creates a packet connection that owns the supplied byte stream.
     init(
@@ -185,7 +185,6 @@ final class CDTunnelConnection: @unchecked Sendable {
     ) {
         self.connection = connection
         self.diagnosticName = diagnosticName
-        writer = CDTunnelPacketWriter(connection: connection)
     }
 
     /// Validates and sends one complete IPv6 packet.
@@ -194,7 +193,11 @@ final class CDTunnelConnection: @unchecked Sendable {
             packet,
             diagnosticName: diagnosticName
         )
-        try await writer.send(packet)
+        try Task.checkCancellation()
+        try await writeCoordinator.withExclusiveAccess { [self] in
+            try Task.checkCancellation()
+            try await connection.send(packet)
+        }
     }
 
     /// Receives one complete IPv6 packet using its header-declared length.
@@ -208,39 +211,34 @@ final class CDTunnelConnection: @unchecked Sendable {
     }
 }
 
-/// Serializes CDTunnel packet writes across actor reentrancy.
+/// Coordinates exclusive access to one CDTunnel transport write path.
 ///
-/// Actor isolation alone does not preserve stream framing because a suspended
-/// write allows another actor task to begin. The explicit write slot keeps each
-/// complete IPv6 packet contiguous on the underlying connection.
-private actor CDTunnelPacketWriter {
-    /// Byte stream shared by all packet senders.
-    private let connection: DeviceConnection
-
+/// The coordinator owns no transport object. It only transfers one logical
+/// write slot at a time, allowing `CDTunnelConnection` to retain the
+/// non-Sendable byte stream while still keeping complete IPv6 packets
+/// contiguous across suspension points.
+private actor CDTunnelWriteCoordinator {
     /// Whether a caller currently owns the write slot.
     private var isWriteInProgress = false
 
     /// Callers waiting to acquire the write slot in arrival order.
     private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
-    /// Creates a writer for the supplied tunnel stream.
-    init(connection: DeviceConnection) {
-        self.connection = connection
-    }
-
-    /// Sends one packet after all earlier writes complete.
-    func send(_ packet: Data) async throws {
-        try Task.checkCancellation()
-        await acquireWriteSlot()
-        defer {
-            releaseWriteSlot()
-        }
-        try Task.checkCancellation()
-        try await connection.send(packet)
+    /// Executes an asynchronous operation while owning the transport write slot.
+    ///
+    /// The slot remains reserved across suspension points so another packet
+    /// cannot begin writing to the same byte stream. It is released when the
+    /// operation returns or throws, including cancellation errors.
+    func withExclusiveAccess<Result: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        await acquire()
+        defer { release() }
+        return try await operation()
     }
 
     /// Suspends until this caller exclusively owns the transport write slot.
-    private func acquireWriteSlot() async {
+    private func acquire() async {
         guard isWriteInProgress else {
             isWriteInProgress = true
             return
@@ -252,7 +250,7 @@ private actor CDTunnelPacketWriter {
     }
 
     /// Transfers ownership to the next waiter or marks the slot as available.
-    private func releaseWriteSlot() {
+    private func release() {
         guard !writeWaiters.isEmpty else {
             isWriteInProgress = false
             return

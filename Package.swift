@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 
 import PackageDescription
 
@@ -22,14 +22,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
         .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.100.0")),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", .upToNextMajor(from: "2.37.1")),
-        .package(
-            url: "https://github.com/apple/swift-certificates.git",
-            "1.10.0"..<"1.11.0"
-        ),
-        .package(
-            url: "https://github.com/apple/swift-crypto.git",
-            "3.12.5"..<"3.13.0"
-        ),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/attaswift/BigInt.git", .upToNextMajor(from: "5.7.0")),
     ],
     targets: [
@@ -79,7 +73,7 @@ let package = Package(
                 .product(name: "NIOTLS", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "X509", package: "swift-certificates"),
-                .product(name: "_CryptoExtras", package: "swift-crypto"),
+                .product(name: "CryptoExtras", package: "swift-crypto"),
             ]
         ),
         .executableTarget(
@@ -97,7 +91,7 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "X509", package: "swift-certificates"),
-                .product(name: "_CryptoExtras", package: "swift-crypto"),
+                .product(name: "CryptoExtras", package: "swift-crypto"),
             ],
             resources: [
                 .process("Fixtures"),
@@ -107,5 +101,6 @@ let package = Package(
             name: "RorkDeviceCLITests",
             dependencies: ["RorkDeviceCLI"]
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )
