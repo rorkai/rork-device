@@ -257,6 +257,24 @@ final class RemoteXPCConnectionTests: XCTestCase {
         XCTAssertEqual(identifiers, [1, 2])
     }
 
+    func testConcurrentSendsDoNotOverlapTransportWrites() async throws {
+        let connection = OverlapRejectingRemoteXPCConnection(
+            inbound: try remoteXPCSessionHandshakeInbound()
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for value in 0..<20 {
+                group.addTask {
+                    try await remoteXPC.send(.uint64(UInt64(value)))
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        XCTAssertEqual(connection.maximumConcurrentSendCount, 1)
+    }
+
     func testRejectsConcurrentReceivesOnOneConnection() async throws {
         let receiveBlocked = expectation(
             description: "The first application receive is suspended."
@@ -285,6 +303,101 @@ final class RemoteXPCConnectionTests: XCTestCase {
 
         connection.release()
         _ = try? await first.value
+    }
+}
+
+/// Test transport that rejects overlapping writes.
+///
+/// RemoteXPC permits concurrent callers but must deliver each encoded HTTP/2
+/// frame through the underlying byte stream only after the previous write has
+/// completed. A short suspension makes actor reentrancy deterministic without
+/// depending on frame contents or task scheduling order.
+private final class OverlapRejectingRemoteXPCConnection:
+    DeviceConnection,
+    @unchecked Sendable
+{
+    /// Protects stream bytes and concurrent-write accounting.
+    private let lock = NSLock()
+
+    /// Inbound bytes consumed by exact reads.
+    private var inbound: Data
+
+    /// Number of transport writes that have not completed.
+    private var activeSendCount = 0
+
+    /// Highest number of writes observed at the same time.
+    private var recordedMaximumConcurrentSendCount = 0
+
+    /// Whether local closure has made future operations invalid.
+    private var isClosed = false
+
+    /// Thread-safe snapshot of the highest concurrent-write count.
+    var maximumConcurrentSendCount: Int {
+        lock.withLock { recordedMaximumConcurrentSendCount }
+    }
+
+    /// Creates a stream with the supplied RemoteXPC handshake replies.
+    init(inbound: Data) {
+        self.inbound = inbound
+    }
+
+    /// Rejects a write when another write is still suspended.
+    func send(_: Data) async throws {
+        let overlapsExistingSend = try lock.withLock {
+            try ensureOpen()
+            activeSendCount += 1
+            recordedMaximumConcurrentSendCount = max(
+                recordedMaximumConcurrentSendCount,
+                activeSendCount
+            )
+            return activeSendCount > 1
+        }
+        guard !overlapsExistingSend else {
+            lock.withLock {
+                activeSendCount -= 1
+            }
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC transport writes overlapped."
+            )
+        }
+
+        defer {
+            lock.withLock {
+                activeSendCount -= 1
+            }
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    /// Reads exactly the requested bytes from the prepared handshake stream.
+    func receive(exactly count: Int) async throws -> Data {
+        try lock.withLock {
+            try ensureOpen()
+            guard inbound.count >= count else {
+                throw RorkDeviceError.transport(
+                    "Overlap-rejecting RemoteXPC connection underflow."
+                )
+            }
+            let data = Data(inbound.prefix(count))
+            inbound.removeFirst(count)
+            return data
+        }
+    }
+
+    /// Closes the test stream.
+    func close() {
+        lock.withLock {
+            isClosed = true
+        }
+    }
+
+    /// Rejects operations after local closure.
+    private func ensureOpen() throws {
+        guard !isClosed else {
+            throw RorkDeviceError.transport(
+                "Overlap-rejecting RemoteXPC connection is closed."
+            )
+        }
     }
 }
 

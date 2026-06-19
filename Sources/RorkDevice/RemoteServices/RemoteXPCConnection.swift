@@ -7,7 +7,12 @@ import Foundation
 /// return feature responses on the device-initiated reply stream. Session
 /// startup exchanges acknowledgements on both streams before either becomes
 /// available to service-specific code.
-final class RemoteXPCConnection {
+///
+/// Callers may send from multiple tasks while one task owns the receive path.
+/// A lock protects message and receive state, and an actor serializes complete
+/// HTTP/2 writes. Instances only wrap package-owned connections whose send,
+/// receive, and close implementations support that full-duplex access pattern.
+final class RemoteXPCConnection: @unchecked Sendable {
     /// Logical RemoteXPC streams and their fixed HTTP/2 identifiers.
     enum Stream {
         /// Host-initiated requests and their corresponding responses.
@@ -89,8 +94,8 @@ final class RemoteXPCConnection {
     /// Connected byte stream carrying the HTTP/2 session.
     private let connection: DeviceConnection
 
-    /// Serializes complete HTTP/2 frame writes on the underlying byte stream.
-    private let writer: RemoteXPCFrameWriter
+    /// Coordinates complete HTTP/2 frame writes on the underlying byte stream.
+    private let writeCoordinator = RemoteXPCWriteCoordinator()
 
     /// Protects message-identifier allocation and receive-operation ownership.
     private let stateLock = NSLock()
@@ -107,7 +112,6 @@ final class RemoteXPCConnection {
     /// Creates a protocol driver without starting the RemoteXPC handshake.
     private init(connection: DeviceConnection) {
         self.connection = connection
-        writer = RemoteXPCFrameWriter(connection: connection)
     }
 
     /// Opens the HTTP/2 streams and sends the RemoteXPC channel handshake.
@@ -352,7 +356,14 @@ final class RemoteXPCConnection {
         ])
         frame.appendBigEndian(streamIdentifier & 0x7fff_ffff)
         frame.append(payload)
-        try await writer.send(frame)
+        await writeCoordinator.acquire()
+        do {
+            try await connection.send(frame)
+            await writeCoordinator.release()
+        } catch {
+            await writeCoordinator.release()
+            throw error
+        }
     }
 
     /// Reads one HTTP/2 frame and removes DATA padding before returning it.
@@ -413,23 +424,37 @@ final class RemoteXPCConnection {
     }
 }
 
-/// Serial writer for HTTP/2 frames sharing one RemoteXPC byte stream.
+/// Coordinates exclusive access to one RemoteXPC transport write path.
 ///
 /// A `DeviceConnection` guarantees complete-buffer writes but does not require
-/// implementations to coordinate concurrent callers. Actor isolation preserves
-/// frame boundaries for application traffic and protocol acknowledgements
-/// without blocking the independent receive path.
-private actor RemoteXPCFrameWriter {
-    /// Connection that receives already encoded HTTP/2 frames.
-    private let connection: DeviceConnection
+/// implementations to coordinate concurrent callers. This actor owns only the
+/// write-slot state, leaving the non-Sendable connection in
+/// `RemoteXPCConnection` while ensuring each complete HTTP/2 frame finishes
+/// before another write begins.
+private actor RemoteXPCWriteCoordinator {
+    /// Whether a caller currently owns the write slot.
+    private var isWriteInProgress = false
 
-    /// Creates a writer for one RemoteXPC session.
-    init(connection: DeviceConnection) {
-        self.connection = connection
+    /// Callers waiting to acquire the write slot in arrival order.
+    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Suspends until this caller exclusively owns the transport write slot.
+    func acquire() async {
+        guard isWriteInProgress else {
+            isWriteInProgress = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            writeWaiters.append(continuation)
+        }
     }
 
-    /// Sends one complete frame after prior writes have finished.
-    func send(_ frame: Data) async throws {
-        try await connection.send(frame)
+    /// Transfers ownership to the next waiter or marks the slot as available.
+    func release() {
+        guard !writeWaiters.isEmpty else {
+            isWriteInProgress = false
+            return
+        }
+        writeWaiters.removeFirst().resume()
     }
 }

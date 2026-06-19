@@ -221,7 +221,8 @@ public final class DeviceClient {
     ///
     /// - Returns: Async sequence of high-level device visibility events.
     public func deviceEvents() -> AsyncThrowingStream<DeviceEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let usbmuxClient = self.usbmuxClient
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     for try await event in usbmuxClient.deviceEvents() {

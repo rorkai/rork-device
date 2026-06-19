@@ -2,7 +2,12 @@ import Darwin
 import Foundation
 @testable import RorkDevice
 
-final class FakeUSBMuxDaemon {
+/// Thread-safe socket daemon used to exercise usbmux and Lockdown workflows.
+///
+/// Detached accept and client threads share this instance. Immutable protocol
+/// fixtures never change after initialization, while the lock protects every
+/// lifecycle flag and recorded request exposed to test assertions.
+final class FakeUSBMuxDaemon: @unchecked Sendable {
     let port: UInt16
 
     private let serverFD: Int32
