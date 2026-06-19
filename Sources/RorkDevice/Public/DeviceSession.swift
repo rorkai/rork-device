@@ -53,6 +53,18 @@ public final class DeviceSession {
         try await backend.fetchDeviceInfo()
     }
 
+    /// Returns whether Developer Mode is enabled on the connected device.
+    ///
+    /// The query reads the AMFI Lockdown value used by iOS itself. It is
+    /// passive and does not reveal or change the setting.
+    ///
+    /// - Returns: `true` when the device reports Developer Mode as enabled.
+    /// - Throws: A Lockdown or transport error, or a protocol error when this
+    ///   session route cannot access Lockdown value domains.
+    public func isDeveloperModeEnabled() async throws -> Bool {
+        try await backend.isDeveloperModeEnabled()
+    }
+
     /// Enables host connections through the device's wireless Lockdown route.
     ///
     /// This is the programmatic equivalent of enabling "Show this iPhone when

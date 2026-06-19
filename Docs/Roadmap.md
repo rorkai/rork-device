@@ -120,8 +120,6 @@ USB-connected device:
 
 Current limitations:
 
-- The package reads existing Lockdown pairing records but does not yet create,
-  validate, or remove the host pairing established by the iPhone Trust dialog.
 - The embedded userspace backend currently exposes IPv6 TCP streams. It does
   not provide a system packet interface, UDP sockets, or general IP routing.
 - The loopback gateway preamble is intentionally compatible with existing
@@ -130,12 +128,42 @@ Current limitations:
 - The long-lived TLS-PSK packet tunnel still uses the Apple transport backend;
   Windows and Linux need additional backends.
 
+## 0.6.0: Host Pairing And Passive Diagnostics
+
+This release completes the local usbmux and Lockdown operations needed by
+desktop device-management applications:
+
+- Preserve all usbmux routes and normalized USB or network metadata in
+  machine-readable device lists.
+- Stream attach and detach events as newline-delimited JSON.
+- Generate the RSA certificate hierarchy and private keys required by the
+  Lockdown Pair request.
+- Keep one candidate host identity stable while polling the device-side Trust
+  decision.
+- Save accepted pairing records through usbmux and preserve device-issued
+  escrow material.
+- Export complete pairing records as property lists without narrowing unknown
+  fields.
+- Validate existing trust without displaying a new Trust dialog.
+- Revoke a host identity from the device before deleting its local usbmux
+  pairing record.
+- Read Developer Mode status passively and retain the explicit reveal command.
+- Cover certificate generation, pairing retries, ordered trust removal, record
+  persistence, event output, and CLI contracts with deterministic protocol
+  tests alongside the existing physical-device checks.
+
+Current limitations:
+
+- Network discovery is limited to routes reported by local usbmux; Bonjour
+  Wi-Fi discovery is not implemented independently.
+- Windows and Linux support still requires portable usbmux discovery and
+  remote-pairing TLS backends.
+
 ## Future Milestones
 
 The next milestones should expand service coverage without weakening the public
 API boundaries:
 
-- Lockdown pairing creation, validation, unpairing, and pairing-record storage.
 - Portable cryptography and TLS-PSK transports for remote pairing on additional
   host platforms.
 - Packet-interface adapters for supported host environments.

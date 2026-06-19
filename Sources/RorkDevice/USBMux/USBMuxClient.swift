@@ -90,6 +90,38 @@ public final class USBMuxClient {
         }
     }
 
+    /// Reads the host identifier maintained by the local usbmux daemon.
+    ///
+    /// Lockdown pairing records include this value as `SystemBUID`. It belongs
+    /// to the host usbmux installation rather than to an individual device and
+    /// must be read before creating new pairing material.
+    ///
+    /// - Returns: Nonempty host system BUID.
+    /// - Throws: A transport or protocol error when usbmux cannot provide a
+    ///   valid identifier.
+    public func systemBUID() async throws -> String {
+        let response = try await request([
+            "MessageType": "ReadBUID",
+            "ClientVersionString": "rork-device",
+            "ProgName": "rorkdevice",
+            "kLibUSBMuxVersion": 3,
+        ])
+        guard let value = response["BUID"] as? String else {
+            throw RorkDeviceError.protocolViolation(
+                "usbmux ReadBUID response was missing BUID."
+            )
+        }
+        let systemBUID = value.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !systemBUID.isEmpty else {
+            throw RorkDeviceError.protocolViolation(
+                "usbmux ReadBUID response contained an empty BUID."
+            )
+        }
+        return systemBUID
+    }
+
     /// Reads the host pairing record stored by the local usbmux daemon.
     ///
     /// usbmux stores pairing records by device identifier and returns the
@@ -148,6 +180,59 @@ public final class USBMuxClient {
         }
         return try PairingRecord.parse(
             PropertyListCodec.encode(dictionary, format: .binary)
+        )
+    }
+
+    /// Saves a complete Lockdown pairing record through the usbmux daemon.
+    ///
+    /// usbmux owns the platform-specific storage location and permissions for
+    /// host pairing material. Saving through the daemon keeps later Lockdown
+    /// clients, Finder, and other host tools consistent with the newly trusted
+    /// identity.
+    ///
+    /// - Parameter pairingRecord: Pairing material whose `udid` becomes the
+    ///   usbmux record identifier.
+    /// - Throws: A serialization, transport, or usbmux rejection error.
+    public func savePairingRecord(
+        _ pairingRecord: PairingRecord
+    ) async throws {
+        let response = try await request([
+            "MessageType": "SavePairRecord",
+            "ClientVersionString": "rork-device",
+            "ProgName": "rorkdevice",
+            "kLibUSBMuxVersion": 3,
+            "PairRecordID": pairingRecord.udid,
+            "PairRecordData": try pairingRecord.propertyListData(),
+        ])
+        try validateUSBMuxResult(
+            response,
+            operation: "SavePairRecord"
+        )
+    }
+
+    /// Removes the host pairing record stored by the local usbmux daemon.
+    ///
+    /// This operation deletes only the host's persisted credentials. It does
+    /// not revoke the corresponding trusted identity from the device. Use
+    /// `DeviceClient.unpair(from:)` when both sides of the pairing must be
+    /// removed as one ordered workflow.
+    ///
+    /// - Parameter deviceIdentifier: Device UDID used as the usbmux record key.
+    /// - Throws: A transport or usbmux rejection error when the record cannot
+    ///   be removed.
+    public func removePairingRecord(
+        for deviceIdentifier: String
+    ) async throws {
+        let response = try await request([
+            "MessageType": "DeletePairRecord",
+            "ClientVersionString": "rork-device",
+            "ProgName": "rorkdevice",
+            "kLibUSBMuxVersion": 3,
+            "PairRecordID": deviceIdentifier,
+        ])
+        try validateUSBMuxResult(
+            response,
+            operation: "DeletePairRecord"
         )
     }
 

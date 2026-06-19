@@ -122,6 +122,95 @@ public final class LockdownClient {
         try checkResult(response, request: "SetValue")
     }
 
+    /// Reads the Developer Mode state from Lockdown's AMFI domain.
+    ///
+    /// This is a passive query. It reads the setting but does not enable
+    /// Developer Mode or restart the device.
+    ///
+    /// - Returns: `true` only when iOS reports Developer Mode as enabled.
+    public func developerModeStatus() async throws -> Bool {
+        let value = try await value(
+            domain: "com.apple.security.mac.amfi",
+            key: "DeveloperModeStatus"
+        )
+        guard let enabled = value as? Bool else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown DeveloperModeStatus was not a Boolean."
+            )
+        }
+        return enabled
+    }
+
+    /// Requests host pairing with the connected device.
+    ///
+    /// The request sends only public certificates and host identifiers from the
+    /// supplied record. Private keys remain on the host. A device that has not
+    /// yet received a user decision returns
+    /// `LockdownPairingError.userConfirmationRequired`; callers may reconnect
+    /// and retry the same pairing material after the Trust dialog is accepted.
+    ///
+    /// - Parameter pairingRecord: Candidate host pairing material.
+    /// - Returns: Escrow data issued by the device for the saved host record.
+    /// - Throws: `LockdownPairingError` for typed pairing rejections and a
+    ///   protocol violation when a successful response omits its escrow bag.
+    public func pair(
+        using pairingRecord: PairingRecord
+    ) async throws -> Data {
+        let response = try await request([
+            "Label": label,
+            "Request": "Pair",
+            "ProtocolVersion": "2",
+            "PairRecord": try pairingRecord.pairingRequestValues(),
+            "PairingOptions": [
+                "ExtendedPairingErrors": true,
+            ],
+        ])
+        if let error = response.string("Error") {
+            throw LockdownPairingError(responseValue: error)
+        }
+        guard let escrowBag = response["EscrowBag"] as? Data,
+              !escrowBag.isEmpty else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown Pair response was missing EscrowBag."
+            )
+        }
+        return escrowBag
+    }
+
+    /// Revokes the supplied host identity from the connected device.
+    ///
+    /// Lockdown identifies the trusted host from the public certificates and
+    /// identifiers in `pairingRecord`; private keys and escrow material remain
+    /// on the host. Some device versions acknowledge `Unpair` with a response
+    /// whose `Request` field is incorrectly labeled `ValidatePair`, so success
+    /// is determined from the response result and error fields instead of the
+    /// echoed request name.
+    ///
+    /// This method changes device-side trust only. Callers that use usbmux
+    /// pairing-record storage must remove the corresponding host record after
+    /// the device accepts the request.
+    ///
+    /// - Parameter pairingRecord: Existing host identity trusted by the device.
+    /// - Throws: `RorkDeviceError.invalidPairingRecord` when required public
+    ///   material is missing, or `RorkDeviceError.lockdown` when the device
+    ///   rejects the request.
+    public func unpair(
+        using pairingRecord: PairingRecord
+    ) async throws {
+        let response = try await request([
+            "Label": label,
+            "Request": "Unpair",
+            "ProtocolVersion": "2",
+            "PairRecord": try pairingRecord.pairingRequestValues(),
+        ])
+        guard response.string("Request") != nil else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown Unpair response was missing Request."
+            )
+        }
+        try checkResult(response, request: "Unpair")
+    }
+
     /// Starts a Lockdown service and returns its port descriptor.
     ///
     /// After a successful response, open a new transport connection to the
@@ -176,6 +265,66 @@ public final class LockdownClient {
     private func request(_ dictionary: [String: Any]) async throws -> [String: Any] {
         try await PropertyListMessageFramer.send(dictionary, to: connection)
         return try await PropertyListMessageFramer.receive(from: connection)
+    }
+}
+
+/// Typed rejection returned by Lockdown while establishing host trust.
+///
+/// User-actionable states are separated from generic protocol failures so an
+/// application can keep its Trust instructions visible, stop after an explicit
+/// rejection, or explain why pairing is prohibited on the current device.
+public enum LockdownPairingError: Error, Equatable, Sendable, LocalizedError {
+    /// iOS is waiting for the user to accept or reject the Trust dialog.
+    case userConfirmationRequired
+
+    /// The user rejected the host trust request on the device.
+    case userDenied
+
+    /// The device must be unlocked before it can complete pairing.
+    case deviceLocked
+
+    /// Device policy prohibits pairing over the current connection.
+    case prohibited
+
+    /// The device did not resolve its Trust dialog before the caller's
+    /// configured deadline.
+    case timedOut
+
+    /// Lockdown returned a pairing error not modeled by this package version.
+    case rejected(String)
+
+    /// Creates the typed representation of a Lockdown error identifier.
+    init(responseValue: String) {
+        switch responseValue {
+        case "PairingDialogResponsePending":
+            self = .userConfirmationRequired
+        case "UserDeniedPairing":
+            self = .userDenied
+        case "PasswordProtected":
+            self = .deviceLocked
+        case "PairingProhibitedOverThisConnection":
+            self = .prohibited
+        default:
+            self = .rejected(responseValue)
+        }
+    }
+
+    /// Human-readable text suitable for UI and command-line diagnostics.
+    public var errorDescription: String? {
+        switch self {
+        case .userConfirmationRequired:
+            return "Approve the Trust dialog on the device to continue pairing."
+        case .userDenied:
+            return "The device rejected the host trust request."
+        case .deviceLocked:
+            return "Unlock the device before pairing."
+        case .prohibited:
+            return "The device prohibits pairing over this connection."
+        case .timedOut:
+            return "The device did not complete the Trust request in time."
+        case let .rejected(message):
+            return "Lockdown rejected pairing: \(message)"
+        }
     }
 }
 

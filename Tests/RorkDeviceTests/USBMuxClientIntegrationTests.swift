@@ -53,6 +53,121 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         XCTAssertEqual(pairingRecord.deviceCertificate, Data([1]))
     }
 
+    func testReadsSystemBUID() async throws {
+        let daemon = try FakeUSBMuxDaemon(systemBUID: "host-system-buid")
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        let systemBUID = try await client.systemBUID()
+
+        XCTAssertEqual(systemBUID, "host-system-buid")
+    }
+
+    func testSavesCompletePairingRecord() async throws {
+        let recordData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "UDID": "fake-device-1",
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data([1]),
+                "HostCertificate": Data([2]),
+                "HostPrivateKey": Data([3]),
+                "RootCertificate": Data([4]),
+                "RootPrivateKey": Data([5]),
+                "EscrowBag": Data([6]),
+                "WiFiMACAddress": "00:11:22:33:44:55",
+            ],
+            format: .binary,
+            options: 0
+        )
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+        let pairingRecord = try PairingRecord.parse(recordData)
+
+        try await client.savePairingRecord(pairingRecord)
+
+        XCTAssertEqual(
+            daemon.savedPairingRecordIdentifier,
+            "fake-device-1"
+        )
+        let savedData = try XCTUnwrap(daemon.savedPairingRecordData)
+        let savedValues = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: savedData,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(savedValues["EscrowBag"] as? Data, Data([6]))
+        XCTAssertEqual(
+            savedValues["WiFiMACAddress"] as? String,
+            "00:11:22:33:44:55"
+        )
+    }
+
+    func testRejectsFailedPairingRecordSave() async throws {
+        let daemon = try FakeUSBMuxDaemon(savePairingRecordStatus: 2)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+        let pairingRecord = try PairingRecord.parse(
+            PropertyListSerialization.data(
+                fromPropertyList: [
+                    "UDID": "fake-device-1",
+                    "HostID": "host-1",
+                    "SystemBUID": "system-1",
+                ],
+                format: .binary,
+                options: 0
+            )
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.savePairingRecord(pairingRecord)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("usbmux SavePairRecord failed with code 2.")
+            )
+        }
+    }
+
+    func testRemovesPairingRecord() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        try await client.removePairingRecord(
+            for: "fake-device-1"
+        )
+
+        XCTAssertEqual(
+            daemon.removedPairingRecordIdentifier,
+            "fake-device-1"
+        )
+    }
+
+    func testRejectsFailedPairingRecordRemoval() async throws {
+        let daemon = try FakeUSBMuxDaemon(
+            removePairingRecordStatus: 2
+        )
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.removePairingRecord(
+                for: "fake-device-1"
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport(
+                    "usbmux DeletePairRecord failed with code 2."
+                )
+            )
+        }
+    }
+
     func testRejectsPairingRecordForAnotherDeviceIdentifier() async throws {
         let recordData = try PropertyListSerialization.data(
             fromPropertyList: [

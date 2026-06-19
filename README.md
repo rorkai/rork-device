@@ -21,15 +21,13 @@ tests and clear public API boundaries.
 - **Command-line tools** - the `rorkdevice` CLI supports device inspection,
   file access, app listing, provisioning-profile management, IPA installation,
   app removal, and CoreDevice process launch and termination.
-- **Pairing records** - load the trusted Lockdown record stored by local
-  `usbmuxd`, parse pairing-record plists, and preserve unknown fields for
-  diagnostics.
-- **Pairing validation** - authenticate the stored host pairing, complete its
-  secure Lockdown session, and verify that Lockdown reports the expected
-  physical device identifier.
-- **Developer Mode setup** - reveal the Developer Mode setting through the
-  authenticated AMFI Lockdown service without enabling it or restarting the
-  device automatically.
+- **Host pairing lifecycle** - generate the certificate material required by
+  Lockdown, drive the iPhone Trust flow, save accepted records through
+  `usbmuxd`, export complete property lists, validate existing trust, and
+  remove trust from both the device and host.
+- **Developer Mode diagnostics** - read the current AMFI status or reveal the
+  Developer Mode setting without enabling it or restarting the device
+  automatically.
 - **Remote identity lifecycle** - generate, validate, and atomically persist
   complete CoreDevice identities with owner-only file permissions.
 - **Remote trust enrollment** - distinguish typed device rejections and
@@ -77,9 +75,8 @@ tests and clear public API boundaries.
   info, provisioning-profile install/copy, IPA install, and IPA uninstall.
 
 See [Docs/Roadmap.md](Docs/Roadmap.md) for release scope, current limitations,
-and planned services such as Lockdown pairing creation, Wi-Fi discovery,
-syslog, crash reports, debugserver, developer image mounting, backup, and
-restore.
+and planned services such as Wi-Fi discovery, syslog, crash reports,
+debugserver, developer image mounting, backup, and restore.
 
 ## Installation
 
@@ -89,7 +86,7 @@ Add `rork-device` to the package dependencies:
 dependencies: [
     .package(
         url: "https://github.com/rorkai/rork-device.git",
-        from: "0.5.1"
+        from: "0.6.0"
     ),
 ]
 ```
@@ -218,12 +215,36 @@ without loading a separate device-communication library:
 # List only devices physically attached over USB.
 rorkdevice list --usb
 
+# Preserve every usbmux route and its normalized transport in JSON.
+rorkdevice list --details --json
+
+# Stream attach and detach events as newline-delimited JSON.
+rorkdevice watch --json
+
 # Verify that the stored host pairing authenticates the expected device.
 rorkdevice pairing validate \
   --udid 00008140-000000000000001C
 
+# Establish or repair host trust and save the accepted record through usbmux.
+rorkdevice pairing establish \
+  --udid 00008140-000000000000001C
+
+# Export the complete trusted pairing property list to stdout or a file.
+rorkdevice pairing export \
+  --udid 00008140-000000000000001C \
+  --output pairing.plist
+
+# Revoke this host's trust and delete its stored pairing record.
+rorkdevice pairing remove \
+  --udid 00008140-000000000000001C
+
 # Return the scalar Lockdown value dictionary with its original key names.
 rorkdevice info \
+  --udid 00008140-000000000000001C \
+  --json
+
+# Read Developer Mode without changing device state.
+rorkdevice developer-mode status \
   --udid 00008140-000000000000001C \
   --json
 
@@ -232,10 +253,14 @@ rorkdevice developer-mode reveal \
   --udid 00008140-000000000000001C
 ```
 
-Pairing validation does not create a new host pairing or display the iPhone
-Trust dialog. It validates pairing material that already exists in the local
-usbmux daemon. Developer Mode reveal similarly leaves enablement and any device
-restart under the user's control.
+`pairing establish` is the only command above that can display the iPhone Trust
+dialog. It reuses one generated host identity while waiting for the user, then
+saves the device-issued escrow material only after acceptance. Pairing export
+and validation never initiate trust. `pairing remove` revokes the identity from
+the device before deleting the local record, so a rejected device-side request
+does not discard the credentials needed to retry. Developer Mode status and
+reveal also leave enablement and any required device restart under the user's
+control.
 
 ## Direct Remote-Pairing Tunnel
 
@@ -307,8 +332,8 @@ network connection.
 
 Platform-specific remote-pairing transport selection is isolated behind an
 internal boundary so a portable backend can be added later without changing
-the high-level tunnel or `DeviceSession` APIs. Version `0.4.0` does not include
-a Windows or Linux backend.
+the high-level tunnel or `DeviceSession` APIs. The current release does not
+include a Windows or Linux backend.
 
 ## Usage
 
@@ -317,7 +342,13 @@ workflow they drive:
 
 ```bash
 rorkdevice list
-rorkdevice watch
+rorkdevice list --details --json
+rorkdevice watch --json
+rorkdevice pairing establish --udid DEVICE-UDID
+rorkdevice pairing export --udid DEVICE-UDID --output pairing.plist
+rorkdevice pairing remove --udid DEVICE-UDID
+rorkdevice pairing validate --udid DEVICE-UDID
+rorkdevice developer-mode status --udid DEVICE-UDID --json
 rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
 rorkdevice files list / --bundle-identifier com.example.app --pairing-record pairing.plist

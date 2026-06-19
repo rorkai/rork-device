@@ -11,9 +11,27 @@ final class FakeUSBMuxDaemon {
     private let deviceEvents: [USBMuxDeviceEvent]
     private let listenResponse: [String: Any]
     private let pairingRecordData: Data?
+    private let systemBUID: String
+    private let devicePublicKey: Data
+    private let wiFiMACAddress: String
+
+    /// Lockdown response returned after recording an Unpair request.
+    ///
+    /// Tests inject failures here to verify that host credentials are retained
+    /// when the device does not confirm trust removal.
+    private let unpairingResponse: [String: Any]
 
     /// Optional usbmux result code included with a pairing-record response.
     private let pairingRecordStatus: Int?
+
+    /// Optional usbmux result code returned after saving a pairing record.
+    private let savePairingRecordStatus: Int
+
+    /// usbmux result code returned after removing a pairing record.
+    ///
+    /// Zero represents success; nonzero values exercise error propagation from
+    /// the host-record cleanup stage.
+    private let removePairingRecordStatus: Int
 
     /// Keeps a Listen socket readable until the client closes it.
     private let keepListenOpenAfterEvents: Bool
@@ -30,6 +48,16 @@ final class FakeUSBMuxDaemon {
     private var _servicesStartedWithEscrow: [String] = []
     private var _heartbeatReplies: [String] = []
     private var _houseArrestRequests: [[String: String]] = []
+    private var _savedPairingRecordData: Data?
+    private var _savedPairingRecordIdentifier: String?
+
+    /// Device identifier from the most recent DeletePairRecord request.
+    private var _removedPairingRecordIdentifier: String?
+
+    /// Host identifier from the most recent Lockdown Unpair request.
+    private var _unpairedHostIdentifier: String?
+    private var pairingResponses: [[String: Any]]
+    private var _pairingAttemptCount = 0
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -87,6 +115,38 @@ final class FakeUSBMuxDaemon {
         return _houseArrestRequests
     }
 
+    var savedPairingRecordData: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _savedPairingRecordData
+    }
+
+    var savedPairingRecordIdentifier: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _savedPairingRecordIdentifier
+    }
+
+    /// Device identifier whose host pairing record was removed.
+    var removedPairingRecordIdentifier: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _removedPairingRecordIdentifier
+    }
+
+    /// Host identifier whose device-side trust was revoked.
+    var unpairedHostIdentifier: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _unpairedHostIdentifier
+    }
+
+    var pairingAttemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _pairingAttemptCount
+    }
+
     init(
         secureLockdown: Bool = false,
         secureServices: Set<String> = [],
@@ -94,6 +154,15 @@ final class FakeUSBMuxDaemon {
         listenResponse: [String: Any] = ["Number": 0],
         pairingRecordData: Data? = nil,
         pairingRecordStatus: Int? = nil,
+        systemBUID: String = "fake-system-buid",
+        savePairingRecordStatus: Int = 0,
+        removePairingRecordStatus: Int = 0,
+        devicePublicKey: Data = testDevicePublicKeyPEM,
+        wiFiMACAddress: String = "00:11:22:33:44:55",
+        pairingResponses: [[String: Any]] = [],
+        unpairingResponse: [String: Any] = [
+            "Request": "Unpair",
+        ],
         keepListenOpenAfterEvents: Bool = false
     ) throws {
         self.secureLockdown = secureLockdown
@@ -102,6 +171,13 @@ final class FakeUSBMuxDaemon {
         self.listenResponse = listenResponse
         self.pairingRecordData = pairingRecordData
         self.pairingRecordStatus = pairingRecordStatus
+        self.systemBUID = systemBUID
+        self.savePairingRecordStatus = savePairingRecordStatus
+        self.removePairingRecordStatus = removePairingRecordStatus
+        self.devicePublicKey = devicePublicKey
+        self.wiFiMACAddress = wiFiMACAddress
+        self.pairingResponses = pairingResponses
+        self.unpairingResponse = unpairingResponse
         self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -252,6 +328,31 @@ final class FakeUSBMuxDaemon {
                 response["Number"] = pairingRecordStatus
             }
             sendUSBMuxResponse(response, tag: request.packet.tag, to: fd)
+        case "ReadBUID":
+            sendUSBMuxResponse(
+                ["BUID": systemBUID],
+                tag: request.packet.tag,
+                to: fd
+            )
+        case "SavePairRecord":
+            if let identifier = request.dictionary["PairRecordID"] as? String,
+               let data = request.dictionary["PairRecordData"] as? Data {
+                recordSavedPairingRecord(identifier: identifier, data: data)
+            }
+            sendUSBMuxResponse(
+                ["Number": savePairingRecordStatus],
+                tag: request.packet.tag,
+                to: fd
+            )
+        case "DeletePairRecord":
+            if let identifier = request.dictionary["PairRecordID"] as? String {
+                recordRemovedPairingRecord(identifier: identifier)
+            }
+            sendUSBMuxResponse(
+                ["Number": removePairingRecordStatus],
+                tag: request.packet.tag,
+                to: fd
+            )
         case "Connect":
             let port = normalizedPort(from: request.dictionary["PortNumber"])
             recordConnectedPort(port)
@@ -287,16 +388,33 @@ final class FakeUSBMuxDaemon {
                     "EnableSessionSSL": secureLockdown,
                 ], to: fd)
             case "GetValue":
-                sendPlistMessage([
-                    "Result": "Success",
-                    "Value": [
+                let value: Any
+                switch request["Key"] as? String {
+                case "DevicePublicKey":
+                    value = devicePublicKey
+                case "WiFiAddress":
+                    value = wiFiMACAddress
+                default:
+                    value = [
                         "UniqueDeviceID": "fake-device-1",
                         "DeviceName": "Fake Phone",
                         "ProductType": "iPhone16,2",
                         "ProductVersion": "18.0",
                         "BuildVersion": "22A000",
-                    ],
+                    ]
+                }
+                sendPlistMessage([
+                    "Result": "Success",
+                    "Value": value,
                 ], to: fd)
+            case "Pair":
+                sendPlistMessage(nextPairingResponse(), to: fd)
+            case "Unpair":
+                if let pairRecord = request["PairRecord"] as? [String: Any],
+                   let hostIdentifier = pairRecord["HostID"] as? String {
+                    recordUnpairedHostIdentifier(hostIdentifier)
+                }
+                sendPlistMessage(unpairingResponse, to: fd)
             case "StartService":
                 let service = request["Service"] as? String ?? ""
                 if request["EscrowBag"] is Data {
@@ -500,6 +618,40 @@ final class FakeUSBMuxDaemon {
             "Identifier": identifier,
         ])
         lock.unlock()
+    }
+
+    private func recordSavedPairingRecord(identifier: String, data: Data) {
+        lock.lock()
+        _savedPairingRecordIdentifier = identifier
+        _savedPairingRecordData = data
+        lock.unlock()
+    }
+
+    /// Records the host pairing-record key requested for deletion.
+    private func recordRemovedPairingRecord(identifier: String) {
+        lock.lock()
+        _removedPairingRecordIdentifier = identifier
+        lock.unlock()
+    }
+
+    /// Records the host identity carried by a Lockdown Unpair request.
+    private func recordUnpairedHostIdentifier(_ identifier: String) {
+        lock.lock()
+        _unpairedHostIdentifier = identifier
+        lock.unlock()
+    }
+
+    private func nextPairingResponse() -> [String: Any] {
+        lock.lock()
+        defer { lock.unlock() }
+        _pairingAttemptCount += 1
+        guard !pairingResponses.isEmpty else {
+            return [
+                "Request": "Pair",
+                "Error": "PairingDialogResponsePending",
+            ]
+        }
+        return pairingResponses.removeFirst()
     }
 }
 

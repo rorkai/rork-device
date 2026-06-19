@@ -4,6 +4,19 @@ import XCTest
 @testable import RorkDevice
 
 final class DeveloperModeSessionTests: XCTestCase {
+    func testReadsDeveloperModeStatusFromLockdownBackend() async throws {
+        let backend = DeveloperModeSessionTestBackend(
+            connection: FakeConnection(),
+            developerModeEnabled: true
+        )
+        let session = DeviceSession(backend: backend)
+
+        let enabled = try await session.isDeveloperModeEnabled()
+
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(backend.developerModeStatusRequestCount, 1)
+    }
+
     func testRevealDeveloperModeUsesAMFILockdownService() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -58,17 +71,33 @@ private final class DeveloperModeSessionTestBackend: DeviceSessionBackend {
     /// Connection returned when the session opens the AMFI service.
     private let connection: DeviceConnection
 
+    /// Deterministic Developer Mode state returned to the session.
+    private let developerModeEnabled: Bool
+
     /// Service names requested through the Lockdown-compatible route.
     private(set) var startedServiceNames: [String] = []
 
+    /// Number of Developer Mode status requests made through this backend.
+    private(set) var developerModeStatusRequestCount = 0
+
     /// Creates a backend with one deterministic service connection.
-    init(connection: DeviceConnection) {
+    init(
+        connection: DeviceConnection,
+        developerModeEnabled: Bool = false
+    ) {
         self.connection = connection
+        self.developerModeEnabled = developerModeEnabled
     }
 
     /// Returns minimal information required by the backend protocol.
     func fetchDeviceInfo() async throws -> DeviceInfo {
         DeviceInfo(values: [:])
+    }
+
+    /// Returns the configured status and records the query.
+    func isDeveloperModeEnabled() async throws -> Bool {
+        developerModeStatusRequestCount += 1
+        return developerModeEnabled
     }
 
     /// Records and returns the configured service connection.

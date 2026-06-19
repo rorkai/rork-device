@@ -84,4 +84,41 @@ final class PairingRecordTests: XCTestCase {
             XCTAssertTrue(record.hasSecureSessionMaterial)
         }
     }
+
+    func testSerializesPairingRecordWithoutDroppingUnknownValues() throws {
+        let sourceValues: [String: Any] = [
+            "UDID": "device-1",
+            "HostID": "host-1",
+            "SystemBUID": "system-1",
+            "EscrowBag": Data([1, 2, 3]),
+            "WiFiMACAddress": "00:11:22:33:44:55",
+            "DeviceName": "Test iPhone",
+            "HostAttached": true,
+        ]
+        let record = try PairingRecord.parse(
+            PropertyListSerialization.data(
+                fromPropertyList: sourceValues,
+                format: .xml,
+                options: 0
+            )
+        )
+
+        let encoded = try record.propertyListData(format: .binary)
+        let decoded = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: encoded,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+
+        XCTAssertEqual(decoded["UDID"] as? String, "device-1")
+        XCTAssertEqual(decoded["EscrowBag"] as? Data, Data([1, 2, 3]))
+        XCTAssertEqual(
+            decoded["WiFiMACAddress"] as? String,
+            "00:11:22:33:44:55"
+        )
+        XCTAssertEqual(decoded["DeviceName"] as? String, "Test iPhone")
+        XCTAssertEqual((decoded["HostAttached"] as? NSNumber)?.boolValue, true)
+    }
 }

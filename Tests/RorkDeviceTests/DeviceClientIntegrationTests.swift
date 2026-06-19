@@ -3,6 +3,184 @@ import XCTest
 @testable import RorkDevice
 
 final class DeviceClientIntegrationTests: XCTestCase {
+    func testPairsAfterDeviceTrustApprovalAndSavesTheAcceptedRecord() async throws {
+        let daemon = try FakeUSBMuxDaemon(pairingResponses: [
+            [
+                "Request": "Pair",
+                "Error": "PairingDialogResponsePending",
+            ],
+            [
+                "Request": "Pair",
+                "EscrowBag": Data([7, 8, 9]),
+            ],
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let progress = EventRecorder<DevicePairingProgress>()
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+
+        let pairingRecord = try await client.pair(
+            with: device,
+            trustTimeout: .seconds(1),
+            retryInterval: .zero
+        ) {
+            progress.append($0)
+        }
+
+        XCTAssertEqual(daemon.pairingAttemptCount, 2)
+        XCTAssertEqual(
+            progress.values,
+            [.waitingForUserConfirmation, .savingPairingRecord]
+        )
+        XCTAssertEqual(pairingRecord.escrowBag, Data([7, 8, 9]))
+        XCTAssertEqual(
+            daemon.savedPairingRecordIdentifier,
+            device.identifier
+        )
+        XCTAssertEqual(
+            try PairingRecord.parse(
+                XCTUnwrap(daemon.savedPairingRecordData)
+            ),
+            pairingRecord
+        )
+    }
+
+    func testPairingTrustTimeoutCapsLongRetryInterval() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        do {
+            _ = try await client.pair(
+                with: device,
+                trustTimeout: .milliseconds(50),
+                retryInterval: .seconds(2)
+            )
+            XCTFail("Pairing should time out while the Trust dialog is pending.")
+        } catch {
+            XCTAssertEqual(
+                error as? LockdownPairingError,
+                .timedOut
+            )
+        }
+
+        XCTAssertLessThan(
+            start.duration(to: clock.now),
+            .seconds(1)
+        )
+    }
+
+    func testUnpairsDeviceBeforeRemovingStoredPairingRecord() async throws {
+        let pairingRecord = try testPairingRecord()
+        let daemon = try FakeUSBMuxDaemon(
+            pairingRecordData: try pairingRecord.propertyListData(
+                format: .binary
+            )
+        )
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+
+        try await client.unpair(from: device)
+
+        XCTAssertEqual(daemon.unpairedHostIdentifier, "host-1")
+        XCTAssertEqual(
+            daemon.removedPairingRecordIdentifier,
+            device.identifier
+        )
+    }
+
+    func testUnpairKeepsStoredRecordWhenDeviceRejectsRequest() async throws {
+        let pairingRecord = try testPairingRecord()
+        let daemon = try FakeUSBMuxDaemon(
+            pairingRecordData: try pairingRecord.propertyListData(
+                format: .binary
+            ),
+            unpairingResponse: [
+                "Request": "Unpair",
+                "Result": "Failure",
+                "Error": "InvalidHostID",
+            ]
+        )
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.unpair(from: device)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .lockdown("Unpair failed: InvalidHostID")
+            )
+        }
+
+        XCTAssertNil(daemon.removedPairingRecordIdentifier)
+    }
+
+    func testUnpairReportsHostRecordRemovalFailureAfterRevocation() async throws {
+        let pairingRecord = try testPairingRecord()
+        let daemon = try FakeUSBMuxDaemon(
+            pairingRecordData: try pairingRecord.propertyListData(
+                format: .binary
+            ),
+            removePairingRecordStatus: 2
+        )
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.unpair(from: device)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport(
+                    "usbmux DeletePairRecord failed with code 2."
+                )
+            )
+        }
+
+        XCTAssertEqual(daemon.unpairedHostIdentifier, "host-1")
+        XCTAssertEqual(
+            daemon.removedPairingRecordIdentifier,
+            device.identifier
+        )
+    }
+
     func testStreamsDeviceEventsThroughFakeUSBMuxDaemon() async throws {
         let daemon = try FakeUSBMuxDaemon(deviceEvents: [
             .attached(USBMuxDevice(
@@ -297,6 +475,11 @@ private func testPairingRecord(escrowBag: Data? = nil) throws -> PairingRecord {
         "UDID": "fake-device-1",
         "HostID": "host-1",
         "SystemBUID": "system-1",
+        "DeviceCertificate": Data([1]),
+        "HostCertificate": Data([2]),
+        "HostPrivateKey": Data([3]),
+        "RootCertificate": Data([4]),
+        "RootPrivateKey": Data([5]),
     ]
     if let escrowBag {
         plist["EscrowBag"] = escrowBag

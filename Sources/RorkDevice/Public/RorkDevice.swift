@@ -7,7 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.5.1"
+    public static let version = "0.6.0"
 }
 
 /// High-level entry point for device discovery and service sessions.
@@ -77,6 +77,140 @@ public final class DeviceClient {
         for deviceIdentifier: String
     ) async throws -> PairingRecord {
         try await usbmuxClient.pairingRecord(for: deviceIdentifier)
+    }
+
+    /// Establishes Lockdown trust and saves the accepted host pairing record.
+    ///
+    /// This method owns the complete USB pairing transaction: it reads the
+    /// host BUID and device public key, creates one host identity, presents that
+    /// identity to Lockdown, and saves the accepted record through usbmux. If
+    /// iOS is waiting for the Trust dialog, the same identity is retried over
+    /// fresh Lockdown connections until the user responds or `trustTimeout`
+    /// expires.
+    ///
+    /// Reusing one identity is essential. Generating a new identity for every
+    /// retry would create repeated Trust prompts and could never confirm the
+    /// identity the user actually approved.
+    ///
+    /// - Parameters:
+    ///   - device: USB-backed device returned by `discoverDevices()`.
+    ///   - trustTimeout: Maximum time to wait for the device-side decision.
+    ///   - retryInterval: Delay between checks while the Trust dialog remains
+    ///     unanswered. Zero is accepted for deterministic tests.
+    ///   - onProgress: Optional callback for user-facing pairing state.
+    /// - Returns: Completed pairing material, including the device-issued
+    ///   escrow bag, after it has been saved by usbmux.
+    /// - Throws: `LockdownPairingError` for user decisions and timeout,
+    ///   `RorkDeviceError.invalidInput` for unsupported routes, or underlying
+    ///   transport and certificate errors.
+    public func pair(
+        with device: Device,
+        trustTimeout: Duration = .seconds(120),
+        retryInterval: Duration = .seconds(1),
+        onProgress: (@Sendable (DevicePairingProgress) -> Void)? = nil
+    ) async throws -> PairingRecord {
+        guard trustTimeout >= .zero else {
+            throw RorkDeviceError.invalidInput(
+                "Pairing trust timeout cannot be negative."
+            )
+        }
+        guard retryInterval >= .zero else {
+            throw RorkDeviceError.invalidInput(
+                "Pairing retry interval cannot be negative."
+            )
+        }
+        guard case let .usbmux(deviceID) = device.connection else {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown pairing requires a usbmux device."
+            )
+        }
+
+        let transport = USBMuxDeviceTransport(
+            deviceID: deviceID,
+            usbmuxClient: usbmuxClient
+        )
+        let prerequisites = try await pairingPrerequisites(
+            using: transport
+        )
+        let candidate = try LockdownPairingMaterial.generate(
+            deviceIdentifier: device.identifier,
+            systemBUID: try await usbmuxClient.systemBUID(),
+            devicePublicKey: prerequisites.devicePublicKey,
+            wiFiMACAddress: prerequisites.wiFiMACAddress
+        )
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: trustTimeout)
+        var reportedWaiting = false
+        while true {
+            try Task.checkCancellation()
+            do {
+                let escrowBag = try await requestPairing(
+                    candidate,
+                    using: transport
+                )
+                let acceptedRecord = try candidate.addingEscrowBag(
+                    escrowBag
+                )
+                onProgress?(.savingPairingRecord)
+                try await usbmuxClient.savePairingRecord(acceptedRecord)
+                return acceptedRecord
+            } catch LockdownPairingError.userConfirmationRequired {
+                if !reportedWaiting {
+                    onProgress?(.waitingForUserConfirmation)
+                    reportedWaiting = true
+                }
+                let now = clock.now
+                guard now < deadline else {
+                    throw LockdownPairingError.timedOut
+                }
+                try await clock.sleep(
+                    for: min(
+                        retryInterval,
+                        now.duration(to: deadline)
+                    )
+                )
+            }
+        }
+    }
+
+    /// Removes Lockdown trust between the host and a usbmux-backed device.
+    ///
+    /// The device-side identity is revoked first. Only after Lockdown confirms
+    /// that request does the method remove the corresponding pairing record
+    /// from local usbmux storage. This ordering avoids discarding the host
+    /// credentials while the device may still trust them.
+    ///
+    /// If usbmux cannot remove the local record after the device has accepted
+    /// `Unpair`, the storage error is propagated and the stale host record
+    /// remains available for explicit cleanup through `USBMuxClient`.
+    ///
+    /// - Parameter device: usbmux-backed device returned by
+    ///   `discoverDevices()`.
+    /// - Throws: `RorkDeviceError.invalidInput` for unsupported routes,
+    ///   pairing-record errors, Lockdown rejection, or a usbmux removal error.
+    public func unpair(
+        from device: Device
+    ) async throws {
+        guard case let .usbmux(deviceID) = device.connection else {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown unpairing requires a usbmux device."
+            )
+        }
+        let pairingRecord = try await usbmuxClient.pairingRecord(
+            for: device.identifier
+        )
+        let transport = USBMuxDeviceTransport(
+            deviceID: deviceID,
+            usbmuxClient: usbmuxClient
+        )
+        try await requestUnpairing(
+            pairingRecord,
+            using: transport
+        )
+        try await usbmuxClient.removePairingRecord(
+            for: device.identifier
+        )
     }
 
     /// Streams device attach and detach events from the local usbmux endpoint.
@@ -282,6 +416,93 @@ public final class DeviceClient {
             secureSessionUpgrader: secureSessionUpgrader
         )
     }
+
+    /// Reads device fields required before host certificates can be generated.
+    private func pairingPrerequisites(
+        using transport: DeviceTransport
+    ) async throws -> LockdownPairingPrerequisites {
+        let connection = try await transport.connect(to: 62078)
+        defer {
+            connection.close()
+        }
+        let lockdown = LockdownClient(connection: connection)
+        guard let devicePublicKey = try await lockdown.value(
+            domain: nil,
+            key: "DevicePublicKey"
+        ) as? Data,
+              !devicePublicKey.isEmpty else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown DevicePublicKey was missing or empty."
+            )
+        }
+        guard let wiFiMACAddress = try await lockdown.value(
+            domain: nil,
+            key: "WiFiAddress"
+        ) as? String else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown WiFiAddress was missing."
+            )
+        }
+        return LockdownPairingPrerequisites(
+            devicePublicKey: devicePublicKey,
+            wiFiMACAddress: wiFiMACAddress
+        )
+    }
+
+    /// Performs one Pair request over a disposable Lockdown connection.
+    ///
+    /// Lockdown commonly closes the pairing connection while the device-side
+    /// dialog is pending. A fresh connection per attempt avoids coupling later
+    /// retries to that transport lifecycle.
+    private func requestPairing(
+        _ pairingRecord: PairingRecord,
+        using transport: DeviceTransport
+    ) async throws -> Data {
+        let connection = try await transport.connect(to: 62078)
+        defer {
+            connection.close()
+        }
+        return try await LockdownClient(
+            connection: connection
+        ).pair(using: pairingRecord)
+    }
+
+    /// Performs one device-side Unpair request over a disposable connection.
+    ///
+    /// The caller removes local pairing material only after this method
+    /// returns. Keeping the transport lifecycle here makes that ordering
+    /// explicit and ensures the Lockdown connection closes on every outcome.
+    private func requestUnpairing(
+        _ pairingRecord: PairingRecord,
+        using transport: DeviceTransport
+    ) async throws {
+        let connection = try await transport.connect(to: 62078)
+        defer {
+            connection.close()
+        }
+        try await LockdownClient(
+            connection: connection
+        ).unpair(using: pairingRecord)
+    }
+}
+
+/// User-visible milestones emitted while a host establishes Lockdown trust.
+public enum DevicePairingProgress: Equatable, Sendable {
+    /// iOS has displayed a Trust dialog and is waiting for the user's decision.
+    case waitingForUserConfirmation
+
+    /// Lockdown accepted the identity and usbmux is persisting the completed
+    /// pairing record.
+    case savingPairingRecord
+}
+
+/// Device values that must be read before generating pairing certificates.
+private struct LockdownPairingPrerequisites {
+    /// RSA public key that the pairing root must bind to this device.
+    let devicePublicKey: Data
+
+    /// Wi-Fi hardware address stored in the completed pairing record.
+    let wiFiMACAddress: String
 }
 
 private extension DeviceEvent {
