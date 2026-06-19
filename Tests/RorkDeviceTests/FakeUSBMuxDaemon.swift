@@ -161,7 +161,7 @@ final class FakeUSBMuxDaemon {
         wiFiMACAddress: String = "00:11:22:33:44:55",
         pairingResponses: [[String: Any]] = [],
         unpairingResponse: [String: Any] = [
-            "Request": "ValidatePair",
+            "Request": "Unpair",
         ],
         keepListenOpenAfterEvents: Bool = false
     ) throws {
