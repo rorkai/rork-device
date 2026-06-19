@@ -444,16 +444,18 @@ private struct DeviceEventOutput: Encodable {
     let properties: [String: String]?
 }
 
-/// Groups diagnostics for the Lockdown pairing stored by local usbmux.
+/// Groups lifecycle operations for the Lockdown pairing stored by local usbmux.
 ///
-/// These commands establish, validate, and export host trust explicitly.
+/// These commands establish, validate, export, and remove host trust
+/// explicitly.
 struct PairingCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pairing",
-        abstract: "Validate the host pairing used by Lockdown.",
+        abstract: "Manage the host pairing used by Lockdown.",
         subcommands: [
             PairingEstablish.self,
             PairingExport.self,
+            PairingRemove.self,
             PairingValidate.self,
         ]
     )
@@ -539,6 +541,35 @@ struct PairingExport: AsyncParsableCommand {
         } else {
             try FileHandle.standardOutput.write(contentsOf: data)
         }
+    }
+}
+
+/// Revokes the selected device's trust in this host.
+///
+/// Lockdown removes the trusted identity from the device before usbmux deletes
+/// the host's stored pairing record. A failed device-side request therefore
+/// leaves the local credentials available for diagnosis or another attempt.
+struct PairingRemove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Remove host trust and its stored pairing record."
+    )
+
+    @Option(help: "Device UDID. Defaults to the first USB device.")
+    var udid: String?
+
+    /// Revokes device trust and then removes the persisted host credentials.
+    ///
+    /// Output is written only after both stages succeed, so scripts never
+    /// mistake a device-only revocation or host-storage failure for completion.
+    func run() async throws {
+        let client = DeviceClient()
+        let device = try await selectedUSBDevice(
+            from: client,
+            udid: udid
+        )
+        try await client.unpair(from: device)
+        print("Pairing was removed for \(device.identifier).")
     }
 }
 

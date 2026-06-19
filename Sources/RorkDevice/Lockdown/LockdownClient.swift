@@ -143,6 +143,40 @@ public final class LockdownClient {
         return escrowBag
     }
 
+    /// Revokes the supplied host identity from the connected device.
+    ///
+    /// Lockdown identifies the trusted host from the public certificates and
+    /// identifiers in `pairingRecord`; private keys and escrow material remain
+    /// on the host. Some device versions acknowledge `Unpair` with a response
+    /// whose `Request` field is incorrectly labeled `ValidatePair`, so success
+    /// is determined from the response result and error fields instead of the
+    /// echoed request name.
+    ///
+    /// This method changes device-side trust only. Callers that use usbmux
+    /// pairing-record storage must remove the corresponding host record after
+    /// the device accepts the request.
+    ///
+    /// - Parameter pairingRecord: Existing host identity trusted by the device.
+    /// - Throws: `RorkDeviceError.invalidPairingRecord` when required public
+    ///   material is missing, or `RorkDeviceError.lockdown` when the device
+    ///   rejects the request.
+    public func unpair(
+        using pairingRecord: PairingRecord
+    ) async throws {
+        let response = try await request([
+            "Label": label,
+            "Request": "Unpair",
+            "ProtocolVersion": "2",
+            "PairRecord": try pairingRecord.pairingRequestValues(),
+        ])
+        guard response.string("Request") != nil else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown Unpair response was missing Request."
+            )
+        }
+        try checkResult(response, request: "Unpair")
+    }
+
     /// Starts a Lockdown service and returns its port descriptor.
     ///
     /// After a successful response, open a new transport connection to the

@@ -316,6 +316,23 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertNil(command.outputPath)
     }
 
+    func testPairingRemoveCommandParsesDeviceIdentifier() throws {
+        let command = try PairingRemove.parse([
+            "--udid", "device-1",
+        ])
+
+        XCTAssertEqual(command.udid, "device-1")
+    }
+
+    func testPairingHelpMentionsLifecycleCommands() {
+        let help = PairingCommand.helpMessage()
+
+        XCTAssertTrue(help.contains("establish"))
+        XCTAssertTrue(help.contains("export"))
+        XCTAssertTrue(help.contains("remove"))
+        XCTAssertTrue(help.contains("validate"))
+    }
+
     func testPairingValidationRejectsUnexpectedDeviceIdentifier() {
         let info = DeviceInfo(values: [
             "UniqueDeviceID": "device-2",

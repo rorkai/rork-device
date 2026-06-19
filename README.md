@@ -23,7 +23,8 @@ tests and clear public API boundaries.
   app removal, and CoreDevice process launch and termination.
 - **Host pairing lifecycle** - generate the certificate material required by
   Lockdown, drive the iPhone Trust flow, save accepted records through
-  `usbmuxd`, export complete property lists, and validate existing trust.
+  `usbmuxd`, export complete property lists, validate existing trust, and
+  remove trust from both the device and host.
 - **Developer Mode diagnostics** - read the current AMFI status or reveal the
   Developer Mode setting without enabling it or restarting the device
   automatically.
@@ -233,6 +234,10 @@ rorkdevice pairing export \
   --udid 00008140-000000000000001C \
   --output pairing.plist
 
+# Revoke this host's trust and delete its stored pairing record.
+rorkdevice pairing remove \
+  --udid 00008140-000000000000001C
+
 # Return the scalar Lockdown value dictionary with its original key names.
 rorkdevice info \
   --udid 00008140-000000000000001C \
@@ -251,8 +256,11 @@ rorkdevice developer-mode reveal \
 `pairing establish` is the only command above that can display the iPhone Trust
 dialog. It reuses one generated host identity while waiting for the user, then
 saves the device-issued escrow material only after acceptance. Pairing export
-and validation never initiate trust. Developer Mode status and reveal also
-leave enablement and any required device restart under the user's control.
+and validation never initiate trust. `pairing remove` revokes the identity from
+the device before deleting the local record, so a rejected device-side request
+does not discard the credentials needed to retry. Developer Mode status and
+reveal also leave enablement and any required device restart under the user's
+control.
 
 ## Direct Remote-Pairing Tunnel
 
@@ -338,6 +346,7 @@ rorkdevice list --details --json
 rorkdevice watch --json
 rorkdevice pairing establish --udid DEVICE-UDID
 rorkdevice pairing export --udid DEVICE-UDID --output pairing.plist
+rorkdevice pairing remove --udid DEVICE-UDID
 rorkdevice pairing validate --udid DEVICE-UDID
 rorkdevice developer-mode status --udid DEVICE-UDID --json
 rorkdevice info --pairing-record pairing.plist

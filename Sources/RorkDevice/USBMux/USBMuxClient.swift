@@ -210,6 +210,32 @@ public final class USBMuxClient {
         )
     }
 
+    /// Removes the host pairing record stored by the local usbmux daemon.
+    ///
+    /// This operation deletes only the host's persisted credentials. It does
+    /// not revoke the corresponding trusted identity from the device. Use
+    /// `DeviceClient.unpair(from:)` when both sides of the pairing must be
+    /// removed as one ordered workflow.
+    ///
+    /// - Parameter deviceIdentifier: Device UDID used as the usbmux record key.
+    /// - Throws: A transport or usbmux rejection error when the record cannot
+    ///   be removed.
+    public func removePairingRecord(
+        for deviceIdentifier: String
+    ) async throws {
+        let response = try await request([
+            "MessageType": "DeletePairRecord",
+            "ClientVersionString": "rork-device",
+            "ProgName": "rorkdevice",
+            "kLibUSBMuxVersion": 3,
+            "PairRecordID": deviceIdentifier,
+        ])
+        try validateUSBMuxResult(
+            response,
+            operation: "DeletePairRecord"
+        )
+    }
+
     /// Opens a long-lived stream of usbmux device events.
     ///
     /// The stream sends a `Listen` request to the configured usbmux endpoint and

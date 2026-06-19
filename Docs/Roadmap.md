@@ -120,8 +120,6 @@ USB-connected device:
 
 Current limitations:
 
-- The package reads, creates, validates, and exports Lockdown pairing records,
-  but does not yet remove host trust from the device.
 - The embedded userspace backend currently exposes IPv6 TCP streams. It does
   not provide a system packet interface, UDP sockets, or general IP routing.
 - The loopback gateway preamble is intentionally compatible with existing
@@ -147,13 +145,15 @@ desktop device-management applications:
 - Export complete pairing records as property lists without narrowing unknown
   fields.
 - Validate existing trust without displaying a new Trust dialog.
+- Revoke a host identity from the device before deleting its local usbmux
+  pairing record.
 - Read Developer Mode status passively and retain the explicit reveal command.
-- Cover certificate generation, pairing retries, record persistence, event
-  output, and CLI contracts with protocol tests and physical-device checks.
+- Cover certificate generation, pairing retries, ordered trust removal, record
+  persistence, event output, and CLI contracts with deterministic protocol
+  tests alongside the existing physical-device checks.
 
 Current limitations:
 
-- Removing host trust remains outside the public API.
 - Network discovery is limited to routes reported by local usbmux; Bonjour
   Wi-Fi discovery is not implemented independently.
 - Windows and Linux support still requires portable usbmux discovery and
@@ -164,7 +164,6 @@ Current limitations:
 The next milestones should expand service coverage without weakening the public
 API boundaries:
 
-- Lockdown unpairing and host-trust removal.
 - Portable cryptography and TLS-PSK transports for remote pairing on additional
   host platforms.
 - Packet-interface adapters for supported host environments.

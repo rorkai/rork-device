@@ -132,6 +132,42 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }
     }
 
+    func testRemovesPairingRecord() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        try await client.removePairingRecord(
+            for: "fake-device-1"
+        )
+
+        XCTAssertEqual(
+            daemon.removedPairingRecordIdentifier,
+            "fake-device-1"
+        )
+    }
+
+    func testRejectsFailedPairingRecordRemoval() async throws {
+        let daemon = try FakeUSBMuxDaemon(
+            removePairingRecordStatus: 2
+        )
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.removePairingRecord(
+                for: "fake-device-1"
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport(
+                    "usbmux DeletePairRecord failed with code 2."
+                )
+            )
+        }
+    }
+
     func testRejectsPairingRecordForAnotherDeviceIdentifier() async throws {
         let recordData = try PropertyListSerialization.data(
             fromPropertyList: [

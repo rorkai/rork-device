@@ -174,6 +174,45 @@ public final class DeviceClient {
         }
     }
 
+    /// Removes Lockdown trust between the host and a usbmux-backed device.
+    ///
+    /// The device-side identity is revoked first. Only after Lockdown confirms
+    /// that request does the method remove the corresponding pairing record
+    /// from local usbmux storage. This ordering avoids discarding the host
+    /// credentials while the device may still trust them.
+    ///
+    /// If usbmux cannot remove the local record after the device has accepted
+    /// `Unpair`, the storage error is propagated and the stale host record
+    /// remains available for explicit cleanup through `USBMuxClient`.
+    ///
+    /// - Parameter device: usbmux-backed device returned by
+    ///   `discoverDevices()`.
+    /// - Throws: `RorkDeviceError.invalidInput` for unsupported routes,
+    ///   pairing-record errors, Lockdown rejection, or a usbmux removal error.
+    public func unpair(
+        from device: Device
+    ) async throws {
+        guard case let .usbmux(deviceID) = device.connection else {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown unpairing requires a usbmux device."
+            )
+        }
+        let pairingRecord = try await usbmuxClient.pairingRecord(
+            for: device.identifier
+        )
+        let transport = USBMuxDeviceTransport(
+            deviceID: deviceID,
+            usbmuxClient: usbmuxClient
+        )
+        try await requestUnpairing(
+            pairingRecord,
+            using: transport
+        )
+        try await usbmuxClient.removePairingRecord(
+            for: device.identifier
+        )
+    }
+
     /// Streams device attach and detach events from the local usbmux endpoint.
     ///
     /// Use this for watch-style tools that need to react to phones being
@@ -426,6 +465,24 @@ public final class DeviceClient {
         return try await LockdownClient(
             connection: connection
         ).pair(using: pairingRecord)
+    }
+
+    /// Performs one device-side Unpair request over a disposable connection.
+    ///
+    /// The caller removes local pairing material only after this method
+    /// returns. Keeping the transport lifecycle here makes that ordering
+    /// explicit and ensures the Lockdown connection closes on every outcome.
+    private func requestUnpairing(
+        _ pairingRecord: PairingRecord,
+        using transport: DeviceTransport
+    ) async throws {
+        let connection = try await transport.connect(to: 62078)
+        defer {
+            connection.close()
+        }
+        try await LockdownClient(
+            connection: connection
+        ).unpair(using: pairingRecord)
     }
 }
 

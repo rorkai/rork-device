@@ -237,6 +237,47 @@ final class LockdownClientTests: XCTestCase {
             )
         }
     }
+
+    func testUnpairRemovesDeviceTrustUsingPublicPairingMaterial() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Request": "ValidatePair",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection, label: "tests")
+        let pairing = try PairingRecord.parse(pairingRecordData())
+
+        try await client.unpair(using: pairing)
+
+        let request = try XCTUnwrap(decodedSentPlist(connection.sent[0]))
+        XCTAssertEqual(request["Request"] as? String, "Unpair")
+        XCTAssertEqual(request["ProtocolVersion"] as? String, "2")
+        let pairRecord = try XCTUnwrap(
+            request["PairRecord"] as? [String: Any]
+        )
+        XCTAssertEqual(pairRecord["HostID"] as? String, "host-1")
+        XCTAssertNil(pairRecord["HostPrivateKey"])
+        XCTAssertNil(pairRecord["RootPrivateKey"])
+        XCTAssertNil(pairRecord["EscrowBag"])
+    }
+
+    func testUnpairRejectsResponseWithoutRequestIdentifier() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([:])
+        )
+        let client = LockdownClient(connection: connection)
+        let pairing = try PairingRecord.parse(pairingRecordData())
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.unpair(using: pairing)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "Lockdown Unpair response was missing Request."
+                )
+            )
+        }
+    }
 }
 
 private func pairingRecordData() throws -> Data {

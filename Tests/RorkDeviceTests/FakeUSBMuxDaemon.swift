@@ -15,11 +15,23 @@ final class FakeUSBMuxDaemon {
     private let devicePublicKey: Data
     private let wiFiMACAddress: String
 
+    /// Lockdown response returned after recording an Unpair request.
+    ///
+    /// Tests inject failures here to verify that host credentials are retained
+    /// when the device does not confirm trust removal.
+    private let unpairingResponse: [String: Any]
+
     /// Optional usbmux result code included with a pairing-record response.
     private let pairingRecordStatus: Int?
 
     /// Optional usbmux result code returned after saving a pairing record.
     private let savePairingRecordStatus: Int
+
+    /// usbmux result code returned after removing a pairing record.
+    ///
+    /// Zero represents success; nonzero values exercise error propagation from
+    /// the host-record cleanup stage.
+    private let removePairingRecordStatus: Int
 
     /// Keeps a Listen socket readable until the client closes it.
     private let keepListenOpenAfterEvents: Bool
@@ -38,6 +50,12 @@ final class FakeUSBMuxDaemon {
     private var _houseArrestRequests: [[String: String]] = []
     private var _savedPairingRecordData: Data?
     private var _savedPairingRecordIdentifier: String?
+
+    /// Device identifier from the most recent DeletePairRecord request.
+    private var _removedPairingRecordIdentifier: String?
+
+    /// Host identifier from the most recent Lockdown Unpair request.
+    private var _unpairedHostIdentifier: String?
     private var pairingResponses: [[String: Any]]
     private var _pairingAttemptCount = 0
 
@@ -109,6 +127,20 @@ final class FakeUSBMuxDaemon {
         return _savedPairingRecordIdentifier
     }
 
+    /// Device identifier whose host pairing record was removed.
+    var removedPairingRecordIdentifier: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _removedPairingRecordIdentifier
+    }
+
+    /// Host identifier whose device-side trust was revoked.
+    var unpairedHostIdentifier: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _unpairedHostIdentifier
+    }
+
     var pairingAttemptCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -124,9 +156,13 @@ final class FakeUSBMuxDaemon {
         pairingRecordStatus: Int? = nil,
         systemBUID: String = "fake-system-buid",
         savePairingRecordStatus: Int = 0,
+        removePairingRecordStatus: Int = 0,
         devicePublicKey: Data = testDevicePublicKeyPEM,
         wiFiMACAddress: String = "00:11:22:33:44:55",
         pairingResponses: [[String: Any]] = [],
+        unpairingResponse: [String: Any] = [
+            "Request": "ValidatePair",
+        ],
         keepListenOpenAfterEvents: Bool = false
     ) throws {
         self.secureLockdown = secureLockdown
@@ -137,9 +173,11 @@ final class FakeUSBMuxDaemon {
         self.pairingRecordStatus = pairingRecordStatus
         self.systemBUID = systemBUID
         self.savePairingRecordStatus = savePairingRecordStatus
+        self.removePairingRecordStatus = removePairingRecordStatus
         self.devicePublicKey = devicePublicKey
         self.wiFiMACAddress = wiFiMACAddress
         self.pairingResponses = pairingResponses
+        self.unpairingResponse = unpairingResponse
         self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -306,6 +344,15 @@ final class FakeUSBMuxDaemon {
                 tag: request.packet.tag,
                 to: fd
             )
+        case "DeletePairRecord":
+            if let identifier = request.dictionary["PairRecordID"] as? String {
+                recordRemovedPairingRecord(identifier: identifier)
+            }
+            sendUSBMuxResponse(
+                ["Number": removePairingRecordStatus],
+                tag: request.packet.tag,
+                to: fd
+            )
         case "Connect":
             let port = normalizedPort(from: request.dictionary["PortNumber"])
             recordConnectedPort(port)
@@ -362,6 +409,12 @@ final class FakeUSBMuxDaemon {
                 ], to: fd)
             case "Pair":
                 sendPlistMessage(nextPairingResponse(), to: fd)
+            case "Unpair":
+                if let pairRecord = request["PairRecord"] as? [String: Any],
+                   let hostIdentifier = pairRecord["HostID"] as? String {
+                    recordUnpairedHostIdentifier(hostIdentifier)
+                }
+                sendPlistMessage(unpairingResponse, to: fd)
             case "StartService":
                 let service = request["Service"] as? String ?? ""
                 if request["EscrowBag"] is Data {
@@ -571,6 +624,20 @@ final class FakeUSBMuxDaemon {
         lock.lock()
         _savedPairingRecordIdentifier = identifier
         _savedPairingRecordData = data
+        lock.unlock()
+    }
+
+    /// Records the host pairing-record key requested for deletion.
+    private func recordRemovedPairingRecord(identifier: String) {
+        lock.lock()
+        _removedPairingRecordIdentifier = identifier
+        lock.unlock()
+    }
+
+    /// Records the host identity carried by a Lockdown Unpair request.
+    private func recordUnpairedHostIdentifier(_ identifier: String) {
+        lock.lock()
+        _unpairedHostIdentifier = identifier
         lock.unlock()
     }
 
