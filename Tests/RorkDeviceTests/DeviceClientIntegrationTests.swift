@@ -145,6 +145,9 @@ final class DeviceClientIntegrationTests: XCTestCase {
         defer { heartbeat.stop() }
 
         XCTAssertTrue(daemon.connectedPorts.contains(4567))
+        try await waitUntil("heartbeat reply") {
+            !daemon.heartbeatReplies.isEmpty
+        }
         XCTAssertEqual(daemon.heartbeatReplies, ["Polo"])
     }
 
@@ -313,6 +316,22 @@ private func temporaryFile(contents: Data) throws -> URL {
         .appendingPathComponent(UUID().uuidString)
     try contents.write(to: url)
     return url
+}
+
+/// Waits for an asynchronously recorded integration-test condition.
+private func waitUntil(
+    _ description: String,
+    timeout: TimeInterval = 2,
+    condition: () -> Bool
+) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline {
+            XCTFail("Timed out waiting for \(description).")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
 }
 
 private func XCTAssertContains<T: Equatable>(
