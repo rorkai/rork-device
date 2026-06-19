@@ -51,6 +51,40 @@ final class DeviceClientIntegrationTests: XCTestCase {
         )
     }
 
+    func testPairingTrustTimeoutCapsLongRetryInterval() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        do {
+            _ = try await client.pair(
+                with: device,
+                trustTimeout: .milliseconds(50),
+                retryInterval: .seconds(2)
+            )
+            XCTFail("Pairing should time out while the Trust dialog is pending.")
+        } catch {
+            XCTAssertEqual(
+                error as? LockdownPairingError,
+                .timedOut
+            )
+        }
+
+        XCTAssertLessThan(
+            start.duration(to: clock.now),
+            .seconds(1)
+        )
+    }
+
     func testStreamsDeviceEventsThroughFakeUSBMuxDaemon() async throws {
         let daemon = try FakeUSBMuxDaemon(deviceEvents: [
             .attached(USBMuxDevice(

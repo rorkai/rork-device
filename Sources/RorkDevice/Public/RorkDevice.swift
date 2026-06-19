@@ -160,10 +160,16 @@ public final class DeviceClient {
                     onProgress?(.waitingForUserConfirmation)
                     reportedWaiting = true
                 }
-                guard clock.now < deadline else {
+                let now = clock.now
+                guard now < deadline else {
                     throw LockdownPairingError.timedOut
                 }
-                try await clock.sleep(for: retryInterval)
+                try await clock.sleep(
+                    for: min(
+                        retryInterval,
+                        now.duration(to: deadline)
+                    )
+                )
             }
         }
     }

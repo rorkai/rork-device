@@ -90,8 +90,8 @@ public final class LockdownClient {
 
     /// Reads the Developer Mode state from Lockdown's AMFI domain.
     ///
-    /// This is a passive query. It does not reveal the setting, enable
-    /// Developer Mode, or restart the device.
+    /// This is a passive query. It reads the setting but does not enable
+    /// Developer Mode or restart the device.
     ///
     /// - Returns: `true` only when iOS reports Developer Mode as enabled.
     public func developerModeStatus() async throws -> Bool {

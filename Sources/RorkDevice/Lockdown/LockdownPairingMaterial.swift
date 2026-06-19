@@ -54,10 +54,14 @@ enum LockdownPairingMaterial {
             )
         }
 
-        let deviceKeyPEM = String(
-            decoding: devicePublicKey,
-            as: UTF8.self
-        )
+        guard let deviceKeyPEM = String(
+            bytes: devicePublicKey,
+            encoding: .utf8
+        ) else {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown device public key is not valid UTF-8 PEM."
+            )
+        }
         let deviceKey = try _RSA.Signing.PublicKey(
             pemRepresentation: deviceKeyPEM
         )

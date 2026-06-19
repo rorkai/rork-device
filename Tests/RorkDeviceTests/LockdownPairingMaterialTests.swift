@@ -57,21 +57,18 @@ final class LockdownPairingMaterialTests: XCTestCase {
             from: try XCTUnwrap(record.deviceCertificate)
         )
         let rootPrivateKey = try _RSA.Signing.PrivateKey(
-            pemRepresentation: String(
-                decoding: try XCTUnwrap(record.rootPrivateKey),
-                as: UTF8.self
+            pemRepresentation: try pemString(
+                from: try XCTUnwrap(record.rootPrivateKey)
             )
         )
         let hostPrivateKey = try _RSA.Signing.PrivateKey(
-            pemRepresentation: String(
-                decoding: try XCTUnwrap(record.hostPrivateKey),
-                as: UTF8.self
+            pemRepresentation: try pemString(
+                from: try XCTUnwrap(record.hostPrivateKey)
             )
         )
         let devicePublicKey = try _RSA.Signing.PublicKey(
-            pemRepresentation: String(
-                decoding: testDevicePublicKeyPEM,
-                as: UTF8.self
+            pemRepresentation: try pemString(
+                from: testDevicePublicKeyPEM
             )
         )
 
@@ -125,10 +122,38 @@ final class LockdownPairingMaterialTests: XCTestCase {
         XCTAssertEqual(completed.escrowBag, Data([1, 2, 3]))
     }
 
+    func testRejectsDevicePublicKeyThatIsNotUTF8() {
+        XCTAssertThrowsError(
+            try LockdownPairingMaterial.generate(
+                deviceIdentifier: "device-1",
+                systemBUID: "system-1",
+                devicePublicKey: Data([0xFF]),
+                wiFiMACAddress: "00:11:22:33:44:55"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "Lockdown device public key is not valid UTF-8 PEM."
+                )
+            )
+        }
+    }
+
     /// Parses one generated PEM certificate for structural and signature checks.
     private func certificate(from data: Data) throws -> Certificate {
         try Certificate(
-            pemEncoded: String(decoding: data, as: UTF8.self)
+            pemEncoded: pemString(from: data)
+        )
+    }
+
+    /// Decodes PEM bytes without replacing malformed UTF-8 sequences.
+    ///
+    /// Pairing tests should fail at the encoding boundary so lossy Unicode
+    /// replacement cannot obscure the certificate or key parser's input.
+    private func pemString(from data: Data) throws -> String {
+        try XCTUnwrap(
+            String(bytes: data, encoding: .utf8)
         )
     }
 }
