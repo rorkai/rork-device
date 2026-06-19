@@ -14,7 +14,7 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     public let connectionTimeout: Duration
 
     /// Packet tunnel retained for the complete userspace-network lifetime.
-    private let tunnel: CoreDeviceTunnel
+    private let tunnel: any CoreDevicePacketTunnel
 
     /// TCP/IP backend that converts packet traffic into service byte streams.
     private let stack: LwIPNetworkStack
@@ -46,9 +46,39 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     ///   - tunnel: Negotiated Lockdown CoreDevice packet tunnel.
     ///   - connectionTimeout: Maximum duration for each device TCP handshake.
     /// - Throws: Configuration or network-backend initialization errors.
-    public init(
+    public convenience init(
         tunnel: CoreDeviceTunnel,
         connectionTimeout: Duration = .seconds(8)
+    ) throws {
+        try self.init(
+            packetTunnel: tunnel,
+            connectionTimeout: connectionTimeout
+        )
+    }
+
+    /// Creates and starts a userspace network over a remote-pairing tunnel.
+    ///
+    /// The instance takes ownership of `tunnel`; callers should close the
+    /// resulting network rather than closing the tunnel independently.
+    ///
+    /// - Parameters:
+    ///   - tunnel: Negotiated remote-pairing packet tunnel.
+    ///   - connectionTimeout: Maximum duration for each device TCP handshake.
+    /// - Throws: Configuration or network-backend initialization errors.
+    public convenience init(
+        tunnel: RemotePairingTunnel,
+        connectionTimeout: Duration = .seconds(8)
+    ) throws {
+        try self.init(
+            packetTunnel: tunnel,
+            connectionTimeout: connectionTimeout
+        )
+    }
+
+    /// Creates the shared packet pumps for a supported tunnel implementation.
+    private init(
+        packetTunnel tunnel: any CoreDevicePacketTunnel,
+        connectionTimeout: Duration
     ) throws {
         self.tunnel = tunnel
         configuration = tunnel.configuration
@@ -143,6 +173,27 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
         termination.finish(with: error)
     }
 }
+
+/// Packet-tunnel operations required by the userspace TCP/IP network.
+private protocol CoreDevicePacketTunnel: AnyObject {
+    /// Network parameters negotiated for the tunnel.
+    var configuration: CoreDeviceTunnelConfiguration { get }
+
+    /// Sends one complete IPv6 packet to the device.
+    func sendPacket(_ packet: Data) async throws
+
+    /// Receives one complete IPv6 packet from the device.
+    func receivePacket() async throws -> Data
+
+    /// Closes the tunnel and any pending packet operations.
+    func close()
+}
+
+/// Allows Lockdown-created tunnels to back the userspace network.
+extension CoreDeviceTunnel: CoreDevicePacketTunnel {}
+
+/// Allows remote-pairing tunnels to back the userspace network.
+extension RemotePairingTunnel: CoreDevicePacketTunnel {}
 
 /// One-shot completion shared by userspace-network owners.
 ///
