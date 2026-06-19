@@ -86,7 +86,7 @@ Add `rork-device` to the package dependencies:
 dependencies: [
     .package(
         url: "https://github.com/rorkai/rork-device.git",
-        from: "0.6.0"
+        from: "0.7.0"
     ),
 ]
 ```
