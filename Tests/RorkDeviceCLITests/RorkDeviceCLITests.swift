@@ -224,6 +224,15 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.type, .all)
     }
 
+    func testAppsListCommandParsesJSONOutput() throws {
+        let command = try AppsList.parse([
+            "--pairing-record", "pairing.plist",
+            "--json",
+        ])
+
+        XCTAssertTrue(command.json)
+    }
+
     func testAppsListCommandParsesProtocolApplicationType() throws {
         let command = try AppsList.parse([
             "--pairing-record", "pairing.plist",
@@ -231,6 +240,27 @@ final class RorkDeviceCLITests: XCTestCase {
         ])
 
         XCTAssertEqual(command.type, .all)
+    }
+
+    func testInstalledApplicationListJSONPreservesVersionMetadata() throws {
+        let data = try installedApplicationListJSON([
+            InstalledApplication(values: [
+                "CFBundleIdentifier": "com.example.app",
+                "CFBundleDisplayName": "Example",
+                "CFBundleShortVersionString": "2.3.0",
+                "CFBundleVersion": "45",
+            ]),
+        ])
+        let applications = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [[String: String]]
+        )
+
+        XCTAssertEqual(applications, [[
+            "bundleIdentifier": "com.example.app",
+            "displayName": "Example",
+            "version": "2.3.0",
+            "buildVersion": "45",
+        ]])
     }
 
     func testInfoCommandParsesDirectEndpoint() throws {

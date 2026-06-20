@@ -350,6 +350,7 @@ rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
 rorkdevice files list / --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist
+rorkdevice apps list --pairing-record pairing.plist --json
 rorkdevice launch com.example.app --kill-existing \
   --userspace-device-address fd92:fbe0:acf3::2 \
   --userspace-gateway-port 60112 \
