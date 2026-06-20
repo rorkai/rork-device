@@ -263,6 +263,26 @@ final class RorkDeviceCLITests: XCTestCase {
         ]])
     }
 
+    func testInstalledApplicationListJSONOmitsUnavailableMetadata() throws {
+        let data = try installedApplicationListJSON([
+            InstalledApplication(values: [
+                "CFBundleIdentifier": "com.example.app",
+            ]),
+        ])
+        let applications = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        )
+        let application = try XCTUnwrap(applications.first)
+
+        XCTAssertEqual(
+            application["bundleIdentifier"] as? String,
+            "com.example.app"
+        )
+        XCTAssertNil(application["displayName"])
+        XCTAssertNil(application["version"])
+        XCTAssertNil(application["buildVersion"])
+    }
+
     func testInfoCommandParsesDirectEndpoint() throws {
         let command = try Info.parse([
             "--host", "127.0.0.1",
