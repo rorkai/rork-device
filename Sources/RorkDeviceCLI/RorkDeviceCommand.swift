@@ -1220,14 +1220,61 @@ struct AppsList: AsyncParsableCommand {
     @Option(help: "Application type: user, system, internal, or all.")
     var type: ApplicationType = .user
 
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
     func run() async throws {
         let session = try await connection.session()
         let apps = try await session.installedApplications(matching: type)
+        if json {
+            try FileHandle.standardOutput.write(
+                contentsOf: installedApplicationListJSON(apps)
+            )
+            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            return
+        }
         for app in apps {
             let identifier = app.bundleIdentifier ?? "-"
             let name = app.displayName ?? "-"
             print("\(identifier)\t\(name)")
         }
+    }
+}
+
+/// Encodes installed applications for machine-readable CLI consumers.
+///
+/// The JSON representation exposes stable, commonly used bundle metadata
+/// without coupling callers to backend-specific InstallationProxy or
+/// CoreDevice records.
+func installedApplicationListJSON(
+    _ applications: [InstalledApplication]
+) throws -> Data {
+    let entries = applications.map(InstalledApplicationListEntry.init)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(entries)
+}
+
+/// Stable application metadata emitted by `apps list --json`.
+private struct InstalledApplicationListEntry: Encodable {
+    /// Bundle identifier used to address the application on the device.
+    let bundleIdentifier: String?
+
+    /// Human-readable application name when supplied by the device service.
+    let displayName: String?
+
+    /// Marketing version from `CFBundleShortVersionString`.
+    let version: String?
+
+    /// Build version from `CFBundleVersion`.
+    let buildVersion: String?
+
+    /// Creates a CLI entry from the backend-neutral installed-app model.
+    init(_ application: InstalledApplication) {
+        bundleIdentifier = application.bundleIdentifier
+        displayName = application.displayName
+        version = application.version
+        buildVersion = application.buildVersion
     }
 }
 
