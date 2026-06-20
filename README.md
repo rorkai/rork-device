@@ -348,6 +348,8 @@ rorkdevice pairing validate --udid DEVICE-UDID
 rorkdevice developer-mode status --udid DEVICE-UDID --json
 rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
+rorkdevice files list / --pairing-record pairing.plist --json
+rorkdevice files info /PublicStaging --pairing-record pairing.plist --json
 rorkdevice files list / --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist
 rorkdevice apps list --pairing-record pairing.plist --json

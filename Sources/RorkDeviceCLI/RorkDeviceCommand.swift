@@ -1068,15 +1068,35 @@ struct FilesList: AsyncParsableCommand {
 
     @OptionGroup var access: FileAccessOptions
 
+    @Flag(help: "Emit entry names as a JSON array.")
+    var json = false
+
     @Argument(help: "Remote directory path.")
     var path: String = "/"
 
     func run() async throws {
         let afc = try await access.afcClient()
-        for name in try await afc.directoryContents(at: path) {
+        let entries = try await afc.directoryContents(at: path)
+        if json {
+            try FileHandle.standardOutput.write(
+                contentsOf: fileListJSON(entries)
+            )
+            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            return
+        }
+        for name in entries {
             print(name)
         }
     }
+}
+
+/// Encodes remote directory entries for machine-readable CLI consumers.
+///
+/// Entry names are emitted exactly as AFC reports them, including `"."` and
+/// `".."`, so JSON output preserves the same semantics as the default
+/// line-oriented representation.
+func fileListJSON(_ entries: [String]) throws -> Data {
+    try JSONEncoder().encode(entries)
 }
 
 /// Prints metadata for a remote path.
@@ -1088,16 +1108,36 @@ struct FilesInfo: AsyncParsableCommand {
 
     @OptionGroup var access: FileAccessOptions
 
+    @Flag(help: "Emit AFC metadata as a JSON object.")
+    var json = false
+
     @Argument(help: "Remote path.")
     var path: String
 
     func run() async throws {
         let afc = try await access.afcClient()
         let info = try await afc.fileInfo(at: path)
+        if json {
+            try FileHandle.standardOutput.write(
+                contentsOf: fileInfoJSON(info)
+            )
+            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            return
+        }
         for key in info.values.keys.sorted() {
             print("\(key): \(info.values[key] ?? "")")
         }
     }
+}
+
+/// Encodes the complete AFC metadata dictionary for automation clients.
+///
+/// Raw AFC field names remain intact so callers can consume protocol fields
+/// introduced by newer iOS versions without requiring a matching CLI release.
+func fileInfoJSON(_ info: AFCFileInfo) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(info.values)
 }
 
 /// Downloads a remote file.
