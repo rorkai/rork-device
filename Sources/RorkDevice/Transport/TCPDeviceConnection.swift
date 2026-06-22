@@ -1,3 +1,4 @@
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 import NIOCore
 import NIOPosix
@@ -12,7 +13,7 @@ import Darwin
 /// handles DNS resolution, non-blocking connect, read readiness, and writes.
 public final class TCPDeviceConnection:
     DeviceConnection,
-    PartialReceiveDeviceConnection,
+    StreamingDeviceConnection,
     NIOSecureSessionConnection
 {
     /// Shared NIO byte stream used by the public connection wrapper.
@@ -57,7 +58,8 @@ public final class TCPDeviceConnection:
         timeout: Duration? = nil
     ) async throws -> TCPDeviceConnection {
         guard interfaceIndex > 0,
-              let socketInterfaceIndex = CInt(exactly: interfaceIndex) else {
+            let socketInterfaceIndex = CInt(exactly: interfaceIndex)
+        else {
             throw RorkDeviceError.invalidInput(
                 "IPv4 interface index \(interfaceIndex) is not a valid socket interface index."
             )
@@ -89,7 +91,8 @@ public final class TCPDeviceConnection:
         do {
             let asyncChannel = try await bootstrap.connect(host: host, port: Int(port)) { channel in
                 channel.eventLoop.makeCompletedFuture {
-                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                        wrappingChannelSynchronously: channel)
                 }
             }
             let connection = NIODeviceConnection(asyncChannel: asyncChannel)
@@ -110,7 +113,7 @@ public final class TCPDeviceConnection:
     }
 
     /// Receives at least one byte and at most `count` bytes.
-    func receive(upTo count: Int) async throws -> Data {
+    public func receive(upTo count: Int) async throws -> Data {
         try await connection.receive(upTo: count)
     }
 
@@ -127,9 +130,9 @@ public final class TCPDeviceConnection:
     }
 }
 
-private extension Duration {
+extension Duration {
     /// Converts Swift's `Duration` into the nanosecond timeout type used by NIO.
-    var nioTimeAmount: TimeAmount {
+    fileprivate var nioTimeAmount: TimeAmount {
         let parts = components
         let seconds = Double(parts.seconds)
         let attoseconds = Double(parts.attoseconds)
@@ -138,3 +141,4 @@ private extension Duration {
         return .nanoseconds(Int64(clampedNanoseconds))
     }
 }
+#endif

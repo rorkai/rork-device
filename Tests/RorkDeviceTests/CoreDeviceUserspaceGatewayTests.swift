@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+
 @testable import RorkDevice
 
 final class CoreDeviceUserspaceGatewayTests: XCTestCase {
@@ -231,7 +232,7 @@ private actor RequestedPortRecorder {
 
 private final class GatewayTestConnection:
     DeviceConnection,
-    PartialReceiveDeviceConnection,
+    StreamingDeviceConnection,
     @unchecked Sendable
 {
     private let state: GatewayTestConnectionState

@@ -1,6 +1,41 @@
+#if canImport(CryptoExtras) && canImport(X509)
 import CryptoExtras
 import Foundation
 import X509
+
+extension PairingRecord {
+    /// Creates host-owned pairing material for an unpaired device.
+    ///
+    /// The returned candidate contains the certificate chain and private keys
+    /// needed by Lockdown but no escrow bag. Submit the candidate through
+    /// `DeviceClient.pair(using:over:trustTimeout:retryInterval:onProgress:)`
+    /// and persist the accepted record returned by that operation.
+    ///
+    /// - Parameters:
+    ///   - information: Public identity fields read from the target device.
+    ///   - systemBUID: Stable host identifier associated with the application
+    ///     storing this pairing record.
+    ///   - validFrom: Beginning of the generated certificate validity period.
+    ///     The default is appropriate for production; the parameter also makes
+    ///     deterministic certificate tests possible.
+    /// - Returns: Candidate pairing material ready for a Lockdown `Pair`
+    ///   request.
+    /// - Throws: `RorkDeviceError.invalidInput` for malformed identity fields,
+    ///   or a certificate-generation error.
+    public static func candidate(
+        for information: DevicePairingInformation,
+        systemBUID: String,
+        validFrom: Date = Date()
+    ) throws -> PairingRecord {
+        try LockdownPairingMaterial.generate(
+            deviceIdentifier: information.deviceIdentifier,
+            systemBUID: systemBUID,
+            devicePublicKey: information.devicePublicKey,
+            wiFiMACAddress: information.wiFiMACAddress,
+            validFrom: validFrom
+        )
+    }
+}
 
 /// Generates the certificate chain and private keys used by Lockdown pairing.
 ///
@@ -54,10 +89,12 @@ enum LockdownPairingMaterial {
             )
         }
 
-        guard let deviceKeyPEM = String(
-            bytes: devicePublicKey,
-            encoding: .utf8
-        ) else {
+        guard
+            let deviceKeyPEM = String(
+                bytes: devicePublicKey,
+                encoding: .utf8
+            )
+        else {
             throw RorkDeviceError.invalidInput(
                 "Lockdown device public key is not valid UTF-8 PEM."
             )
@@ -108,19 +145,16 @@ enum LockdownPairingMaterial {
             rootKey: rootKey
         )
 
-        let values: [String: Any] = [
-            "UDID": deviceIdentifier,
-            "HostID": UUID().uuidString.uppercased(),
-            "SystemBUID": systemBUID,
-            "DeviceCertificate": try pemData(for: deviceCertificate),
-            "HostCertificate": try pemData(for: hostCertificate),
-            "HostPrivateKey": Data(hostKey.pemRepresentation.utf8),
-            "RootCertificate": try pemData(for: rootCertificate),
-            "RootPrivateKey": Data(rootKey.pemRepresentation.utf8),
-            "WiFiMACAddress": wiFiMACAddress,
-        ]
-        return try PairingRecord.parse(
-            PropertyListCodec.encode(values, format: .binary)
+        return try PairingRecord.candidate(
+            deviceIdentifier: deviceIdentifier,
+            hostID: UUID().uuidString.uppercased(),
+            systemBUID: systemBUID,
+            deviceCertificate: try pemData(for: deviceCertificate),
+            hostCertificate: try pemData(for: hostCertificate),
+            hostPrivateKey: Data(hostKey.pemRepresentation.utf8),
+            rootCertificate: try pemData(for: rootCertificate),
+            rootPrivateKey: Data(rootKey.pemRepresentation.utf8),
+            wiFiMACAddress: wiFiMACAddress
         )
     }
 
@@ -185,3 +219,4 @@ enum LockdownPairingMaterial {
         return value
     }
 }
+#endif

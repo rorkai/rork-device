@@ -11,21 +11,21 @@ public struct NIOSecureSessionUpgrader: SecureSessionUpgrader {
     /// Creates a SwiftNIO SSL secure-session upgrader.
     public init() {}
 
-    /// Adds client-authenticated TLS to an established SwiftNIO connection.
+    /// Adds client-authenticated TLS to an established device connection.
     ///
     /// The device certificate is pinned byte-for-byte to the pairing record.
     /// The host certificate and private key provide the client identity
     /// expected by Lockdown.
     ///
     /// - Parameters:
-    ///   - connection: Plain device connection returned by a built-in SwiftNIO
-    ///     transport.
+    ///   - connection: Plain device connection. Built-in SwiftNIO connections
+    ///     are upgraded in place; other streaming connections are wrapped by an
+    ///     in-memory NIO SSL pipeline.
     ///   - pairingRecord: Pairing material for the connected device.
-    /// - Returns: The same connection after its channel completes the TLS
-    ///   handshake.
+    /// - Returns: A secure connection after its TLS handshake completes.
     /// - Throws: `RorkDeviceError.secureSessionUnsupported` when the connection
-    ///   is not backed by a TLS-upgradable SwiftNIO channel, or a pairing/TLS
-    ///   error when credentials or negotiation fail.
+    ///   cannot provide streaming reads, or a pairing/TLS error when credentials
+    ///   or negotiation fail.
     public func upgrade(
         _ connection: DeviceConnection,
         pairingRecord: PairingRecord
@@ -33,12 +33,21 @@ public struct NIOSecureSessionUpgrader: SecureSessionUpgrader {
         let configuration = try NIOSecureSessionConfiguration(
             pairingRecord: pairingRecord
         )
-        guard let connection = connection as? NIOSecureSessionConnection else {
-            throw RorkDeviceError.secureSessionUnsupported
+        if let connection = connection as? NIOSecureSessionConnection {
+            try await connection.startSecureSession(using: configuration)
+            return connection
         }
 
-        try await connection.startSecureSession(using: configuration)
-        return connection
+        guard
+            let streamingConnection =
+                connection as? any StreamingDeviceConnection
+        else {
+            throw RorkDeviceError.secureSessionUnsupported
+        }
+        return try await InMemoryTLSDeviceConnection.establish(
+            over: streamingConnection,
+            configuration: configuration
+        )
     }
 }
 
@@ -96,7 +105,7 @@ struct NIOSecureSessionConfiguration: Sendable {
         )
 
         var certificateChain: [NIOSSLCertificateSource] = [
-            .certificate(hostCertificate),
+            .certificate(hostCertificate)
         ]
         if let rootCertificateData = pairingRecord.rootCertificate {
             certificateChain.append(
@@ -176,10 +185,12 @@ private func makePrivateKey(
 private func serializationFormat(
     for data: Data
 ) -> NIOSSLSerializationFormats {
-    guard let prefix = String(
-        data: data.prefix(64),
-        encoding: .utf8
-    ) else {
+    guard
+        let prefix = String(
+            data: data.prefix(64),
+            encoding: .utf8
+        )
+    else {
         return .der
     }
     return prefix.contains("-----BEGIN ") ? .pem : .der

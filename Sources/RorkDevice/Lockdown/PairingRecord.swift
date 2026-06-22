@@ -110,6 +110,51 @@ public struct PairingRecord: Equatable, Sendable {
         )
     }
 
+    /// Creates a candidate record from already-generated host credentials.
+    ///
+    /// Cryptographic backends live in platform-specific targets, while the
+    /// pairing protocol and record model remain transport-neutral. Package
+    /// targets use this factory after producing an equivalent certificate
+    /// hierarchy without exposing raw construction through the public API.
+    ///
+    /// - Parameters:
+    ///   - deviceIdentifier: UDID used as the pairing-record storage key.
+    ///   - hostID: Unique identifier for this generated host identity.
+    ///   - systemBUID: Stable identifier for the application installation.
+    ///   - deviceCertificate: Device leaf certificate signed by the host root.
+    ///   - hostCertificate: Host leaf certificate signed by the host root.
+    ///   - hostPrivateKey: Private key matching `hostCertificate`.
+    ///   - rootCertificate: Certificate authority that signs both leaves.
+    ///   - rootPrivateKey: Private key matching `rootCertificate`.
+    ///   - wiFiMACAddress: Device Wi-Fi address retained by Lockdown.
+    /// - Returns: Candidate material ready for a Lockdown `Pair` request.
+    package static func candidate(
+        deviceIdentifier: String,
+        hostID: String,
+        systemBUID: String,
+        deviceCertificate: Data,
+        hostCertificate: Data,
+        hostPrivateKey: Data,
+        rootCertificate: Data,
+        rootPrivateKey: Data,
+        wiFiMACAddress: String
+    ) throws -> PairingRecord {
+        let values: [String: Any] = [
+            "UDID": deviceIdentifier,
+            "HostID": hostID,
+            "SystemBUID": systemBUID,
+            "DeviceCertificate": deviceCertificate,
+            "HostCertificate": hostCertificate,
+            "HostPrivateKey": hostPrivateKey,
+            "RootCertificate": rootCertificate,
+            "RootPrivateKey": rootPrivateKey,
+            "WiFiMACAddress": wiFiMACAddress,
+        ]
+        return try PairingRecord.parse(
+            PropertyListCodec.encode(values, format: .binary)
+        )
+    }
+
     /// Serializes the complete pairing record as a property list.
     ///
     /// Values not represented by typed properties are preserved from the
@@ -190,9 +235,11 @@ public struct PairingRecord: Equatable, Sendable {
                 "EscrowBag is empty."
             )
         }
-        guard var values = try PropertyListCodec.decode(
-            serializedPropertyList
-        ) as? [String: Any] else {
+        guard
+            var values = try PropertyListCodec.decode(
+                serializedPropertyList
+            ) as? [String: Any]
+        else {
             throw RorkDeviceError.invalidPairingRecord(
                 "Expected plist dictionary."
             )

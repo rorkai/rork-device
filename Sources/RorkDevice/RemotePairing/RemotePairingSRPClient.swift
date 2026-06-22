@@ -1,5 +1,10 @@
+#if canImport(BigInt)
 import BigInt
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 /// Values produced by the SRP-6a client for one manual pair-setup exchange.
@@ -47,20 +52,21 @@ struct RemotePairingSRPExchange {
 struct RemotePairingSRPClient {
     /// RFC 5054 3072-bit safe prime.
     private static let modulus = BigUInt(
-        Data(hexadecimal: """
-            FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74
-            020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437
-            4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED
-            EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05
-            98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB
-            9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B
-            E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718
-            3995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33
-            A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7
-            ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864
-            D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E2
-            08E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF
-            """)
+        Data(
+            hexadecimal: """
+                FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74
+                020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437
+                4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED
+                EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05
+                98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB
+                9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B
+                E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718
+                3995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33
+                A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7
+                ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864
+                D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E2
+                08E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF
+                """)
     )
 
     /// Generator assigned to the RFC 5054 3072-bit group.
@@ -109,8 +115,9 @@ struct RemotePairingSRPClient {
         let generator = Self.generator
         let serverPublicKey = BigUInt(serverPublicKey)
         guard serverPublicKey > 0,
-              serverPublicKey < modulus,
-              serverPublicKey % modulus != 0 else {
+            serverPublicKey < modulus,
+            serverPublicKey % modulus != 0
+        else {
             throw RorkDeviceError.secureSession(
                 "Remote pairing returned an invalid SRP public key."
             )
@@ -189,9 +196,9 @@ private func sha512(_ data: Data) -> Data {
     Data(SHA512.hash(data: data))
 }
 
-private extension Data {
+extension Data {
     /// Decodes a static hexadecimal constant after removing formatting whitespace.
-    init(hexadecimal value: String) {
+    fileprivate init(hexadecimal value: String) {
         let hexadecimal = value.filter { !$0.isWhitespace }
         precondition(hexadecimal.count.isMultiple(of: 2))
 
@@ -210,13 +217,13 @@ private extension Data {
     }
 
     /// Computes a byte-wise exclusive OR over equal-length buffers.
-    func xor(_ other: Data) -> Data {
+    fileprivate func xor(_ other: Data) -> Data {
         precondition(count == other.count)
         return Data(zip(self, other).map(^))
     }
 
     /// Compares equal-length authentication values without early exit.
-    func constantTimeEquals(_ other: Data) -> Bool {
+    fileprivate func constantTimeEquals(_ other: Data) -> Bool {
         guard count == other.count else {
             return false
         }
@@ -227,3 +234,4 @@ private extension Data {
         return difference == 0
     }
 }
+#endif

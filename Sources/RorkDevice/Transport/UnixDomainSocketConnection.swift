@@ -1,3 +1,4 @@
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 import NIOCore
 import NIOPosix
@@ -9,7 +10,7 @@ import NIOPosix
 /// the same NIO byte-stream adapter used by TCP connections.
 public final class UnixDomainSocketConnection:
     DeviceConnection,
-    PartialReceiveDeviceConnection,
+    StreamingDeviceConnection,
     NIOSecureSessionConnection
 {
     /// Shared NIO byte stream used by the public connection wrapper.
@@ -31,7 +32,8 @@ public final class UnixDomainSocketConnection:
         do {
             let asyncChannel = try await bootstrap.connect(unixDomainSocketPath: path) { channel in
                 channel.eventLoop.makeCompletedFuture {
-                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                        wrappingChannelSynchronously: channel)
                 }
             }
             let connection = NIODeviceConnection(asyncChannel: asyncChannel)
@@ -52,7 +54,7 @@ public final class UnixDomainSocketConnection:
     }
 
     /// Receives at least one byte and at most `count` bytes.
-    func receive(upTo count: Int) async throws -> Data {
+    public func receive(upTo count: Int) async throws -> Data {
         try await connection.receive(upTo: count)
     }
 
@@ -68,3 +70,4 @@ public final class UnixDomainSocketConnection:
         connection.close()
     }
 }
+#endif

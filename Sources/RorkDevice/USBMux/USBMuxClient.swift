@@ -1,3 +1,4 @@
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 
 /// Device record returned by the local usbmux daemon.
@@ -145,7 +146,8 @@ public final class USBMuxClient: Sendable {
             "PairRecordID": deviceIdentifier,
         ])
         if let number = response["Number"] as? NSNumber,
-           number.intValue != 0 {
+            number.intValue != 0
+        {
             throw RorkDeviceError.transport(
                 "usbmux ReadPairRecord failed with code \(number.intValue)."
             )
@@ -155,8 +157,10 @@ public final class USBMuxClient: Sendable {
                 "usbmux ReadPairRecord response was missing PairRecordData."
             )
         }
-        guard var dictionary = try PropertyListCodec.decode(recordData)
-            as? [String: Any] else {
+        guard
+            var dictionary = try PropertyListCodec.decode(recordData)
+                as? [String: Any]
+        else {
             throw RorkDeviceError.invalidPairingRecord(
                 "Expected plist dictionary."
             )
@@ -267,12 +271,13 @@ public final class USBMuxClient: Sendable {
                 }
 
                 do {
-                    let response = try await request([
-                        "MessageType": "Listen",
-                        "ClientVersionString": "rork-device",
-                        "ProgName": "rorkdevice",
-                        "kLibUSBMuxVersion": 3,
-                    ], connection: connection)
+                    let response = try await request(
+                        [
+                            "MessageType": "Listen",
+                            "ClientVersionString": "rork-device",
+                            "ProgName": "rorkdevice",
+                            "kLibUSBMuxVersion": 3,
+                        ], connection: connection)
                     try validateUSBMuxResult(response, operation: "Listen")
 
                     while !Task.isCancelled {
@@ -319,13 +324,14 @@ public final class USBMuxClient: Sendable {
     func connect(toDeviceID deviceID: UInt32, port: UInt16) async throws -> DeviceConnection {
         let connection = try await openConnection()
         do {
-            let response = try await request([
-                "MessageType": "Connect",
-                "ClientVersionString": "rork-device",
-                "ProgName": "rorkdevice",
-                "DeviceID": deviceID,
-                "PortNumber": UInt32(port.bigEndian),
-            ], connection: connection)
+            let response = try await request(
+                [
+                    "MessageType": "Connect",
+                    "ClientVersionString": "rork-device",
+                    "ProgName": "rorkdevice",
+                    "DeviceID": deviceID,
+                    "PortNumber": UInt32(port.bigEndian),
+                ], connection: connection)
 
             try validateUSBMuxResult(response, operation: "Connect")
             return connection
@@ -345,15 +351,17 @@ public final class USBMuxClient: Sendable {
     /// Opens a connection to the configured usbmux endpoint.
     private func openConnection() async throws -> DeviceConnection {
         switch endpoint {
-        case let .unixSocket(path):
+        case .unixSocket(let path):
             return try await UnixDomainSocketConnection.connect(toSocketAt: path)
-        case let .tcp(host, port):
+        case .tcp(let host, let port):
             return try await TCPDeviceConnection.connect(to: host, port: port)
         }
     }
 
     /// Sends a usbmux request over an existing connection.
-    private func request(_ dictionary: [String: Any], connection: DeviceConnection) async throws -> [String: Any] {
+    private func request(_ dictionary: [String: Any], connection: DeviceConnection) async throws
+        -> [String: Any]
+    {
         let tag = await requestTagGenerator.next()
         let payload = try PropertyListCodec.encode(dictionary, format: .xml)
         try await connection.send(try USBMuxPacket(tag: tag, payload: payload).encoded())
@@ -361,7 +369,9 @@ public final class USBMuxClient: Sendable {
     }
 
     /// Reads one usbmux plist response dictionary.
-    private func readResponseDictionary(from connection: DeviceConnection) async throws -> [String: Any] {
+    private func readResponseDictionary(from connection: DeviceConnection) async throws -> [String:
+        Any]
+    {
         let header = try await connection.receive(exactly: USBMuxPacket.headerLength)
         let length = try Int(header.littleEndianInteger(at: 0, as: UInt32.self))
         guard length >= USBMuxPacket.headerLength else {
@@ -372,9 +382,11 @@ public final class USBMuxClient: Sendable {
         let responsePayload = try await connection.receive(exactly: payloadLength)
         let responsePacket = try USBMuxPacket.decode(header: header, payload: responsePayload)
         guard responsePacket.messageType == USBMuxPacket.plistMessageType else {
-            throw RorkDeviceError.protocolViolation("Unsupported usbmux response message type \(responsePacket.messageType).")
+            throw RorkDeviceError.protocolViolation(
+                "Unsupported usbmux response message type \(responsePacket.messageType).")
         }
-        guard let response = try PropertyListCodec.decode(responsePacket.payload) as? [String: Any] else {
+        guard let response = try PropertyListCodec.decode(responsePacket.payload) as? [String: Any]
+        else {
             throw RorkDeviceError.protocolViolation("usbmux response was not a dictionary.")
         }
         return response
@@ -501,9 +513,11 @@ private func stringify(_ dictionary: [String: Any]) -> [String: String] {
 
 /// Parses a usbmux device record from a plist dictionary.
 private func parseDeviceRecord(_ item: [String: Any]) -> USBMuxDevice? {
-    guard let deviceID = (item["DeviceID"] as? NSNumber)?.uint32Value ?? item["DeviceID"] as? UInt32,
-          let properties = item["Properties"] as? [String: Any],
-          let serial = properties["SerialNumber"] as? String else {
+    guard
+        let deviceID = (item["DeviceID"] as? NSNumber)?.uint32Value ?? item["DeviceID"] as? UInt32,
+        let properties = item["Properties"] as? [String: Any],
+        let serial = properties["SerialNumber"] as? String
+    else {
         return nil
     }
     return USBMuxDevice(deviceID: deviceID, serialNumber: serial, properties: stringify(properties))
@@ -518,7 +532,10 @@ private func parseDeviceEvent(_ message: [String: Any]) -> USBMuxDeviceEvent? {
         }
         return .attached(device)
     case "Detached":
-        guard let deviceID = (message["DeviceID"] as? NSNumber)?.uint32Value ?? message["DeviceID"] as? UInt32 else {
+        guard
+            let deviceID = (message["DeviceID"] as? NSNumber)?.uint32Value ?? message["DeviceID"]
+                as? UInt32
+        else {
             return nil
         }
         return .detached(deviceID: deviceID, serialNumber: message["SerialNumber"] as? String)
@@ -544,3 +561,4 @@ private func isUSBMuxListenClosed(_ error: Error) -> Bool {
     }
     return true
 }
+#endif

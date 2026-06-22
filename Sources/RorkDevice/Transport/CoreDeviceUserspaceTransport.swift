@@ -1,3 +1,4 @@
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 
 /// Device transport backed by CoreDevice's local userspace gateway.
@@ -109,3 +110,4 @@ public struct CoreDeviceUserspaceTransport: DeviceTransport, Sendable {
         return preamble
     }
 }
+#endif

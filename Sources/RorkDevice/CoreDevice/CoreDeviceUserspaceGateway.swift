@@ -1,3 +1,4 @@
+#if canImport(NIOPosix) && canImport(RorkDeviceLwIP) && !os(WASI)
 import Foundation
 import NIOCore
 import NIOFoundationCompat
@@ -29,10 +30,11 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     private let ownedNetwork: CoreDeviceUserspaceNetwork?
 
     /// Async server channel that owns the listening socket.
-    private let server: NIOAsyncChannel<
-        NIOAsyncChannel<ByteBuffer, ByteBuffer>,
-        Never
-    >
+    private let server:
+        NIOAsyncChannel<
+            NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+            Never
+        >
 
     /// Protects listener shutdown and access to the accept-loop task.
     private let closeLock = NSLock()
@@ -159,22 +161,23 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     ///
     /// Calling this method more than once is safe.
     public func close() {
-        let tasks: (
-            acceptLoop: Task<Void, Error>?,
-            networkMonitor: Task<Void, Never>?
-        )? = closeLock.withLock {
-            guard !isClosed else {
-                return nil
+        let tasks:
+            (
+                acceptLoop: Task<Void, Error>?,
+                networkMonitor: Task<Void, Never>?
+            )? = closeLock.withLock {
+                guard !isClosed else {
+                    return nil
+                }
+                isClosed = true
+                let tasks = (
+                    acceptLoop: acceptTask,
+                    networkMonitor: networkMonitorTask
+                )
+                acceptTask = nil
+                networkMonitorTask = nil
+                return tasks
             }
-            isClosed = true
-            let tasks = (
-                acceptLoop: acceptTask,
-                networkMonitor: networkMonitorTask
-            )
-            acceptTask = nil
-            networkMonitorTask = nil
-            return tasks
-        }
         guard let tasks else {
             return
         }
@@ -223,24 +226,26 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 "CoreDevice userspace gateway requires a valid device IPv6 address."
         )
 
-        let server: NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, ByteBuffer>,
-            Never
-        > = try await ServerBootstrap(
-            group: NIOTransportRuntime.eventLoopGroup
-        )
-        .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
-        .childChannelOption(.autoRead, value: true)
-        .bind(host: host, port: Int(port)) { channel in
-            channel.eventLoop.makeCompletedFuture {
-                try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
-                    wrappingChannelSynchronously: channel
-                )
+        let server:
+            NIOAsyncChannel<
+                NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+                Never
+            > = try await ServerBootstrap(
+                group: NIOTransportRuntime.eventLoopGroup
+            )
+            .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(.autoRead, value: true)
+            .bind(host: host, port: Int(port)) { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                        wrappingChannelSynchronously: channel
+                    )
+                }
             }
-        }
 
         guard let boundPort = server.channel.localAddress?.port,
-              let gatewayPort = UInt16(exactly: boundPort) else {
+            let gatewayPort = UInt16(exactly: boundPort)
+        else {
             server.channel.close(promise: nil)
             throw RorkDeviceError.transport(
                 "CoreDevice userspace gateway did not receive a valid local port."
@@ -305,17 +310,20 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 }
 
                 guard let addressBytes = pending.readBytes(length: 16),
-                      Data(addressBytes) == expectedDeviceAddress else {
+                    Data(addressBytes) == expectedDeviceAddress
+                else {
                     throw RorkDeviceError.invalidInput(
                         "CoreDevice userspace gateway rejected a destination for another device address."
                     )
                 }
-                guard let rawPort = pending.readInteger(
-                    endianness: .little,
-                    as: UInt32.self
-                ),
-                let destinationPort = UInt16(exactly: rawPort),
-                destinationPort > 0 else {
+                guard
+                    let rawPort = pending.readInteger(
+                        endianness: .little,
+                        as: UInt32.self
+                    ),
+                    let destinationPort = UInt16(exactly: rawPort),
+                    destinationPort > 0
+                else {
                     throw RorkDeviceError.invalidInput(
                         "CoreDevice userspace gateway requires a destination port from 1 through 65535."
                     )
@@ -324,8 +332,9 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 let openedConnection = try await connectionFactory(
                     destinationPort
                 )
-                guard let connection =
-                    openedConnection as? any PartialReceiveDeviceConnection
+                guard
+                    let connection =
+                        openedConnection as? any StreamingDeviceConnection
                 else {
                     openedConnection.close()
                     throw RorkDeviceError.transport(
@@ -365,9 +374,11 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
 
                 do {
                     while var buffer = try await iterator.next() {
-                        guard let data = buffer.readData(
-                            length: buffer.readableBytes
-                        ), !data.isEmpty else {
+                        guard
+                            let data = buffer.readData(
+                                length: buffer.readableBytes
+                            ), !data.isEmpty
+                        else {
                             continue
                         }
                         try await connection.send(data)
@@ -416,3 +427,4 @@ private final class GatewayNetworkTermination: @unchecked Sendable {
 /// Opens one device-side connection selected by a gateway preamble.
 typealias CoreDeviceGatewayConnectionFactory =
     @Sendable (UInt16) async throws -> DeviceConnection
+#endif
