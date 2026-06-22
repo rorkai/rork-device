@@ -133,11 +133,7 @@ var targets: [Target] = [
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
             .product(name: "NIOFoundationCompat", package: "swift-nio"),
-            .product(
-                name: "NIOPosix",
-                package: "swift-nio",
-                condition: .when(platforms: nativePlatforms)
-            ),
+            .product(name: "NIOPosix", package: "swift-nio"),
             .product(name: "NIOTLS", package: "swift-nio"),
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(
