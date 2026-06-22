@@ -371,7 +371,13 @@ public final class AFCClient {
         }
 
         let operationValue: UInt64 = try header.littleEndianInteger(at: 32)
-        let payloadLength = Int(entireLength - 40)
+        let rawPayloadLength = entireLength - 40
+        guard rawPayloadLength <= UInt64(Int.max) else {
+            throw RorkDeviceError.protocolViolation(
+                "AFC payload length exceeds host limits."
+            )
+        }
+        let payloadLength = Int(rawPayloadLength)
         let payload =
             payloadLength == 0 ? Data() : try await connection.receive(exactly: payloadLength)
         return AFCPacketResponse(

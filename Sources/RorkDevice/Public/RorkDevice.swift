@@ -114,8 +114,8 @@ public final class DeviceClient {
     /// - Parameters:
     ///   - device: USB-backed device returned by `discoverDevices()`.
     ///   - trustTimeout: Maximum time to wait for the device-side decision.
-    ///   - retryInterval: Delay between checks while the Trust dialog remains
-    ///     unanswered. Zero is accepted for deterministic tests.
+    ///   - retryInterval: Positive delay between checks while the Trust dialog
+    ///     remains unanswered.
     ///   - onProgress: Optional callback for user-facing pairing state.
     /// - Returns: Completed pairing material, including the device-issued
     ///   escrow bag, after it has been saved by usbmux.
@@ -134,9 +134,9 @@ public final class DeviceClient {
                 "Pairing trust timeout cannot be negative."
             )
         }
-        guard retryInterval >= .zero else {
+        guard retryInterval > .zero else {
             throw RorkDeviceError.invalidInput(
-                "Pairing retry interval cannot be negative."
+                "Pairing retry interval must be greater than zero."
             )
         }
         guard case .usbmux(let deviceID) = device.connection else {
@@ -294,13 +294,18 @@ public final class DeviceClient {
         label: String = "rorkdevice"
     ) async throws -> DeviceSession {
         var connection = try await transport.connect(to: 62078)
-        let lockdown = LockdownClient(connection: connection, label: label)
-        let session = try await lockdown.startSession(using: pairingRecord)
-        if session.requiresSecureConnection {
-            connection = try await secureSessionUpgrader.upgrade(
-                connection,
-                pairingRecord: pairingRecord
-            )
+        do {
+            let lockdown = LockdownClient(connection: connection, label: label)
+            let session = try await lockdown.startSession(using: pairingRecord)
+            if session.requiresSecureConnection {
+                connection = try await secureSessionUpgrader.upgrade(
+                    connection,
+                    pairingRecord: pairingRecord
+                )
+            }
+        } catch {
+            connection.close()
+            throw error
         }
 
         return DeviceSession(
@@ -400,9 +405,9 @@ public final class DeviceClient {
                 "Pairing trust timeout cannot be negative."
             )
         }
-        guard retryInterval >= .zero else {
+        guard retryInterval > .zero else {
             throw RorkDeviceError.invalidInput(
-                "Pairing retry interval cannot be negative."
+                "Pairing retry interval must be greater than zero."
             )
         }
 
@@ -652,17 +657,6 @@ public struct DevicePairingInformation: Equatable, Sendable {
 
     /// Wi-Fi hardware address retained in the pairing record.
     public let wiFiMACAddress: String
-
-    /// Creates public pairing prerequisites read from Lockdown.
-    init(
-        deviceIdentifier: String,
-        devicePublicKey: Data,
-        wiFiMACAddress: String
-    ) {
-        self.deviceIdentifier = deviceIdentifier
-        self.devicePublicKey = devicePublicKey
-        self.wiFiMACAddress = wiFiMACAddress
-    }
 }
 
 #if canImport(NIOPosix)

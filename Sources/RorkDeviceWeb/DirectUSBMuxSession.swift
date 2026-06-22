@@ -303,10 +303,11 @@ actor DirectUSBMuxSession {
             return data
         }
 
-        precondition(
-            state.readWaiter == nil,
-            "Direct USB mux connections support one active reader."
-        )
+        guard state.readWaiter == nil else {
+            throw DirectUSBMuxError.concurrentReadNotSupported(
+                localPort: localPort
+            )
+        }
         return try await withCheckedThrowingContinuation {
             state.readWaiter = ReadWaiter(
                 maximumByteCount: byteCount,
@@ -462,10 +463,11 @@ actor DirectUSBMuxSession {
         guard type == 3 else {
             return
         }
-        let message = String(
-            decoding: payload.dropFirst(),
-            as: UTF8.self
-        )
+        let message =
+            String(
+                data: Data(payload.dropFirst()),
+                encoding: .utf8
+            ) ?? "Invalid UTF-8 device response."
         throw DirectUSBMuxError.deviceControlError(message)
     }
 
@@ -1013,7 +1015,11 @@ actor DirectUSBMuxSession {
         guard !data.isEmpty else {
             return nil
         }
-        let reason = String(decoding: data, as: UTF8.self)
+        let reason =
+            (
+                String(data: data, encoding: .utf8)
+                    ?? "Invalid UTF-8 reset reason."
+            )
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return reason.isEmpty ? nil : reason
     }
@@ -1271,6 +1277,9 @@ enum DirectUSBMuxError:
         maximumByteCount: Int
     )
 
+    /// More than one task attempted to read the same service connection.
+    case concurrentReadNotSupported(localPort: UInt16)
+
     /// Every host-side ephemeral port is active.
     case noAvailablePorts
 
@@ -1323,6 +1332,9 @@ enum DirectUSBMuxError:
         case .receiveBufferOverflow(let localPort, let maximumByteCount):
             return
                 "Device service connection \(localPort) exceeded its \(maximumByteCount)-byte receive buffer."
+        case .concurrentReadNotSupported(let localPort):
+            return
+                "Device service connection \(localPort) supports one active reader."
         case .noAvailablePorts:
             return "No direct USB mux service ports are available."
         case .deviceControlError(let message):

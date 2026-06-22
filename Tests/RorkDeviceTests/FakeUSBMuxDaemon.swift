@@ -752,13 +752,24 @@ private func readExact(_ fd: Int32, count: Int) -> Data? {
 }
 
 private func sendAll(_ data: Data, to fd: Int32) {
+    #if canImport(Glibc)
+    let sendFlags = Int32(MSG_NOSIGNAL)
+    #else
+    let sendFlags: Int32 = 0
+    #endif
+
     data.withUnsafeBytes { buffer in
         guard let base = buffer.baseAddress else {
             return
         }
         var offset = 0
         while offset < data.count {
-            let sent = send(fd, base.advanced(by: offset), data.count - offset, 0)
+            let sent = send(
+                fd,
+                base.advanced(by: offset),
+                data.count - offset,
+                sendFlags
+            )
             if sent <= 0 {
                 return
             }

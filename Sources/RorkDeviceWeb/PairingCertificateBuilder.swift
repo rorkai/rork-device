@@ -182,11 +182,15 @@ enum PairingCertificateBuilder {
         switch role {
         case .certificateAuthority:
             basicConstraints = DER.sequence([DER.boolean(true)])
+            // RFC 5280 assigns keyCertSign to bit 5. DER encodes bit zero as
+            // the most significant bit, yielding 0x04 with two unused bits.
             keyUsage = DER.bitString([0x04], unusedBitCount: 2)
             basicConstraintsAreCritical = true
 
         case .leaf:
             basicConstraints = DER.sequence([])
+            // digitalSignature and keyEncipherment occupy bits 0 and 2,
+            // yielding 0xA0 with five unused bits.
             keyUsage = DER.bitString([0xA0], unusedBitCount: 5)
             basicConstraintsAreCritical = false
         }

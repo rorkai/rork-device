@@ -165,6 +165,8 @@ private struct WebCryptography {
             JSTypedArray<UInt8>(
                 [0x01, 0x00, 0x01]
             ).jsValue
+        // Lockdown validates its pairing certificate chain with this legacy
+        // digest, so a stronger hash would produce an incompatible identity.
         algorithm["hash"] = "SHA-1"
         let usages = JSObject.global.Array.function!.new(
             "sign",

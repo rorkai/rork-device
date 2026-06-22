@@ -28,7 +28,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
         let pairingRecord = try await client.pair(
             with: device,
             trustTimeout: .seconds(1),
-            retryInterval: .zero
+            retryInterval: .milliseconds(1)
         ) {
             progress.append($0)
         }
@@ -83,6 +83,24 @@ final class DeviceClientIntegrationTests: XCTestCase {
             start.duration(to: clock.now),
             .seconds(1)
         )
+    }
+
+    func testPairingRejectsZeroRetryInterval() async throws {
+        let client = DeviceClient()
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.pair(
+                using: try testPairingRecord(),
+                over: FailingDeviceTransport(),
+                trustTimeout: .seconds(1),
+                retryInterval: .zero
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput("Pairing retry interval must be greater than zero.")
+            )
+        }
     }
 
     func testUnpairsDeviceBeforeRemovingStoredPairingRecord() async throws {
@@ -396,6 +414,48 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertTrue(daemon.connectedPorts.contains(1234))
     }
 
+    func testLockdownConnectionClosesWhenSessionSetupFails() async throws {
+        let connection = FakeConnection()
+        let client = DeviceClient()
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.connect(
+                using: StaticDeviceTransport(connection: connection),
+                pairingRecord: try testPairingRecord()
+            )
+        }) { _ in }
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testLockdownConnectionClosesWhenSecureUpgradeFails() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "SessionID": "fake-session",
+                "EnableSessionSSL": true,
+            ])
+        )
+        let expectedError = RorkDeviceError.secureSession(
+            "Deliberate Lockdown secure-upgrade failure."
+        )
+        let client = DeviceClient(
+            secureSessionUpgrader: FailingSecureSessionUpgrader(
+                error: expectedError
+            )
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.connect(
+                using: StaticDeviceTransport(connection: connection),
+                pairingRecord: try testPairingRecord()
+            )
+        }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, expectedError)
+        }
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
     func testSecureServiceConnectionClosesWhenUpgradeFails() async throws {
         let lockdownConnection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -453,6 +513,19 @@ private struct StaticDeviceTransport: DeviceTransport {
     /// Returns the preconstructed connection without opening a real transport.
     func connect(to _: UInt16) async throws -> DeviceConnection {
         connection
+    }
+}
+
+/// Ensures invalid-input tests fail if validation reaches device I/O.
+///
+/// The zero-interval regression must be rejected before opening a transport;
+/// throwing here makes that ordering observable without a physical device.
+private struct FailingDeviceTransport: DeviceTransport {
+    /// Rejects the unexpected connection attempt.
+    func connect(to _: UInt16) async throws -> DeviceConnection {
+        throw RorkDeviceError.transport(
+            "The transport should not be opened for invalid input."
+        )
     }
 }
 

@@ -309,13 +309,79 @@ final class DirectUSBMuxSessionTests: XCTestCase {
                 transmitSequence: 3
             )
         )
-        try await Task.sleep(for: .milliseconds(20))
-        try await connection.send(Data([3]))
-
         let duplicateAcknowledgment = try await nextTCPPacket(from: pipe)
         XCTAssertEqual(duplicateAcknowledgment.acknowledgmentNumber, 1)
+        try await connection.send(Data([3]))
         let outbound = try await nextTCPPacket(from: pipe)
         XCTAssertEqual(outbound.payload, Data([3]))
+
+        connection.close()
+        await session.close()
+    }
+
+    func testConcurrentReceiveReturnsAnErrorInsteadOfTrapping() async throws {
+        let pipe = DirectUSBMuxTestPipe()
+        let session = try await openSession(over: pipe)
+        let connection = try await openConnection(
+            to: 62_078,
+            through: session,
+            pipe: pipe,
+            deviceSequenceNumber: 100
+        )
+
+        try await withThrowingTaskGroup(
+            of: Result<Data, any Error>.self
+        ) { reads in
+            for _ in 0..<2 {
+                reads.addTask {
+                    do {
+                        return .success(
+                            try await connection.receive(upTo: 1)
+                        )
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            let nextConcurrentResult = try await reads.next()
+            let concurrentResult = try XCTUnwrap(nextConcurrentResult)
+            guard case .failure(let error) = concurrentResult else {
+                return XCTFail(
+                    "Expected one concurrent read to fail before data arrived."
+                )
+            }
+            XCTAssertEqual(
+                error as? DirectUSBMuxError,
+                .concurrentReadNotSupported(
+                    localPort: connection.localPort
+                )
+            )
+
+            try await pipe.enqueueRead(
+                muxPacket(
+                    tcpPacket: DirectUSBMuxTCPPacket(
+                        sourcePort: connection.remotePort,
+                        destinationPort: connection.localPort,
+                        sequenceNumber: 101,
+                        acknowledgmentNumber: 1,
+                        flags: [.acknowledgment],
+                        windowSize: 512,
+                        payload: Data([0xaa])
+                    ),
+                    transmitSequence: 2
+                )
+            )
+            let nextSuccessfulResult = try await reads.next()
+            let successfulResult = try XCTUnwrap(nextSuccessfulResult)
+            guard case .success(let data) = successfulResult else {
+                return XCTFail(
+                    "Expected the remaining read to receive device data."
+                )
+            }
+            XCTAssertEqual(data, Data([0xaa]))
+            _ = try await nextTCPPacket(from: pipe)
+        }
 
         connection.close()
         await session.close()
@@ -545,7 +611,8 @@ final class DirectUSBMuxSessionTests: XCTestCase {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(20))
+        let reset = try await nextTCPPacket(from: pipe)
+        XCTAssertEqual(reset.flags, [.reset])
         do {
             _ = try await overflowingConnection.receive(upTo: 1)
             XCTFail("Expected the overflowing connection to fail.")
@@ -559,8 +626,6 @@ final class DirectUSBMuxSessionTests: XCTestCase {
             )
         }
 
-        let reset = try await nextTCPPacket(from: pipe)
-        XCTAssertEqual(reset.flags, [.reset])
         try await healthyConnection.send(Data([0xbb]))
         let healthyPacket = try await nextTCPPacket(from: pipe)
         XCTAssertEqual(healthyPacket.payload, Data([0xbb]))
