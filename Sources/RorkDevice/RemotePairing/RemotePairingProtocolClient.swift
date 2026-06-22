@@ -86,8 +86,12 @@ final class RemotePairingProtocolClient {
     ///
     /// - Parameter willEstablishTrust: Called immediately before manual pair
     ///   setup starts after an authentication or unknown-peer rejection.
+    /// - Parameter didEnrollIdentity: Called after the device accepts and
+    ///   decrypts the M6 identity response. Failures after this boundary may be
+    ///   recovered by verifying the same identity on a fresh connection.
     func establishTrustIfNeeded(
-        willEstablishTrust: () -> Void = {}
+        willEstablishTrust: () -> Void = {},
+        didEnrollIdentity: () -> Void = {}
     ) async throws {
         try await beginPairVerification()
         do {
@@ -98,7 +102,9 @@ final class RemotePairingProtocolClient {
                 throw error
             }
             willEstablishTrust()
-            try await establishTrust()
+            try await establishTrust(
+                didEnrollIdentity: didEnrollIdentity
+            )
         }
     }
 
@@ -242,7 +248,9 @@ final class RemotePairingProtocolClient {
     }
 
     /// Completes SRP pair setup and registers the host identity with the device.
-    private func establishTrust() async throws {
+    private func establishTrust(
+        didEnrollIdentity: () -> Void
+    ) async throws {
         try await sendPairingData(
             TLV8.encode([
                 TLV8Field(type: 0x00, value: Data([0x00])),
@@ -292,6 +300,7 @@ final class RemotePairingProtocolClient {
         try exchange.verify(serverProof: proofResponse.value(for: 0x04))
 
         try await exchangeIdentity(using: exchange.sessionKey)
+        didEnrollIdentity()
         try await createRemoteUnlockKey(using: exchange.sessionKey)
     }
 
