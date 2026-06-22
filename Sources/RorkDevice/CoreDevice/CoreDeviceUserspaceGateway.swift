@@ -1,4 +1,4 @@
-#if canImport(NIOPosix) && canImport(RorkDeviceLwIP)
+#if canImport(NIOPosix) && canImport(RorkDeviceLwIP) && !os(WASI)
 import Foundation
 import NIOCore
 import NIOFoundationCompat

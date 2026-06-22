@@ -23,7 +23,7 @@ public enum RorkDevice {
 /// management, heartbeat, and InstallationProxy workflows do not depend on the
 /// transport selected by the application.
 public final class DeviceClient {
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     /// Client used to discover devices and open usbmux-forwarded connections.
     private let usbmuxClient: USBMuxClient
     #endif
@@ -31,7 +31,7 @@ public final class DeviceClient {
     /// Strategy used when Lockdown requires a secure service connection.
     private let secureSessionUpgrader: SecureSessionUpgrader
 
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     /// Creates a client with injectable transport and secure-session behavior.
     ///
     /// - Parameters:
@@ -64,7 +64,7 @@ public final class DeviceClient {
     }
     #endif
 
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     /// Returns devices currently visible through the local usbmux endpoint.
     ///
     /// The returned values contain the stable device identifier and the usbmux
@@ -236,7 +236,7 @@ public final class DeviceClient {
     }
     #endif
 
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     /// Opens an authenticated Lockdown session for a discovered device.
     ///
     /// The `pairingRecord` must belong to the same physical device. When
@@ -462,7 +462,7 @@ public final class DeviceClient {
         )
     }
 
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     /// Opens an authenticated Lockdown session against a known endpoint.
     ///
     /// Use this when a tunnel, test harness, or embedded transport exposes the
@@ -659,7 +659,7 @@ public struct DevicePairingInformation: Equatable, Sendable {
     public let wiFiMACAddress: String
 }
 
-#if canImport(NIOPosix)
+#if canImport(NIOPosix) && !os(WASI)
 extension DeviceEvent {
     /// Converts the usbmux protocol event into the transport-neutral public model.
     fileprivate init(_ event: USBMuxDeviceEvent) {

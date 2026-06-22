@@ -1,4 +1,4 @@
-#if canImport(NIOPosix)
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 import NIOCore
 import NIOPosix

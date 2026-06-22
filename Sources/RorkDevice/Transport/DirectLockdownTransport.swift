@@ -1,4 +1,4 @@
-#if canImport(NIOPosix)
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 
 /// Transport for workflows that already know the device host endpoint.

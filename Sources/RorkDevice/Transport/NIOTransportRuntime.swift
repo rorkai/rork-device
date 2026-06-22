@@ -1,4 +1,4 @@
-#if canImport(NIOPosix)
+#if canImport(NIOPosix) && !os(WASI)
 import NIOPosix
 
 /// Shared SwiftNIO runtime used by socket-backed device connections.

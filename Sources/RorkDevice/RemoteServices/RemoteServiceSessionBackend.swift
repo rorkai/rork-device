@@ -29,7 +29,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     private let endpointDescription: (UInt16) -> String
 
     /// Creates a backend bound to one live discovery advertisement.
-    #if canImport(NIOPosix)
+    #if canImport(NIOPosix) && !os(WASI)
     init(
         host: String,
         directory: RemoteServiceDirectory,

@@ -1,4 +1,4 @@
-#if canImport(NIOPosix)
+#if canImport(NIOPosix) && !os(WASI)
 import Foundation
 
 /// Device transport backed by CoreDevice's local userspace gateway.
