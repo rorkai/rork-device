@@ -1,7 +1,12 @@
-import Darwin
 import Foundation
 import XCTest
 @testable import RorkDevice
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 final class DirectLockdownTransportTests: XCTestCase {
     func testConnectsToByteSwappedServicePortWhenDirectPortIsRefused() async throws {
@@ -60,7 +65,7 @@ private final class OneShotTCPServer: @unchecked Sendable {
     }
 
     init() throws {
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+        let socketFD = socket(AF_INET, testStreamSocketType, 0)
         guard socketFD >= 0 else {
             throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
         }
@@ -69,7 +74,9 @@ private final class OneShotTCPServer: @unchecked Sendable {
         setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = 0
         address.sin_addr.s_addr = inet_addr("127.0.0.1")

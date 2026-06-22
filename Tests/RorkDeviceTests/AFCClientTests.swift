@@ -160,6 +160,24 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
 
+    func testUploadFileSendsOneMegabyteInOneWriteRequest() async throws {
+        let data = Data(repeating: 0x5a, count: 1024 * 1024)
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        // Keep the legacy 64 KiB implementation runnable so a regression
+        // fails on its write shape instead of exhausting fake responses.
+        for packetNumber in 2...18 {
+            inbound.append(afcStatusResponse(packetNumber: UInt64(packetNumber), status: 0))
+        }
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        try await client.uploadFile(data, to: "/PublicStaging/App.ipa")
+
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
+        XCTAssertEqual(connection.sent[1].count, data.count + 48)
+    }
+
     func testContentsOfFileReadsUntilEmptyChunkAndClosesFile() async throws {
         var inbound = Data()
         inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))

@@ -1,10 +1,12 @@
 import Foundation
 
 /// Opens a byte stream to one port advertised by Remote Service Discovery.
-typealias RemoteServiceConnectionFactory = (_ host: String, _ port: UInt16) async throws -> DeviceConnection
+typealias RemoteServiceConnectionFactory = (_ host: String, _ port: UInt16) async throws ->
+    DeviceConnection
 
 /// Opens a byte stream to an advertised port on the backend's fixed route.
-private typealias BoundRemoteServiceConnectionFactory = (_ port: UInt16) async throws -> DeviceConnection
+private typealias BoundRemoteServiceConnectionFactory = (_ port: UInt16) async throws ->
+    DeviceConnection
 
 /// Resolves and opens services from a live Remote Service Discovery session.
 final class RemoteServiceSessionBackend: DeviceSessionBackend {
@@ -27,6 +29,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     private let endpointDescription: (UInt16) -> String
 
     /// Creates a backend bound to one live discovery advertisement.
+    #if canImport(NIOPosix)
     init(
         host: String,
         directory: RemoteServiceDirectory,
@@ -46,6 +49,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             remoteServiceEndpointDescription(host: host, port: port)
         }
     }
+    #endif
 
     /// Creates a backend whose discovery and service ports share one transport.
     init(
@@ -94,8 +98,11 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     }
 
     /// Connects to an advertised service and completes its two-message RSD check-in.
-    func startService(named serviceName: String, escrowBag _: Data?) async throws -> DeviceConnection {
-        let advertisedName = directory.services[serviceName] == nil
+    func startService(named serviceName: String, escrowBag _: Data?) async throws
+        -> DeviceConnection
+    {
+        let advertisedName =
+            directory.services[serviceName] == nil
             ? "\(serviceName).shim.remote"
             : serviceName
         guard let port = directory.port(for: serviceName) else {
@@ -143,11 +150,12 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
         endpoint: String
     ) async throws {
         do {
-            try await PropertyListMessageFramer.send([
-                "Label": label,
-                "ProtocolVersion": "2",
-                "Request": "RSDCheckin",
-            ], to: connection)
+            try await PropertyListMessageFramer.send(
+                [
+                    "Label": label,
+                    "ProtocolVersion": "2",
+                    "Request": "RSDCheckin",
+                ], to: connection)
         } catch {
             throw RorkDeviceError.transport(
                 "Remote service \(serviceName) on \(endpoint) failed while sending RSDCheckin: \(describeDeviceSessionError(error))"
@@ -204,7 +212,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
         endpoint: String,
         expectedRequest: String
     ) -> RorkDeviceError {
-        if case let .protocolViolation(message) = error as? RorkDeviceError {
+        if case .protocolViolation(let message) = error as? RorkDeviceError {
             return .protocolViolation(
                 "Remote service \(serviceName) on \(endpoint) returned an invalid \(expectedRequest) response: \(message)"
             )

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+
 @testable import RorkDevice
 
 final class PairingRecordTests: XCTestCase {
@@ -15,7 +16,8 @@ final class PairingRecordTests: XCTestCase {
             "RootPrivateKey": Data([7]),
             "EscrowBag": Data([8]),
         ]
-        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist, format: .xml, options: 0)
         let record = try PairingRecord.parse(data)
 
         XCTAssertEqual(record.udid, "device-1")
@@ -32,7 +34,8 @@ final class PairingRecordTests: XCTestCase {
             "HostID": "host-1",
             "SystemBUID": "system-1",
         ]
-        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist, format: .xml, options: 0)
         let record = try PairingRecord.parse(data)
 
         XCTAssertFalse(record.hasSecureSessionMaterial)
@@ -60,12 +63,38 @@ final class PairingRecordTests: XCTestCase {
             "HostID": " host-1\n",
             "SystemBUID": "\tsystem-1 ",
         ]
-        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist, format: .xml, options: 0)
         let record = try PairingRecord.parse(data)
 
         XCTAssertEqual(record.udid, "device-1")
         XCTAssertEqual(record.hostID, "host-1")
         XCTAssertEqual(record.systemBUID, "system-1")
+    }
+
+    func testCreatesCandidateFromBackendGeneratedCredentials() throws {
+        let record = try PairingRecord.candidate(
+            deviceIdentifier: "device-1",
+            hostID: "host-1",
+            systemBUID: "system-1",
+            deviceCertificate: Data([1]),
+            hostCertificate: Data([2]),
+            hostPrivateKey: Data([3]),
+            rootCertificate: Data([4]),
+            rootPrivateKey: Data([5]),
+            wiFiMACAddress: "00:11:22:33:44:55"
+        )
+
+        XCTAssertEqual(record.udid, "device-1")
+        XCTAssertEqual(record.hostID, "host-1")
+        XCTAssertEqual(record.systemBUID, "system-1")
+        XCTAssertEqual(record.deviceCertificate, Data([1]))
+        XCTAssertEqual(record.hostCertificate, Data([2]))
+        XCTAssertEqual(record.hostPrivateKey, Data([3]))
+        XCTAssertEqual(record.rootCertificate, Data([4]))
+        XCTAssertEqual(record.rootPrivateKey, Data([5]))
+        XCTAssertEqual(record.wiFiMACAddress, "00:11:22:33:44:55")
+        XCTAssertNil(record.escrowBag)
     }
 
     func testLoadsSanitizedPairingRecordFixtures() throws {

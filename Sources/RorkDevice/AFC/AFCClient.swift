@@ -109,7 +109,9 @@ public final class AFCClient {
     public func removePath(_ path: String, ignoreMissing: Bool = false) async throws {
         do {
             try await sendPathOperation(.removePath, path: path)
-        } catch RorkDeviceError.afcStatus(let status) where ignoreMissing && status == AFCStatus.noSuchFile {
+        } catch RorkDeviceError.afcStatus(let status)
+            where ignoreMissing && status == AFCStatus.noSuchFile
+        {
             return
         }
     }
@@ -140,7 +142,7 @@ public final class AFCClient {
         var contents = Data()
         do {
             while true {
-                let chunk = try await read(handle: handle, length: AFCStaging.chunkSize)
+                let chunk = try await read(handle: handle, length: AFCStaging.readChunkSize)
                 if chunk.isEmpty {
                     break
                 }
@@ -162,13 +164,16 @@ public final class AFCClient {
     public func downloadFile(from remotePath: String, to localURL: URL) async throws {
         let handle = try await openFile(remotePath, mode: .readOnly)
         do {
-            FileManager.default.createFile(atPath: localURL.path, contents: nil)
+            _ = FileManager.default.createFile(
+                atPath: localURL.path,
+                contents: nil
+            )
             let file = try FileHandle(forWritingTo: localURL)
             defer { try? file.close() }
             try file.truncate(atOffset: 0)
 
             while true {
-                let chunk = try await read(handle: handle, length: AFCStaging.chunkSize)
+                let chunk = try await read(handle: handle, length: AFCStaging.readChunkSize)
                 if chunk.isEmpty {
                     break
                 }
@@ -194,7 +199,7 @@ public final class AFCClient {
             let file = try FileHandle(forReadingFrom: fileURL)
             defer { try? file.close() }
             while true {
-                let chunk = try file.read(upToCount: AFCStaging.chunkSize) ?? Data()
+                let chunk = try file.read(upToCount: AFCStaging.writeChunkSize) ?? Data()
                 if chunk.isEmpty {
                     break
                 }
@@ -221,7 +226,7 @@ public final class AFCClient {
         do {
             var offset = 0
             while offset < data.count {
-                let end = min(offset + AFCStaging.chunkSize, data.count)
+                let end = min(offset + AFCStaging.writeChunkSize, data.count)
                 try await write(handle: handle, data: data[offset..<end])
                 offset = end
             }
@@ -241,7 +246,9 @@ public final class AFCClient {
     }
 
     /// Sends a path command that should return an AFC data payload.
-    private func sendDataPathOperation(_ operation: AFCOperation, path: String) async throws -> AFCPacketResponse {
+    private func sendDataPathOperation(_ operation: AFCOperation, path: String) async throws
+        -> AFCPacketResponse
+    {
         var payload = Data(path.utf8)
         payload.append(0)
         try await sendPacket(operation: operation, headerPayload: payload)
@@ -299,7 +306,9 @@ public final class AFCClient {
     }
 
     /// Encodes and sends one AFC packet.
-    private func sendPacket(operation: AFCOperation, headerPayload: Data = Data(), bodyPayload: Data = Data()) async throws {
+    private func sendPacket(
+        operation: AFCOperation, headerPayload: Data = Data(), bodyPayload: Data = Data()
+    ) async throws {
         packetNumber += 1
         let thisLength = UInt64(40 + headerPayload.count)
         let entireLength = UInt64(40 + headerPayload.count + bodyPayload.count)
@@ -354,7 +363,8 @@ public final class AFCClient {
         let thisLength: UInt64 = try header.littleEndianInteger(at: 16)
         let responsePacket: UInt64 = try header.littleEndianInteger(at: 24)
         guard responsePacket == packetNumber else {
-            throw RorkDeviceError.protocolViolation("Unexpected AFC packet number \(responsePacket), expected \(packetNumber).")
+            throw RorkDeviceError.protocolViolation(
+                "Unexpected AFC packet number \(responsePacket), expected \(packetNumber).")
         }
         guard entireLength >= 40, thisLength >= 40, thisLength <= entireLength else {
             throw RorkDeviceError.protocolViolation("Invalid AFC packet lengths.")
@@ -362,7 +372,8 @@ public final class AFCClient {
 
         let operationValue: UInt64 = try header.littleEndianInteger(at: 32)
         let payloadLength = Int(entireLength - 40)
-        let payload = payloadLength == 0 ? Data() : try await connection.receive(exactly: payloadLength)
+        let payload =
+            payloadLength == 0 ? Data() : try await connection.receive(exactly: payloadLength)
         return AFCPacketResponse(
             operation: AFCOperation(rawValue: operationValue) ?? .invalid,
             payload: payload
@@ -384,7 +395,17 @@ public final class AFCClient {
 /// Constants and validation for AFC public staging uploads.
 private enum AFCStaging {
     static let directory = "./PublicStaging"
-    static let chunkSize = 64 * 1024
+
+    /// Keeps ordinary file reads bounded without requesting unusually large
+    /// responses from services that may produce data incrementally.
+    static let readChunkSize = 64 * 1024
+
+    /// Amortizes AFC's mandatory status response across enough staged data to
+    /// avoid hundreds of round trips for a typical IPA. The underlying
+    /// transport remains responsible for segmenting the request into packets
+    /// that fit its framing and flow-control limits.
+    static let writeChunkSize = 1024 * 1024
+
     static let maxFilenameLength = 255
 
     static func safeFilename(bundleIdentifier: String) throws -> String {
@@ -448,7 +469,8 @@ private struct AFCPacketResponse {
 }
 
 /// File type reported by AFC metadata.
-public struct AFCItemType: RawRepresentable, Equatable, Hashable, Sendable, CustomStringConvertible {
+public struct AFCItemType: RawRepresentable, Equatable, Hashable, Sendable, CustomStringConvertible
+{
     /// Raw `st_ifmt` value reported by AFC.
     public let rawValue: String
 

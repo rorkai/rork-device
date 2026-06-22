@@ -1,8 +1,10 @@
 import Foundation
 import NIOCore
+import NIOEmbedded
 import NIOPosix
 import NIOSSL
 import XCTest
+
 @testable import RorkDevice
 
 /// Tests for the platform default secure-session selection.
@@ -27,7 +29,8 @@ final class SecureSessionUpgraderTests: XCTestCase {
                 pairingRecord: pairingRecord
             )
         }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .invalidPairingRecord("Missing DeviceCertificate."))
+            XCTAssertEqual(
+                error as? RorkDeviceError, .invalidPairingRecord("Missing DeviceCertificate."))
         }
     }
 
@@ -62,6 +65,72 @@ final class SecureSessionUpgraderTests: XCTestCase {
         )
 
         XCTAssertEqual(received, payload)
+    }
+
+    /// Verifies that TLS can wrap an arbitrary streaming device transport.
+    func testNIOSecureSessionUpgraderExchangesDataOverStreamingConnection() async throws {
+        let server = try await SecureSessionTestServer.start()
+        defer { server.stop() }
+
+        let socketConnection = try await TCPDeviceConnection.connect(
+            to: "127.0.0.1",
+            port: server.port
+        )
+        let connection = TestStreamingConnection(
+            wrapping: socketConnection
+        )
+        defer { connection.close() }
+
+        try await connection.send(SecureSessionTestServer.upgradeRequest)
+        let upgradeResponse = try await connection.receive(
+            exactly: SecureSessionTestServer.upgradeResponse.count
+        )
+        XCTAssertEqual(
+            upgradeResponse,
+            SecureSessionTestServer.upgradeResponse
+        )
+
+        let secureConnection = try await NIOSecureSessionUpgrader().upgrade(
+            connection,
+            pairingRecord: try makeSecureSessionPairingRecord()
+        )
+
+        let payload = Data("Transport-neutral TLS".utf8)
+        try await secureConnection.send(payload)
+        let received = try await secureConnection.receive(
+            exactly: payload.count
+        )
+
+        XCTAssertEqual(received, payload)
+    }
+
+    /// Verifies that the WASM-style embedded client emits its initial TLS flight.
+    func testEmbeddedTLSChannelActivationEmitsClientHello() async throws {
+        var configuration = TLSConfiguration.makeClientConfiguration()
+        configuration.certificateVerification = .none
+        let context = try NIOSSLContext(configuration: configuration)
+        let tlsHandler = try NIOSSLClientHandler(
+            context: context,
+            serverHostname: nil
+        )
+        let channel = EmbeddedChannel(handler: tlsHandler)
+        let address = try SocketAddress(
+            ipAddress: "127.0.0.1",
+            port: 0
+        )
+
+        try await activateEmbeddedTLSChannel(
+            channel,
+            connectingTo: address
+        )
+
+        guard
+            case .byteBuffer(let clientHello)? =
+                try channel.readOutbound(as: IOData.self)
+        else {
+            return XCTFail("Embedded TLS activation did not emit a ClientHello.")
+        }
+        XCTAssertGreaterThan(clientHello.readableBytes, 0)
     }
 
     /// Verifies that the device certificate remains pinned to the pairing record.
@@ -117,6 +186,40 @@ final class SecureSessionUpgraderTests: XCTestCase {
                 .secureSessionUnsupported
             )
         }
+    }
+}
+
+/// Hides the socket-specific TLS capability while preserving streaming reads.
+private final class TestStreamingConnection:
+    StreamingDeviceConnection,
+    @unchecked Sendable
+{
+    /// Wrapped socket used only as an opaque byte stream.
+    private let connection: TCPDeviceConnection
+
+    /// Creates an opaque streaming wrapper around a concrete socket.
+    init(wrapping connection: TCPDeviceConnection) {
+        self.connection = connection
+    }
+
+    /// Forwards a complete plaintext or ciphertext write.
+    func send(_ data: Data) async throws {
+        try await connection.send(data)
+    }
+
+    /// Forwards an exact read.
+    func receive(exactly byteCount: Int) async throws -> Data {
+        try await connection.receive(exactly: byteCount)
+    }
+
+    /// Forwards a short read without revealing the concrete socket type.
+    func receive(upTo byteCount: Int) async throws -> Data {
+        try await connection.receive(upTo: byteCount)
+    }
+
+    /// Closes the wrapped socket.
+    func close() {
+        connection.close()
     }
 }
 
@@ -195,7 +298,8 @@ private final class SecureSessionTestServer {
                 .bind(host: "127.0.0.1", port: 0)
                 .get()
             guard let port = channel.localAddress?.port,
-                  let port = UInt16(exactly: port) else {
+                let port = UInt16(exactly: port)
+            else {
                 channel.close(promise: nil)
                 try await eventLoopGroup.shutdownGracefully()
                 throw RorkDeviceError.transport(
@@ -251,9 +355,11 @@ private final class SecureSessionStartTLSHandler: ChannelInboundHandler {
         guard upgradeBuffer.readableBytes >= requestLength else {
             return
         }
-        guard upgradeBuffer.readData(length: requestLength)
+        guard
+            upgradeBuffer.readData(length: requestLength)
                 == SecureSessionTestServer.upgradeRequest,
-              upgradeBuffer.readableBytes == 0 else {
+            upgradeBuffer.readableBytes == 0
+        else {
             context.fireErrorCaught(
                 RorkDeviceError.protocolViolation(
                     "TLS test server received an invalid upgrade request."

@@ -1,6 +1,12 @@
-import Darwin
 import Foundation
+
 @testable import RorkDevice
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Thread-safe socket daemon used to exercise usbmux and Lockdown workflows.
 ///
@@ -166,7 +172,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         wiFiMACAddress: String = "00:11:22:33:44:55",
         pairingResponses: [[String: Any]] = [],
         unpairingResponse: [String: Any] = [
-            "Request": "Unpair",
+            "Request": "Unpair"
         ],
         keepListenOpenAfterEvents: Bool = false
     ) throws {
@@ -184,7 +190,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         self.pairingResponses = pairingResponses
         self.unpairingResponse = unpairingResponse
         self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        let fd = socket(AF_INET, testStreamSocketType, 0)
         guard fd >= 0 else {
             throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
         }
@@ -193,7 +199,9 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = 0
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
@@ -221,7 +229,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         }
         guard nameResult == 0 else {
             close(fd)
-            throw RorkDeviceError.transport("getsockname failed: \(String(cString: strerror(errno)))")
+            throw RorkDeviceError.transport(
+                "getsockname failed: \(String(cString: strerror(errno)))")
         }
         serverFD = fd
         port = UInt16(bigEndian: boundAddress.sin_port)
@@ -288,8 +297,10 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     }
 
     private func handleClient(_ fd: Int32) {
+        #if canImport(Darwin)
         var noSIGPIPE: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
+        #endif
         defer { close(fd) }
         guard let request = readUSBMuxRequest(fd) else {
             return
@@ -297,17 +308,18 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
         switch request.dictionary["MessageType"] as? String {
         case "ListDevices":
-            sendUSBMuxResponse([
-                "DeviceList": [
-                    [
-                        "DeviceID": 1,
-                        "Properties": [
-                            "SerialNumber": "fake-device-1",
-                            "ConnectionType": "USB",
-                        ],
-                    ],
-                ],
-            ], tag: request.packet.tag, to: fd)
+            sendUSBMuxResponse(
+                [
+                    "DeviceList": [
+                        [
+                            "DeviceID": 1,
+                            "Properties": [
+                                "SerialNumber": "fake-device-1",
+                                "ConnectionType": "USB",
+                            ],
+                        ]
+                    ]
+                ], tag: request.packet.tag, to: fd)
         case "Listen":
             recordListenConnectionOpen()
             sendUSBMuxResponse(listenResponse, tag: request.packet.tag, to: fd)
@@ -327,7 +339,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                 return
             }
             var response: [String: Any] = [
-                "PairRecordData": pairingRecordData,
+                "PairRecordData": pairingRecordData
             ]
             if let pairingRecordStatus {
                 response["Number"] = pairingRecordStatus
@@ -341,7 +353,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             )
         case "SavePairRecord":
             if let identifier = request.dictionary["PairRecordID"] as? String,
-               let data = request.dictionary["PairRecordData"] as? Data {
+                let data = request.dictionary["PairRecordData"] as? Data
+            {
                 recordSavedPairingRecord(identifier: identifier, data: data)
             }
             sendUSBMuxResponse(
@@ -387,14 +400,17 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         while let request = readPlistMessage(fd) {
             switch request["Request"] as? String {
             case "StartSession":
-                sendPlistMessage([
-                    "Result": "Success",
-                    "SessionID": "fake-session",
-                    "EnableSessionSSL": secureLockdown,
-                ], to: fd)
+                sendPlistMessage(
+                    [
+                        "Result": "Success",
+                        "SessionID": "fake-session",
+                        "EnableSessionSSL": secureLockdown,
+                    ], to: fd)
             case "GetValue":
                 let value: Any
                 switch request["Key"] as? String {
+                case "UniqueDeviceID":
+                    value = "fake-device-1"
                 case "DevicePublicKey":
                     value = devicePublicKey
                 case "WiFiAddress":
@@ -408,15 +424,17 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                         "BuildVersion": "22A000",
                     ]
                 }
-                sendPlistMessage([
-                    "Result": "Success",
-                    "Value": value,
-                ], to: fd)
+                sendPlistMessage(
+                    [
+                        "Result": "Success",
+                        "Value": value,
+                    ], to: fd)
             case "Pair":
                 sendPlistMessage(nextPairingResponse(), to: fd)
             case "Unpair":
                 if let pairRecord = request["PairRecord"] as? [String: Any],
-                   let hostIdentifier = pairRecord["HostID"] as? String {
+                    let hostIdentifier = pairRecord["HostID"] as? String
+                {
                     recordUnpairedHostIdentifier(hostIdentifier)
                 }
                 sendPlistMessage(unpairingResponse, to: fd)
@@ -441,11 +459,12 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                     sendPlistMessage(["Result": "Failure", "Error": "UnknownService"], to: fd)
                     continue
                 }
-                sendPlistMessage([
-                    "Result": "Success",
-                    "Port": port,
-                    "EnableServiceSSL": secureServices.contains(service),
-                ], to: fd)
+                sendPlistMessage(
+                    [
+                        "Result": "Success",
+                        "Port": port,
+                        "EnableServiceSSL": secureServices.contains(service),
+                    ], to: fd)
             default:
                 sendPlistMessage(["Result": "Failure", "Error": "UnhandledRequest"], to: fd)
             }
@@ -457,7 +476,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             recordAFCOperation(packet.operation)
             switch packet.operation {
             case 13:
-                sendAll(fakeAFCFileOpenResponse(packetNumber: packet.packetNumber, handle: 99), to: fd)
+                sendAll(
+                    fakeAFCFileOpenResponse(packetNumber: packet.packetNumber, handle: 99), to: fd)
             case 20:
                 sendAll(fakeAFCStatusResponse(packetNumber: packet.packetNumber, status: 0), to: fd)
                 return
@@ -485,10 +505,11 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         let messageType = request["MessageType"] as? String ?? ""
         recordMISAgentMessageType(messageType)
         if messageType == "CopyAll" || messageType == "Copy" {
-            sendPlistMessage([
-                "Status": 0,
-                "Payload": [Data([9, 9, 9])],
-            ], to: fd)
+            sendPlistMessage(
+                [
+                    "Status": 0,
+                    "Payload": [Data([9, 9, 9])],
+                ], to: fd)
         } else {
             sendPlistMessage(["Status": 0], to: fd)
         }
@@ -497,7 +518,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     private func handleHeartbeat(_ fd: Int32) {
         sendPlistMessage(["Interval": 2], to: fd)
         guard let request = readPlistMessage(fd),
-              let command = request["Command"] as? String else {
+            let command = request["Command"] as? String
+        else {
             return
         }
         recordHeartbeatReply(command)
@@ -505,8 +527,9 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     private func handleHouseArrest(_ fd: Int32) {
         guard let request = readPlistMessage(fd),
-              let command = request["Command"] as? String,
-              let identifier = request["Identifier"] as? String else {
+            let command = request["Command"] as? String,
+            let identifier = request["Identifier"] as? String
+        else {
             return
         }
         recordHouseArrestRequest(command: command, identifier: identifier)
@@ -514,13 +537,16 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         handleAFC(fd)
     }
 
-    private func readUSBMuxRequest(_ fd: Int32) -> (packet: USBMuxPacket, dictionary: [String: Any])? {
+    private func readUSBMuxRequest(_ fd: Int32) -> (
+        packet: USBMuxPacket, dictionary: [String: Any]
+    )? {
         guard let header = readExact(fd, count: USBMuxPacket.headerLength),
-              let length = try? Int(header.littleEndianInteger(at: 0, as: UInt32.self)),
-              length >= USBMuxPacket.headerLength,
-              let payload = readExact(fd, count: length - USBMuxPacket.headerLength),
-              let packet = try? USBMuxPacket.decode(header: header, payload: payload),
-              let dictionary = try? PropertyListCodec.decode(packet.payload) as? [String: Any] else {
+            let length = try? Int(header.littleEndianInteger(at: 0, as: UInt32.self)),
+            length >= USBMuxPacket.headerLength,
+            let payload = readExact(fd, count: length - USBMuxPacket.headerLength),
+            let packet = try? USBMuxPacket.decode(header: header, payload: payload),
+            let dictionary = try? PropertyListCodec.decode(packet.payload) as? [String: Any]
+        else {
             return nil
         }
         return (packet, dictionary)
@@ -528,8 +554,9 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     private func readPlistMessage(_ fd: Int32) -> [String: Any]? {
         guard let lengthData = readExact(fd, count: 4),
-              let length = try? Int(lengthData.bigEndianInteger(at: 0, as: UInt32.self)),
-              let payload = readExact(fd, count: length) else {
+            let length = try? Int(lengthData.bigEndianInteger(at: 0, as: UInt32.self)),
+            let payload = readExact(fd, count: length)
+        else {
             return nil
         }
         return try? PropertyListCodec.decode(payload) as? [String: Any]
@@ -537,7 +564,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     private func sendUSBMuxResponse(_ dictionary: [String: Any], tag: UInt32, to fd: Int32) {
         guard let payload = try? PropertyListCodec.encode(dictionary),
-              let packet = try? USBMuxPacket(tag: tag, payload: payload).encoded() else {
+            let packet = try? USBMuxPacket(tag: tag, payload: payload).encoded()
+        else {
             return
         }
         sendAll(packet, to: fd)
@@ -689,9 +717,10 @@ private func fakeAFCResponse(packetNumber: UInt64, operation: UInt64, payload: D
 
 private func readAFCPacket(_ fd: Int32) -> FakeAFCPacket? {
     guard let header = readExact(fd, count: 40),
-          header.prefix(8) == Data("CFA6LPAA".utf8),
-          let entireLength = try? header.littleEndianInteger(at: 8, as: UInt64.self),
-          entireLength >= 40 else {
+        header.prefix(8) == Data("CFA6LPAA".utf8),
+        let entireLength = try? header.littleEndianInteger(at: 8, as: UInt64.self),
+        entireLength >= 40
+    else {
         return nil
     }
     if entireLength > 40 {

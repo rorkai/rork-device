@@ -22,15 +22,16 @@ public protocol DeviceConnection: AnyObject {
     func close()
 }
 
-/// Optional capability for transports that can return a short read.
+/// Device byte stream that can return a short read.
 ///
-/// Socket-backed connections expose this for protocols that can consume
-/// currently available bytes without waiting for a larger fixed-size frame.
+/// Streaming transports expose this for protocols that can consume currently
+/// available bytes without waiting for a larger fixed-size frame.
 ///
 /// Conforming connections support one reader while ordered writes run from
 /// another task. This full-duplex guarantee lets forwarding code move bytes in
-/// both directions without claiming that every `DeviceConnection` is sendable.
-protocol PartialReceiveDeviceConnection: DeviceConnection, Sendable {
+/// both directions and lets transport-neutral TLS process records without
+/// knowing the underlying packet boundaries.
+public protocol StreamingDeviceConnection: DeviceConnection, Sendable {
     /// Receives at least one byte and at most `byteCount` bytes.
     func receive(upTo byteCount: Int) async throws -> Data
 }
@@ -62,7 +63,8 @@ public protocol SecureSessionUpgrader {
     /// - Parameters:
     ///   - connection: Plain connection that Lockdown asked to secure.
     ///   - pairingRecord: Pairing material containing certificates and keys.
-    func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection
+    func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws
+        -> DeviceConnection
 }
 
 /// Platform default secure-session upgrader.
@@ -74,7 +76,9 @@ public struct DefaultSecureSessionUpgrader: SecureSessionUpgrader {
     public init() {}
 
     /// Adds TLS to an established connection backed by a built-in transport.
-    public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection {
+    public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws
+        -> DeviceConnection
+    {
         try await NIOSecureSessionUpgrader().upgrade(
             connection,
             pairingRecord: pairingRecord
@@ -91,7 +95,9 @@ public struct UnsupportedSecureSessionUpgrader: SecureSessionUpgrader {
     public init() {}
 
     /// Always throws `RorkDeviceError.secureSessionUnsupported`.
-    public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws -> DeviceConnection {
+    public func upgrade(_ connection: DeviceConnection, pairingRecord: PairingRecord) async throws
+        -> DeviceConnection
+    {
         throw RorkDeviceError.secureSessionUnsupported
     }
 }

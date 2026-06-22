@@ -1,3 +1,4 @@
+#if canImport(NIOPosix)
 import NIOPosix
 
 /// Shared SwiftNIO runtime used by socket-backed device connections.
@@ -11,3 +12,4 @@ enum NIOTransportRuntime {
     /// Event loops used for TCP and Unix-domain socket client channels.
     static let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 }
+#endif

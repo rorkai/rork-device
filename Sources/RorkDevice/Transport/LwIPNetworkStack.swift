@@ -1,3 +1,4 @@
+#if canImport(RorkDeviceLwIP)
 import Foundation
 import RorkDeviceLwIP
 
@@ -8,17 +9,17 @@ import RorkDeviceLwIP
 /// lwIP stores TCP protocol control blocks globally even when multiple network
 /// interfaces are active.
 final class LwIPNetworkStack: @unchecked Sendable {
-    /// Queue identity used to avoid synchronous self-deadlock during teardown.
-    private static let queueKey = DispatchSpecificKey<Void>()
-
     /// Process-wide lwIP execution context.
-    private static let queue: DispatchQueue = {
-        let queue = DispatchQueue(
-            label: "dev.rork.rork-device.lwip"
-        )
-        queue.setSpecific(key: queueKey, value: ())
-        return queue
-    }()
+    private static let queue = DispatchQueue(
+        label: "dev.rork.rork-device.lwip"
+    )
+
+    /// Per-stack marker used to recognize the shared lwIP queue.
+    ///
+    /// Keeping the non-Sendable key on the stack avoids global mutable state.
+    /// Each live stack registers its own marker on the process-wide queue so
+    /// synchronous teardown can execute inline when a callback closes it.
+    private let queueKey = DispatchSpecificKey<Void>()
 
     /// Callback holder whose stable address is passed through the C boundary.
     private let outputSink: LwIPOutputSink
@@ -27,9 +28,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
     private let stateLock = NSLock()
 
     /// Swift state retained for each queue-confined C connection wrapper.
-    private var connectionStates: [
-        ObjectIdentifier: LwIPConnectionState
-    ] = [:]
+    private var connectionStates: [ObjectIdentifier: LwIPConnectionState] = [:]
 
     /// C network stack, cleared exactly once during closure.
     private var stack: OpaquePointer?
@@ -62,10 +61,11 @@ final class LwIPNetworkStack: @unchecked Sendable {
                 "CoreDevice userspace network requires a valid host IPv6 address."
         )
         outputSink = LwIPOutputSink(output: output)
+        Self.queue.setSpecific(key: queueKey, value: ())
 
         let outputContext = Unmanaged.passUnretained(outputSink)
             .toOpaque()
-        stack = Self.performSync {
+        let createdStack = performSync {
             localAddressBytes.withUnsafeBytes { bytes in
                 rork_lwip_stack_create(
                     bytes.bindMemory(to: UInt8.self).baseAddress,
@@ -75,16 +75,19 @@ final class LwIPNetworkStack: @unchecked Sendable {
                 )
             }
         }
-        guard stack != nil else {
+        guard let createdStack else {
+            Self.queue.setSpecific(key: queueKey, value: nil)
             throw RorkDeviceError.transport(
                 "Could not create the CoreDevice userspace IPv6 stack."
             )
         }
+        stack = createdStack
         startTimer()
     }
 
     deinit {
         close()
+        Self.queue.setSpecific(key: queueKey, value: nil)
     }
 
     /// Opens one TCP connection through the userspace IPv6 interface.
@@ -106,7 +109,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
         let state = LwIPConnectionState()
         let callbackContext = Unmanaged.passUnretained(state).toOpaque()
 
-        let pointer: OpaquePointer? = Self.performSync {
+        let pointer: OpaquePointer? = performSync {
             guard let stack = currentStack() else {
                 return nil
             }
@@ -186,12 +189,14 @@ final class LwIPNetworkStack: @unchecked Sendable {
             connectionStates.removeAll()
             return states
         }
-        let terminalError = error ?? RorkDeviceError.transport(
-            "CoreDevice userspace network closed."
-        )
+        let terminalError =
+            error
+            ?? RorkDeviceError.transport(
+                "CoreDevice userspace network closed."
+            )
         states.forEach { $0.finish(with: terminalError) }
 
-        Self.performSync {
+        performSync {
             stateLock.withLock {
                 guard let stack else {
                     return
@@ -290,13 +295,13 @@ final class LwIPNetworkStack: @unchecked Sendable {
     }
 
     /// Runs a synchronous operation on lwIP's queue without reentering it.
-    private static func performSync<T>(
+    private func performSync<T>(
         _ operation: () throws -> T
     ) rethrows -> T {
         if DispatchQueue.getSpecific(key: queueKey) != nil {
             return try operation()
         }
-        return try queue.sync(execute: operation)
+        return try Self.queue.sync(execute: operation)
     }
 }
 
@@ -383,19 +388,21 @@ final class LwIPConnectionState: @unchecked Sendable {
     private var connectionTimeoutTask: Task<Void, Never>?
 
     /// Exact-read continuation, limited to one active protocol reader.
-    private var receiveWaiter: (
-        count: Int,
-        continuation: CheckedContinuation<Data, Error>
-    )?
+    private var receiveWaiter:
+        (
+            count: Int,
+            continuation: CheckedContinuation<Data, Error>
+        )?
 
     /// Monotonic token advanced whenever lwIP may accept more send data.
     private var writableGeneration: UInt64 = 0
 
     /// Writers suspended after exhausting lwIP's current send window.
-    private var writableWaiters: [(
-        generation: UInt64,
-        continuation: CheckedContinuation<Void, Error>
-    )] = []
+    private var writableWaiters:
+        [(
+            generation: UInt64,
+            continuation: CheckedContinuation<Void, Error>
+        )] = []
 
     /// Creates connection state with a configurable deadline clock.
     ///
@@ -622,8 +629,9 @@ final class LwIPConnectionState: @unchecked Sendable {
     private func finishConnectingAfterTimeout() {
         lock.lock()
         guard !isConnected,
-              terminalError == nil,
-              let waiter = connectionWaiter else {
+            terminalError == nil,
+            let waiter = connectionWaiter
+        else {
             lock.unlock()
             return
         }
@@ -641,7 +649,7 @@ final class LwIPConnectionState: @unchecked Sendable {
 /// `DeviceConnection` implementation backed by one lwIP TCP control block.
 private final class LwIPDeviceConnection:
     DeviceConnection,
-    PartialReceiveDeviceConnection,
+    StreamingDeviceConnection,
     @unchecked Sendable
 {
     /// Stack that owns and serializes the C connection wrapper.
@@ -843,3 +851,4 @@ private func lwIPTransportError(
 ) -> RorkDeviceError {
     .transport("Could not \(operation) through lwIP (error \(code)).")
 }
+#endif

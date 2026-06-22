@@ -18,6 +18,9 @@ tests and clear public API boundaries.
 - **Swift-first library** - the `RorkDevice` module exposes device discovery,
   Lockdown sessions, service startup, and app-management APIs directly to Swift
   applications.
+- **Opt-in browser transport** - Swift 6.3 clients can add `RorkDeviceWeb` to
+  pair an Apple device, open Lockdown sessions, browse installed apps, transfer
+  files, and install IPAs through a browser-provided WebUSB connection.
 - **Command-line tools** - the `rorkdevice` CLI supports device inspection,
   file access, app listing, provisioning-profile management, IPA installation,
   app removal, and CoreDevice process launch and termination.
@@ -99,6 +102,19 @@ Then add the library product to the target that communicates with devices:
 )
 ```
 
+`RorkDevice` remains available when the package manifest is evaluated by Swift
+6.0 or newer. The optional `RorkDeviceWeb` product requires a Swift 6.3 or newer
+toolchain and can be added independently:
+
+```swift
+.target(
+    name: "BrowserDeviceIntegration",
+    dependencies: [
+        .product(name: "RorkDeviceWeb", package: "rork-device"),
+    ]
+)
+```
+
 ## Lockdown Example
 
 ```swift
@@ -124,6 +140,65 @@ try await session.installApplication(
     print(progress.status, progress.percentComplete ?? -1)
 }
 ```
+
+## WebUSB
+
+`RorkDeviceWeb` owns the Swift/WASM side of direct Apple USB communication. It
+selects and claims the compatible WebUSB interface, negotiates direct usbmux,
+and adapts its virtual service streams to the existing Lockdown, AFC, and
+InstallationProxy APIs. JavaScript objects and packet framing remain internal.
+
+Requesting a device must run from a browser user activation, such as a button
+click:
+
+```swift
+import RorkDevice
+import RorkDeviceWeb
+
+guard WebUSB.isSupported else {
+    throw WebUSBError.unavailable
+}
+
+let authorizedDevices = try await WebUSB.authorizedDevices()
+let device: WebUSBDevice
+if let authorizedDevice = authorizedDevices.first {
+    device = authorizedDevice
+} else {
+    device = try await WebUSB.requestDevice()
+}
+let connection = try await device.connect()
+
+let hostIdentifier = WebUSBHostIdentifier()
+let pairingRecord = try await connection.pair(
+    using: hostIdentifier
+) { progress in
+    if progress == .waitingForUserConfirmation {
+        print("Approve the Trust dialog on the iPhone.")
+    }
+}
+
+let session = try await connection.openSession(
+    using: pairingRecord
+)
+let applications = try await session.installedApplications()
+print("Installed applications:", applications.count)
+
+await connection.close()
+```
+
+Persist `hostIdentifier` once for the browser application installation and
+persist each accepted `pairingRecord` for its device. On later visits, decode
+the same `WebUSBHostIdentifier`, discover previously granted devices with
+`authorizedDevices()`, and call `openSession(using:)` with the saved record
+instead of pairing again.
+
+Query `authorizedDevices()` while preparing the page and retain its result.
+When no authorized device is available, invoke `requestDevice()` directly from
+the user's click handler without awaiting another operation first; browsers
+require the permission picker to consume that user activation.
+
+The embedding web application remains responsible for user activation,
+permission UI, storage, progress presentation, and reconnect policy.
 
 ## CoreDevice Userspace Tunnel
 
@@ -317,10 +392,12 @@ their process and platform while reusing the same identity, trust, and
 
 ## Platform Support
 
-The package currently targets macOS 13 or later and iOS 16 or later. Lockdown
-secure-session upgrades use SwiftNIO SSL on the package's SwiftNIO transports.
-Remote-pairing TLS-PSK connections use the Apple Network.framework and
-Security.framework backend described below.
+The native package currently targets macOS 13 or later and iOS 16 or later.
+The `RorkDeviceWeb` product targets WASI with JavaScriptKit and requires an
+embedding JavaScript environment that exposes WebUSB and Web Crypto. Lockdown
+secure-session upgrades use SwiftNIO SSL for both native SwiftNIO connections
+and transport-neutral browser streams. Remote-pairing TLS-PSK connections use
+the Apple Network.framework and Security.framework backend described below.
 
 `RemotePairingTunnel.isSupported` reports whether the bundled remote-pairing
 transport is available in the current process. Calling `connect` when it is not

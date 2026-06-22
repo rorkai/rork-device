@@ -1,3 +1,4 @@
+#if canImport(BigInt)
 import Foundation
 
 /// Establishes the device-side trust required by a remote-pairing identity.
@@ -133,8 +134,9 @@ public enum RemotePairingTrust {
             )
         } catch {
             guard didBeginEnrollment,
-                  let deviceError = error as? RorkDeviceError,
-                  case .remoteXPCStreamReset = deviceError else {
+                let deviceError = error as? RorkDeviceError,
+                case .remoteXPCStreamReset = deviceError
+            else {
                 throw error
             }
             try await verifyTrustAfterEnrollmentReset(
@@ -170,9 +172,11 @@ public enum RemotePairingTrust {
             discovery.close()
         }
 
-        guard let servicePort = discovery.directory.port(
-            for: untrustedTunnelServiceName
-        ) else {
+        guard
+            let servicePort = discovery.directory.port(
+                for: untrustedTunnelServiceName
+            )
+        else {
             throw RorkDeviceError.protocolViolation(
                 "Remote Service Discovery did not advertise \(untrustedTunnelServiceName)."
             )
@@ -232,7 +236,8 @@ public enum RemotePairingTrust {
             } catch {
                 let hasNextAttempt = index + 1 < retryDelays.count
                 guard hasNextAttempt,
-                      isRetryableEnrollmentRecoveryError(error) else {
+                    isRetryableEnrollmentRecoveryError(error)
+                else {
                     throw error
                 }
             }
@@ -249,10 +254,11 @@ public enum RemotePairingTrust {
         switch deviceError {
         case .transport, .remoteXPCStreamReset:
             return true
-        case let .remotePairing(rejection):
+        case .remotePairing(let rejection):
             return rejection.allowsPairSetup
         default:
             return false
         }
     }
 }
+#endif

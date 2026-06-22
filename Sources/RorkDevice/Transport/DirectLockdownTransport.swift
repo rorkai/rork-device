@@ -1,3 +1,4 @@
+#if canImport(NIOPosix)
 import Foundation
 
 /// Transport for workflows that already know the device host endpoint.
@@ -50,7 +51,7 @@ public struct DirectLockdownTransport: DeviceTransport {
         }
 
         var attempts: [DirectServicePortAttempt] = [
-            DirectServicePortAttempt(reason: "reported", port: port),
+            DirectServicePortAttempt(reason: "reported", port: port)
         ]
         let swappedPort = port.byteSwapped
         if swappedPort != port {
@@ -91,3 +92,4 @@ private func describe(_ error: Error) -> String {
     }
     return error.localizedDescription
 }
+#endif

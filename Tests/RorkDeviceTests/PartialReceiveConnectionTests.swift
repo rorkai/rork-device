@@ -165,7 +165,7 @@ private final class TCPDataServer: @unchecked Sendable {
     /// Starts a loopback TCP server that sends `string` to the first client.
     init(data string: String) throws {
         data = Data(string.utf8)
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+        let socketFD = socket(AF_INET, testStreamSocketType, 0)
         guard socketFD >= 0 else {
             throw RorkDeviceError.transport(lastTestErrnoMessage("socket"))
         }
@@ -268,7 +268,7 @@ private final class UnixDataServer: @unchecked Sendable {
             .appendingPathComponent("rork-device-\(UUID().uuidString).sock")
             .path
 
-        let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        let socketFD = socket(AF_UNIX, testStreamSocketType, 0)
         guard socketFD >= 0 else {
             throw RorkDeviceError.transport(lastTestErrnoMessage("socket"))
         }
@@ -439,7 +439,7 @@ private final class TCPScriptedServer: @unchecked Sendable {
         self.interChunkDelayMicros = interChunkDelayMicros
         self.closeDelayMicros = closeDelayMicros
 
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+        let socketFD = socket(AF_INET, testStreamSocketType, 0)
         guard socketFD >= 0 else {
             throw RorkDeviceError.transport(lastTestErrnoMessage("socket"))
         }

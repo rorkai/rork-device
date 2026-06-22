@@ -20,7 +20,7 @@ import NIOTLS
 /// to use the connection concurrently.
 final class NIODeviceConnection:
     DeviceConnection,
-    PartialReceiveDeviceConnection,
+    StreamingDeviceConnection,
     @unchecked Sendable
 {
     /// Error reported to callers once the owner closes the stream locally.
@@ -209,7 +209,7 @@ final class NIODeviceConnection:
 ///
 /// The callback and awaiting task may run on different executors. The lock
 /// protects the diagnostic state that explains a rejected handshake.
-private final class DeviceCertificatePin: @unchecked Sendable {
+final class DeviceCertificatePin: @unchecked Sendable {
     /// DER bytes copied from the device certificate in the pairing record.
     private let expectedCertificate: Data
 
@@ -294,7 +294,8 @@ private final class NIOSSLHandshakeObserver: ChannelInboundHandler {
         event: Any
     ) {
         if let tlsEvent = event as? TLSUserEvent,
-           case .handshakeCompleted = tlsEvent {
+            case .handshakeCompleted = tlsEvent
+        {
             complete(.success(()))
         }
         context.fireUserInboundEventTriggered(event)
@@ -442,7 +443,8 @@ private func runInboundReader(
 
     while let demand = await coordinator.nextRead() {
         do {
-            let data = try await readData(for: demand.kind, leftover: &leftover, iterator: &iterator)
+            let data = try await readData(
+                for: demand.kind, leftover: &leftover, iterator: &iterator)
             demand.continuation.resume(returning: data)
         } catch {
             let streamError = normalizedStreamError(error)
@@ -460,7 +462,7 @@ private func readData(
     iterator: inout NIOAsyncChannelInboundStream<ByteBuffer>.AsyncIterator
 ) async throws -> Data {
     switch kind {
-    case let .exact(byteCount):
+    case .exact(let byteCount):
         while leftover.readableBytes < byteCount {
             guard let chunk = try await iterator.next() else {
                 throw NIODeviceConnection.peerClosedError
@@ -471,7 +473,7 @@ private func readData(
         compact(&leftover)
         return data
 
-    case let .upTo(byteCount):
+    case .upTo(let byteCount):
         if leftover.readableBytes == 0 {
             guard let chunk = try await iterator.next() else {
                 throw NIODeviceConnection.peerClosedError

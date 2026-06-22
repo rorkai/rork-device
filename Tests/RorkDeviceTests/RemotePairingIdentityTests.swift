@@ -1,7 +1,12 @@
-import CryptoKit
 import Foundation
 import XCTest
 @testable import RorkDevice
+
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 
 final class RemotePairingIdentityTests: XCTestCase {
     func testGeneratesIdentityThatRoundTripsThroughPropertyList() throws {
@@ -251,9 +256,17 @@ final class RemotePairingIdentityTests: XCTestCase {
 ///
 /// The real file operation still runs so the test exercises the complete
 /// atomic-write path while observing the security-sensitive creation mode.
-private final class RecordingIdentityFileManager: FileManager {
+private final class RecordingIdentityFileManager: FileManager, @unchecked Sendable {
+    /// Protects the recorded creation mode from concurrent file operations.
+    private let recordingLock = NSLock()
+
     /// POSIX mode supplied for the most recently created file.
-    private(set) var createdFilePermissions: Int?
+    private var recordedFilePermissions: Int?
+
+    /// POSIX mode supplied for the most recently created file.
+    var createdFilePermissions: Int? {
+        recordingLock.withLock { recordedFilePermissions }
+    }
 
     /// Captures creation attributes before delegating to `FileManager`.
     override func createFile(
@@ -261,9 +274,11 @@ private final class RecordingIdentityFileManager: FileManager {
         contents data: Data? = nil,
         attributes attr: [FileAttributeKey: Any]? = nil
     ) -> Bool {
-        createdFilePermissions = (
-            attr?[.posixPermissions] as? NSNumber
-        )?.intValue
+        recordingLock.withLock {
+            recordedFilePermissions = (
+                attr?[.posixPermissions] as? NSNumber
+            )?.intValue
+        }
         return super.createFile(
             atPath: path,
             contents: data,
