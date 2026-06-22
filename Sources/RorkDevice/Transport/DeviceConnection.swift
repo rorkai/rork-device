@@ -18,7 +18,11 @@ public protocol DeviceConnection: AnyObject {
     /// clients, so implementations should accumulate reads internally.
     func receive(exactly byteCount: Int) async throws -> Data
 
-    /// Closes the connection and releases any underlying resources.
+    /// Initiates closure of the connection.
+    ///
+    /// Calling this method more than once must be safe. Implementations backed
+    /// by asynchronous transports may finish releasing their underlying
+    /// resources after this method returns.
     func close()
 }
 

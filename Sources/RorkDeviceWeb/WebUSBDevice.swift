@@ -326,7 +326,7 @@ public final class WebUSBDeviceConnection: Sendable {
     ) async throws -> PairingRecord {
         let client = DeviceClient()
         let information = try await client.pairingInformation(
-            using: transport
+            over: transport
         )
         let candidate = try await WebPairingMaterial.candidate(
             for: information,
@@ -356,8 +356,8 @@ public final class WebUSBDeviceConnection: Sendable {
         label: String = "rorkdevice.web"
     ) async throws -> DeviceSession {
         try await DeviceClient().connect(
-            using: transport,
-            pairingRecord: pairingRecord,
+            over: transport,
+            using: pairingRecord,
             label: label
         )
     }

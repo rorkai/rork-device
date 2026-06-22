@@ -20,8 +20,9 @@ protocol DirectUSBMuxIO: Sendable {
 /// Multiplexes Lockdown and device-service streams over one direct USB pipe.
 ///
 /// The actor owns packet sequencing and every virtual connection. It permits
-/// one reader and one ordered writer per connection while safely interleaving
-/// independent services such as heartbeat, AFC, and InstallationProxy.
+/// one reader and one ordered writer per connection, while serializing all
+/// physical USB output shared by services such as heartbeat, AFC, and
+/// InstallationProxy.
 actor DirectUSBMuxSession {
     /// Largest USB transfer requested from the browser.
     private static let readCapacity = 16 * 1_024
@@ -48,6 +49,12 @@ actor DirectUSBMuxSession {
 
     /// Browser-owned USB bulk pipe.
     private let io: any DirectUSBMuxIO
+
+    /// Whether one mux packet currently owns the USB output endpoint.
+    private var isWritingPacket = false
+
+    /// Packet senders waiting for the current USB transfer to finish.
+    private var packetWriteWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Maximum packet size reported by the host-to-device bulk endpoint.
     private let outboundUSBPacketSize: Int
@@ -76,7 +83,7 @@ actor DirectUSBMuxSession {
     private var receiveSequence: UInt16 = 0xffff
 
     /// Next connection port candidate.
-    private var nextEphemeralPort: UInt16 = 49_152
+    private var nextEphemeralPort: UInt16
 
     /// Active and failed virtual service connections keyed by host port.
     private var connections: [UInt16: ConnectionState] = [:]
@@ -147,6 +154,7 @@ actor DirectUSBMuxSession {
         self.outboundUSBPacketSize = outboundUSBPacketSize
         self.handshakeTimeout = handshakeTimeout
         self.connectionTimeout = connectionTimeout
+        nextEphemeralPort = Self.firstEphemeralPort
     }
 
     /// Opens one device-side service port.
@@ -703,6 +711,15 @@ actor DirectUSBMuxSession {
         forceLegacyHeader: Bool = false,
         resetSequences: Bool = false
     ) async throws {
+        await acquirePacketWriteTurn()
+        defer {
+            releasePacketWriteTurn()
+        }
+        try Task.checkCancellation()
+        if let terminalError {
+            throw terminalError
+        }
+
         let header: DirectUSBMuxPacketHeader
         if forceLegacyHeader || (protocolVersion ?? 0) < 2 {
             header = .legacy
@@ -718,13 +735,48 @@ actor DirectUSBMuxSession {
             transmitSequence &+= 1
         }
 
-        try await io.write(
-            packetCodec.encode(
-                protocol: muxProtocol,
-                payload: payload,
-                header: header
+        do {
+            try await io.write(
+                packetCodec.encode(
+                    protocol: muxProtocol,
+                    payload: payload,
+                    header: header
+                )
             )
-        )
+        } catch {
+            let error = normalizedError(error)
+            finish(with: error)
+            await io.close()
+            throw error
+        }
+    }
+
+    /// Acquires exclusive access to packet sequencing and USB output.
+    ///
+    /// Actor isolation permits reentrancy while `io.write` is suspended. The
+    /// explicit turn keeps packet headers and physical transfers in one FIFO
+    /// order across every virtual service connection.
+    private func acquirePacketWriteTurn() async {
+        guard isWritingPacket else {
+            isWritingPacket = true
+            return
+        }
+        await withCheckedContinuation {
+            packetWriteWaiters.append($0)
+        }
+    }
+
+    /// Transfers USB output ownership without allowing a new caller to overtake
+    /// an already suspended packet sender.
+    ///
+    /// The writer remains logically occupied while a waiter is resumed. Only an
+    /// empty queue marks it idle, preserving FIFO order across actor reentrancy.
+    private func releasePacketWriteTurn() {
+        guard !packetWriteWaiters.isEmpty else {
+            isWritingPacket = false
+            return
+        }
+        packetWriteWaiters.removeFirst().resume()
     }
 
     /// Sends a TCP-compatible frame for one active connection.
@@ -786,7 +838,7 @@ actor DirectUSBMuxSession {
             } catch {
                 return
             }
-            await self?.timeOutVersionWaiter(token: token)
+            await self?.expireVersionWaiter(token: token)
         }
         return try await withCheckedThrowingContinuation {
             versionWaiter = VersionWaiter(
@@ -797,7 +849,7 @@ actor DirectUSBMuxSession {
     }
 
     /// Fails the active version waiter after its deadline.
-    private func timeOutVersionWaiter(token: UInt64) {
+    private func expireVersionWaiter(token: UInt64) {
         guard let waiter = versionWaiter,
             waiter.token == token
         else {
@@ -824,7 +876,7 @@ actor DirectUSBMuxSession {
             } catch {
                 return
             }
-            await self?.timeOutConnection(
+            await self?.expireConnectionAttempt(
                 localPort: localPort,
                 remotePort: remotePort,
                 token: token
@@ -857,7 +909,7 @@ actor DirectUSBMuxSession {
     }
 
     /// Fails a connection whose SYN did not receive a timely response.
-    private func timeOutConnection(
+    private func expireConnectionAttempt(
         localPort: UInt16,
         remotePort: UInt16,
         token: UInt64

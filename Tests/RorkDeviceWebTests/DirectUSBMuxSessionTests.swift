@@ -270,6 +270,90 @@ final class DirectUSBMuxSessionTests: XCTestCase {
         await session.close()
     }
 
+    func testUSBWritesRemainSerializedWhileAcknowledgingInboundData() async throws {
+        let pipe = DirectUSBMuxTestPipe()
+        let session = try await openSession(over: pipe)
+        let connection = try await openConnection(
+            to: 62_078,
+            through: session,
+            pipe: pipe,
+            deviceSequenceNumber: 100
+        )
+
+        await pipe.rejectConcurrentWrites()
+        await pipe.suspendNextWrite()
+        let sendTask = Task {
+            try await connection.send(Data([1, 2, 3]))
+        }
+        let suspendedWrite = await pipe.nextSuspendedWrite()
+        let outbound = try decodeTCPPacket(suspendedWrite)
+
+        try await pipe.enqueueRead(
+            muxPacket(
+                tcpPacket: DirectUSBMuxTCPPacket(
+                    sourcePort: outbound.destinationPort,
+                    destinationPort: outbound.sourcePort,
+                    sequenceNumber: 101,
+                    acknowledgmentNumber: 4,
+                    flags: [.acknowledgment],
+                    windowSize: 512,
+                    payload: Data([0xaa])
+                ),
+                transmitSequence: 2
+            )
+        )
+        let received = try await connection.receive(upTo: 1)
+        XCTAssertEqual(received, Data([0xaa]))
+
+        await pipe.resumeSuspendedWrite()
+        try await sendTask.value
+        try await connection.send(Data([4]))
+
+        let acknowledgment = try await nextTCPPacket(from: pipe)
+        XCTAssertEqual(acknowledgment.payload, Data())
+        let nextOutbound = try await nextTCPPacket(from: pipe)
+        XCTAssertEqual(nextOutbound.payload, Data([4]))
+
+        connection.close()
+        await session.close()
+    }
+
+    func testUSBWriteFailureTerminatesSessionAndClosesPipe() async throws {
+        let pipe = DirectUSBMuxTestPipe()
+        let session = try await openSession(over: pipe)
+        let connection = try await openConnection(
+            to: 62_078,
+            through: session,
+            pipe: pipe,
+            deviceSequenceNumber: 100
+        )
+
+        await pipe.failNextWrite()
+        do {
+            try await connection.send(Data([1]))
+            XCTFail("Expected the failed USB transfer to reject the send.")
+        } catch {
+            XCTAssertEqual(
+                error as? DirectUSBMuxError,
+                .transport("forcedWriteFailure")
+            )
+        }
+        let wasClosed = await pipe.wasClosed
+        XCTAssertTrue(wasClosed)
+
+        do {
+            try await connection.send(Data([2]))
+            XCTFail("Expected the terminal session to reject later sends.")
+        } catch {
+            XCTAssertEqual(
+                error as? DirectUSBMuxError,
+                .transport("forcedWriteFailure")
+            )
+        }
+
+        await session.close()
+    }
+
     func testDuplicatePayloadAcrossSequenceWrapKeepsConnectionUsable() async throws {
         let pipe = DirectUSBMuxTestPipe()
         let session = try await openSession(over: pipe)
@@ -785,7 +869,13 @@ private actor DirectUSBMuxTestPipe: DirectUSBMuxIO {
     private var suspendedWrite: SuspendedWrite?
     private var suspendedWriteWaiter: CheckedContinuation<Data, Never>?
     private var shouldSuspendNextWrite = false
+    private var shouldRejectConcurrentWrites = false
+    private var shouldFailNextWrite = false
     private var isClosed = false
+
+    var wasClosed: Bool {
+        isClosed
+    }
 
     func read(upTo byteCount: Int) async throws -> Data {
         if !reads.isEmpty {
@@ -802,6 +892,13 @@ private actor DirectUSBMuxTestPipe: DirectUSBMuxIO {
     func write(_ data: Data) async throws {
         if isClosed {
             throw DirectUSBMuxError.transportClosed
+        }
+        if shouldRejectConcurrentWrites, suspendedWrite != nil {
+            throw DirectUSBMuxTestPipeError.concurrentWrite
+        }
+        if shouldFailNextWrite {
+            shouldFailNextWrite = false
+            throw DirectUSBMuxTestPipeError.forcedWriteFailure
         }
         if shouldSuspendNextWrite {
             shouldSuspendNextWrite = false
@@ -873,6 +970,14 @@ private actor DirectUSBMuxTestPipe: DirectUSBMuxIO {
         shouldSuspendNextWrite = true
     }
 
+    func rejectConcurrentWrites() {
+        shouldRejectConcurrentWrites = true
+    }
+
+    func failNextWrite() {
+        shouldFailNextWrite = true
+    }
+
     func nextSuspendedWrite() async -> Data {
         if let suspendedWrite {
             return suspendedWrite.data
@@ -889,4 +994,9 @@ private actor DirectUSBMuxTestPipe: DirectUSBMuxIO {
         self.suspendedWrite = nil
         suspendedWrite.continuation.resume()
     }
+}
+
+private enum DirectUSBMuxTestPipeError: Error {
+    case concurrentWrite
+    case forcedWriteFailure
 }

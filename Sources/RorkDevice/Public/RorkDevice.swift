@@ -53,7 +53,7 @@ public final class DeviceClient {
     ///
     /// Platforms without local socket support provide discovery and byte
     /// transport outside `RorkDevice`, then pass that transport to
-    /// `connect(using:pairingRecord:label:)`.
+    /// `connect(over:using:label:)`.
     ///
     /// - Parameter secureSessionUpgrader: Component responsible for upgrading
     ///   Lockdown and service connections when the device requests TLS.
@@ -150,7 +150,7 @@ public final class DeviceClient {
             usbmuxClient: usbmuxClient
         )
         let pairingInformation = try await pairingInformation(
-            using: transport
+            over: transport
         )
         let candidate = try PairingRecord.candidate(
             for: pairingInformation,
@@ -261,8 +261,8 @@ public final class DeviceClient {
         case .usbmux(let deviceID):
             let transport = USBMuxDeviceTransport(deviceID: deviceID, usbmuxClient: usbmuxClient)
             return try await connect(
-                using: transport,
-                pairingRecord: pairingRecord,
+                over: transport,
+                using: pairingRecord,
                 label: label
             )
         case .direct(let host, let port):
@@ -289,8 +289,8 @@ public final class DeviceClient {
     /// - Throws: Pairing, Lockdown, secure-session, transport, or protocol
     ///   errors encountered while opening the session.
     public func connect(
-        using transport: any DeviceTransport,
-        pairingRecord: PairingRecord,
+        over transport: any DeviceTransport,
+        using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
     ) async throws -> DeviceSession {
         var connection = try await transport.connect(to: 62078)
@@ -330,7 +330,7 @@ public final class DeviceClient {
     /// - Throws: Transport, Lockdown, or protocol errors when required fields
     ///   are missing or malformed.
     public func pairingInformation(
-        using transport: any DeviceTransport
+        over transport: any DeviceTransport
     ) async throws -> DevicePairingInformation {
         let connection = try await transport.connect(to: 62078)
         defer {
@@ -483,8 +483,8 @@ public final class DeviceClient {
     ) async throws -> DeviceSession {
         let transport = DirectLockdownTransport(host: host, lockdownPort: port)
         return try await connect(
-            using: transport,
-            pairingRecord: pairingRecord,
+            over: transport,
+            using: pairingRecord,
             label: label
         )
     }

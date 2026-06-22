@@ -420,8 +420,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
 
         await XCTAssertThrowsErrorAsync({
             _ = try await client.connect(
-                using: StaticDeviceTransport(connection: connection),
-                pairingRecord: try testPairingRecord()
+                over: StaticDeviceTransport(connection: connection),
+                using: try testPairingRecord()
             )
         }) { _ in }
 
@@ -446,8 +446,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
 
         await XCTAssertThrowsErrorAsync({
             _ = try await client.connect(
-                using: StaticDeviceTransport(connection: connection),
-                pairingRecord: try testPairingRecord()
+                over: StaticDeviceTransport(connection: connection),
+                using: try testPairingRecord()
             )
         }) { error in
             XCTAssertEqual(error as? RorkDeviceError, expectedError)
