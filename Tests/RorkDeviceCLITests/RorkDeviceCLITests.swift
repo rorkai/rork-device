@@ -528,6 +528,55 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.path, "/Documents")
     }
 
+    func testFilesListParsesJSONOutput() throws {
+        let command = try FilesList.parse([
+            "--pairing-record", "pairing.plist",
+            "--json",
+            "/Documents",
+        ])
+
+        XCTAssertTrue(command.json)
+    }
+
+    func testFileListJSONPreservesEntryNames() throws {
+        let data = try fileListJSON([
+            ".",
+            "..",
+            "Example.txt",
+        ])
+        let entries = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String]
+        )
+
+        XCTAssertEqual(entries, [".", "..", "Example.txt"])
+    }
+
+    func testFilesInfoParsesJSONOutput() throws {
+        let command = try FilesInfo.parse([
+            "--pairing-record", "pairing.plist",
+            "--json",
+            "/Documents/Example.txt",
+        ])
+
+        XCTAssertTrue(command.json)
+    }
+
+    func testFileInfoJSONPreservesAFCMetadata() throws {
+        let data = try fileInfoJSON(AFCFileInfo(values: [
+            "st_ifmt": "S_IFREG",
+            "st_size": "42",
+        ]))
+        let values = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data)
+                as? [String: String]
+        )
+
+        XCTAssertEqual(values, [
+            "st_ifmt": "S_IFREG",
+            "st_size": "42",
+        ])
+    }
+
     func testFilesRejectsContainerWithoutBundleIdentifier() {
         XCTAssertThrowsError(try FilesList.parse([
             "--pairing-record", "pairing.plist",
