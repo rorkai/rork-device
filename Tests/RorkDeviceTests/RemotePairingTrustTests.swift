@@ -1,7 +1,12 @@
-import CryptoKit
 import Foundation
 import XCTest
 @testable import RorkDevice
+
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 
 final class RemotePairingTrustTests: XCTestCase {
     func testClosesTheControlConnectionAfterVerifyingTrust() async throws {

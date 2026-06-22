@@ -1,3 +1,4 @@
+#if canImport(RorkDeviceLwIP)
 import Foundation
 
 /// IPv6/TCP userspace network carried by a Lockdown CoreDevice tunnel.
@@ -234,7 +235,8 @@ private final class CoreDeviceUserspaceNetworkTermination: @unchecked Sendable {
 
     /// Publishes the first terminal result to current and future waiters.
     func finish(with error: Error?) {
-        let result: Result<Void, Error> = error.map { .failure($0) }
+        let result: Result<Void, Error> =
+            error.map { .failure($0) }
             ?? .success(())
         let waiters: [CheckedContinuation<Void, Error>] = lock.withLock {
             guard self.result == nil else {
@@ -250,3 +252,4 @@ private final class CoreDeviceUserspaceNetworkTermination: @unchecked Sendable {
         }
     }
 }
+#endif

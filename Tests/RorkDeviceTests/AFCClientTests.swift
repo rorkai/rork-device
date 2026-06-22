@@ -116,6 +116,22 @@ final class AFCClientTests: XCTestCase {
         }
     }
 
+    func testRejectsPayloadLengthThatExceedsHostLimits() async throws {
+        let connection = FakeConnection(
+            inbound: afcOversizedLengthResponse(packetNumber: 1)
+        )
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.makeDirectory("/PublicStaging")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("AFC payload length exceeds host limits.")
+            )
+        }
+    }
+
     func testRejectsTruncatedStatusPacket() async throws {
         let connection = FakeConnection(inbound: afcResponse(packetNumber: 1, operation: 1, payload: Data([0, 0])))
         let client = AFCClient(connection: connection)
@@ -158,6 +174,24 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(connection.sent.count, 3)
         XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
+    }
+
+    func testUploadFileSendsOneMegabyteInOneWriteRequest() async throws {
+        let data = Data(repeating: 0x5a, count: 1024 * 1024)
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        // Keep the legacy 64 KiB implementation runnable so a regression
+        // fails on its write shape instead of exhausting fake responses.
+        for packetNumber in 2...18 {
+            inbound.append(afcStatusResponse(packetNumber: UInt64(packetNumber), status: 0))
+        }
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        try await client.uploadFile(data, to: "/PublicStaging/App.ipa")
+
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 16, 20])
+        XCTAssertEqual(connection.sent[1].count, data.count + 48)
     }
 
     func testContentsOfFileReadsUntilEmptyChunkAndClosesFile() async throws {
@@ -277,6 +311,15 @@ private func afcFileOpenResponse(packetNumber: UInt64, handle: UInt64) -> Data {
 private func afcMalformedLengthResponse(packetNumber: UInt64) -> Data {
     var data = Data("CFA6LPAA".utf8)
     data.appendLittleEndian(UInt64(39))
+    data.appendLittleEndian(UInt64(40))
+    data.appendLittleEndian(packetNumber)
+    data.appendLittleEndian(UInt64(1))
+    return data
+}
+
+private func afcOversizedLengthResponse(packetNumber: UInt64) -> Data {
+    var data = Data("CFA6LPAA".utf8)
+    data.appendLittleEndian(UInt64(Int.max) + 41)
     data.appendLittleEndian(UInt64(40))
     data.appendLittleEndian(packetNumber)
     data.appendLittleEndian(UInt64(1))

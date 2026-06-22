@@ -1,5 +1,10 @@
-import CryptoKit
 import Foundation
+
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 
 /// Long-lived host identity used to authenticate a remote-pairing session.
 ///
@@ -134,12 +139,15 @@ public struct RemotePairingIdentity:
     public init(propertyList data: Data) throws {
         let object: Any
         do {
-            object = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+            object = try PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil)
         } catch {
-            throw RorkDeviceError.invalidPairingRecord("Remote pairing identity is not a valid property list.")
+            throw RorkDeviceError.invalidPairingRecord(
+                "Remote pairing identity is not a valid property list.")
         }
         guard let dictionary = object as? [String: Any] else {
-            throw RorkDeviceError.invalidPairingRecord("Remote pairing identity is not a property list dictionary.")
+            throw RorkDeviceError.invalidPairingRecord(
+                "Remote pairing identity is not a property list dictionary.")
         }
 
         let identifier = try requiredString("identifier", in: dictionary)
@@ -152,7 +160,8 @@ public struct RemotePairingIdentity:
             throw RorkDeviceError.invalidPairingRecord("Remote pairing private key is invalid.")
         }
         guard privateKey.publicKey.rawRepresentation == publicKeyData else {
-            throw RorkDeviceError.invalidPairingRecord("Remote pairing public key does not match the private key.")
+            throw RorkDeviceError.invalidPairingRecord(
+                "Remote pairing public key does not match the private key.")
         }
 
         let identityResolvingKey = try requiredIdentityResolvingKey(
@@ -195,7 +204,8 @@ public struct RemotePairingIdentity:
         }
 
         let identity = RemotePairingIdentity.generate()
-        let candidateURL = url
+        let candidateURL =
+            url
             .deletingLastPathComponent()
             .appendingPathComponent(
                 ".\(url.lastPathComponent).\(UUID().uuidString).candidate"
@@ -277,20 +287,23 @@ public struct RemotePairingIdentity:
         fileManager: FileManager
     ) throws {
         let data = try propertyList(format: format)
-        let temporaryURL = url
+        let temporaryURL =
+            url
             .deletingLastPathComponent()
             .appendingPathComponent(
                 ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
             )
 
         do {
-            guard fileManager.createFile(
-                atPath: temporaryURL.path,
-                contents: nil,
-                attributes: [
-                    .posixPermissions: NSNumber(value: 0o600),
-                ]
-            ) else {
+            guard
+                fileManager.createFile(
+                    atPath: temporaryURL.path,
+                    contents: nil,
+                    attributes: [
+                        .posixPermissions: NSNumber(value: 0o600)
+                    ]
+                )
+            else {
                 throw CocoaError(.fileWriteUnknown)
             }
             let handle = try FileHandle(forWritingTo: temporaryURL)

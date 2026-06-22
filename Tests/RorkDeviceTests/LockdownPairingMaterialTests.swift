@@ -1,17 +1,20 @@
 import CryptoExtras
 import Foundation
 import NIOSSL
-import XCTest
 import X509
+import XCTest
+
 @testable import RorkDevice
 
 final class LockdownPairingMaterialTests: XCTestCase {
     func testCreatesCompletePortablePairingMaterial() throws {
-        let record = try LockdownPairingMaterial.generate(
-            deviceIdentifier: "device-1",
+        let record = try PairingRecord.candidate(
+            for: DevicePairingInformation(
+                deviceIdentifier: "device-1",
+                devicePublicKey: testDevicePublicKeyPEM,
+                wiFiMACAddress: "00:11:22:33:44:55"
+            ),
             systemBUID: "system-1",
-            devicePublicKey: testDevicePublicKeyPEM,
-            wiFiMACAddress: "00:11:22:33:44:55",
             validFrom: Date(timeIntervalSince1970: 1_700_000_000)
         )
 

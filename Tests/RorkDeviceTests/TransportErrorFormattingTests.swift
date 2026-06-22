@@ -1,7 +1,12 @@
-import Darwin
 import NIOCore
 import XCTest
 @testable import RorkDevice
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 final class TransportErrorFormattingTests: XCTestCase {
     func testSwiftNIOErrorPreservesErrnoAndOperation() {

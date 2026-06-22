@@ -1,3 +1,4 @@
+#if canImport(BigInt)
 import Foundation
 #if canImport(Network)
 import Network
@@ -244,3 +245,4 @@ public final class RemotePairingTunnel: @unchecked Sendable {
         controlConnection.close()
     }
 }
+#endif
