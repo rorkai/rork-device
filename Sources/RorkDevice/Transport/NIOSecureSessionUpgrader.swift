@@ -27,8 +27,13 @@ public struct NIOSecureSessionUpgrader: SecureSessionUpgrader {
     /// Lockdown TLS policy applied to each upgraded connection.
     private let profile: LockdownTLSProfile
 
-    /// Creates a SwiftNIO SSL secure-session upgrader.
-    public init(profile: LockdownTLSProfile = .standard) {
+    /// Creates a SwiftNIO SSL secure-session upgrader with the standard profile.
+    public init() {
+        self.init(profile: .standard)
+    }
+
+    /// Creates a SwiftNIO SSL secure-session upgrader with a diagnostic profile.
+    public init(profile: LockdownTLSProfile) {
         self.profile = profile
     }
 
