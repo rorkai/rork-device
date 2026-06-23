@@ -244,16 +244,54 @@ private func pairingDiagnosticErrorDescription(_ error: Error) -> String {
     return String(reflecting: error)
 }
 
-/// Prints the same report shape in a concise terminal-oriented form.
+/// Formats the redacted report for interactive terminal collection.
+func pairingDiagnosticText(
+    _ report: PairingDiagnosticReport
+) -> String {
+    func certificateLine(
+        _ name: String,
+        _ certificate: PairingCertificateDiagnostic?
+    ) -> String {
+        guard let certificate else {
+            return "- \(name): missing"
+        }
+        let summary =
+            "\(certificate.encoding), \(certificate.byteCount) bytes"
+        return "- \(name): \(summary), sha256=\(certificate.sha256)"
+    }
+
+    var lines = [
+        "Pairing diagnostics for \(report.deviceIdentifier):",
+        "Pairing record:",
+        certificateLine(
+            "deviceCertificate",
+            report.pairingRecord.deviceCertificate
+        ),
+        certificateLine(
+            "hostCertificate",
+            report.pairingRecord.hostCertificate
+        ),
+        certificateLine(
+            "rootCertificate",
+            report.pairingRecord.rootCertificate
+        ),
+        "TLS attempts:",
+    ]
+    for attempt in report.attempts {
+        let status = attempt.succeeded ? "passed" : "failed"
+        lines.append(
+            "- \(attempt.profile): \(status) at \(attempt.phase)"
+        )
+        if let error = attempt.error {
+            lines.append("  \(error)")
+        }
+    }
+    return lines.joined(separator: "\n")
+}
+
+/// Prints the report without exposing raw certificate or private-key bytes.
 private func printPairingDiagnosticReport(
     _ report: PairingDiagnosticReport
 ) {
-    print("Pairing diagnostics for \(report.deviceIdentifier):")
-    for attempt in report.attempts {
-        let status = attempt.succeeded ? "passed" : "failed"
-        print("- \(attempt.profile): \(status) at \(attempt.phase)")
-        if let error = attempt.error {
-            print("  \(error)")
-        }
-    }
+    print(pairingDiagnosticText(report))
 }

@@ -368,23 +368,7 @@ final class RorkDeviceCLITests: XCTestCase {
     }
 
     func testPairingDiagnosticJSONOmitsPrivatePairingMaterial() throws {
-        let record = try PairingRecord.parse(
-            PropertyListSerialization.data(
-                fromPropertyList: [
-                    "UDID": "device-1",
-                    "HostID": "host-1",
-                    "SystemBUID": "system-1",
-                    "DeviceCertificate": Data("device-certificate".utf8),
-                    "HostCertificate": Data("host-certificate".utf8),
-                    "HostPrivateKey": Data("private-key".utf8),
-                    "RootCertificate": Data("root-certificate".utf8),
-                    "RootPrivateKey": Data("root-private-key".utf8),
-                    "EscrowBag": Data("escrow".utf8),
-                ],
-                format: .binary,
-                options: 0
-            )
-        )
+        let record = try makePairingDiagnosticTestRecord()
         let report = PairingDiagnosticReport(
             deviceIdentifier: "device-1",
             pairingRecord: pairingRecordDiagnostic(record),
@@ -414,6 +398,30 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertNil(pairing["hostPrivateKey"])
         XCTAssertNil(pairing["rootPrivateKey"])
         XCTAssertNil(pairing["escrowBag"])
+    }
+
+    func testPairingDiagnosticTextIncludesRedactedCertificateMetadata() throws {
+        let record = try makePairingDiagnosticTestRecord()
+        let report = PairingDiagnosticReport(
+            deviceIdentifier: "device-1",
+            pairingRecord: pairingRecordDiagnostic(record),
+            attempts: []
+        )
+        let hostCertificate = try XCTUnwrap(
+            report.pairingRecord.hostCertificate
+        )
+
+        let output = pairingDiagnosticText(report)
+
+        XCTAssertTrue(output.contains("Pairing record:"))
+        XCTAssertTrue(
+            output.contains(
+                "hostCertificate: \(hostCertificate.encoding), \(hostCertificate.byteCount) bytes, sha256=\(hostCertificate.sha256)"
+            )
+        )
+        XCTAssertFalse(output.contains("private-key"))
+        XCTAssertFalse(output.contains("root-private-key"))
+        XCTAssertFalse(output.contains("escrow"))
     }
 
     func testPairingEstablishCommandParsesDeviceIdentifierAndTimeout() throws {
@@ -676,4 +684,24 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.localPath, "local.txt")
         XCTAssertEqual(command.remotePath, "/Documents/local.txt")
     }
+}
+
+private func makePairingDiagnosticTestRecord() throws -> PairingRecord {
+    try PairingRecord.parse(
+        PropertyListSerialization.data(
+            fromPropertyList: [
+                "UDID": "device-1",
+                "HostID": "host-1",
+                "SystemBUID": "system-1",
+                "DeviceCertificate": Data("device-certificate".utf8),
+                "HostCertificate": Data("host-certificate".utf8),
+                "HostPrivateKey": Data("private-key".utf8),
+                "RootCertificate": Data("root-certificate".utf8),
+                "RootPrivateKey": Data("root-private-key".utf8),
+                "EscrowBag": Data("escrow".utf8),
+            ],
+            format: .binary,
+            options: 0
+        )
+    )
 }

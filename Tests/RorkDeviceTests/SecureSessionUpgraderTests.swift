@@ -77,14 +77,35 @@ final class SecureSessionUpgraderTests: XCTestCase {
         )
     }
 
+    func testSecureSessionTestServerRejectsPartialCredentials() async {
+        do {
+            let server = try await SecureSessionTestServer.start(
+                pairingRecord: makeSecureSessionPairingRecord()
+            )
+            server.stop()
+            XCTFail("Expected partial test credentials to be rejected.")
+        } catch {
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidPairingRecord(
+                    "Secure-session test credentials must provide both a pairing record and device private key."
+                )
+            )
+        }
+    }
+
     private func assertSecureSessionRoundTrip(
         pairingRecord: PairingRecord,
         devicePrivateKey: Data? = nil
     ) async throws {
-        let server = try await SecureSessionTestServer.start(
-            pairingRecord: pairingRecord,
-            devicePrivateKey: devicePrivateKey
-        )
+        let server = if let devicePrivateKey {
+            try await SecureSessionTestServer.start(
+                pairingRecord: pairingRecord,
+                devicePrivateKey: devicePrivateKey
+            )
+        } else {
+            try await SecureSessionTestServer.start()
+        }
         defer { server.stop() }
 
         let connection = try await TCPDeviceConnection.connect(
@@ -337,25 +358,51 @@ private final class SecureSessionTestServer {
         pairingRecord: PairingRecord? = nil,
         devicePrivateKey: Data? = nil
     ) async throws -> SecureSessionTestServer {
+        let deviceCertificateData: Data
+        let devicePrivateKeyData: Data
+        let rootCertificateData: Data
+
+        // Mixing generated and fixture material can fail for setup reasons that
+        // have nothing to do with the TLS behavior the test is exercising.
+        switch (pairingRecord, devicePrivateKey) {
+        case (nil, nil):
+            deviceCertificateData = try secureSessionFixture(
+                named: "device-certificate"
+            )
+            devicePrivateKeyData = try secureSessionFixture(
+                named: "device-private-key"
+            )
+            rootCertificateData = try secureSessionFixture(
+                named: "root-certificate"
+            )
+        case let (pairingRecord?, devicePrivateKey?):
+            guard
+                let deviceCertificate = pairingRecord.deviceCertificate,
+                let rootCertificate = pairingRecord.rootCertificate
+            else {
+                throw RorkDeviceError.invalidPairingRecord(
+                    "Secure-session test pairing record is missing certificate material."
+                )
+            }
+            deviceCertificateData = deviceCertificate
+            devicePrivateKeyData = devicePrivateKey
+            rootCertificateData = rootCertificate
+        default:
+            throw RorkDeviceError.invalidPairingRecord(
+                "Secure-session test credentials must provide both a pairing record and device private key."
+            )
+        }
+
         let deviceCertificate = try NIOSSLCertificate(
-            bytes: Array(
-                try pairingRecord?.deviceCertificate
-                    ?? secureSessionFixture(named: "device-certificate")
-            ),
+            bytes: Array(deviceCertificateData),
             format: .pem
         )
         let devicePrivateKey = try NIOSSLPrivateKey(
-            bytes: Array(
-                try devicePrivateKey
-                    ?? secureSessionFixture(named: "device-private-key")
-            ),
+            bytes: Array(devicePrivateKeyData),
             format: .pem
         )
         let rootCertificate = try NIOSSLCertificate(
-            bytes: Array(
-                try pairingRecord?.rootCertificate
-                    ?? secureSessionFixture(named: "root-certificate")
-            ),
+            bytes: Array(rootCertificateData),
             format: .pem
         )
         let configuration = TLSConfiguration.makeServerConfigurationWithMTLS(
