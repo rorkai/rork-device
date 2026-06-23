@@ -18,6 +18,7 @@ final class RemotePairingProtocolTests: XCTestCase {
     }
 
     func testTrustEstablishmentPairsAnUnknownIdentity() async throws {
+        var didEnrollIdentity = false
         let signingKey = try Curve25519.Signing.PrivateKey(
             rawRepresentation: Data((1...32).map(UInt8.init))
         )
@@ -145,8 +146,14 @@ final class RemotePairingProtocolTests: XCTestCase {
             }
         )
 
-        try await client.establishTrustIfNeeded()
+        try await client.establishTrustIfNeeded(
+            willEstablishTrust: {},
+            didEnrollIdentity: {
+                didEnrollIdentity = true
+            }
+        )
 
+        XCTAssertTrue(didEnrollIdentity)
         XCTAssertEqual(connection.sent.count, 8)
         let setupStart = try pairingEnvelope(in: connection.sent[4])
         XCTAssertEqual(setupStart.kind, "setupManualPairing")
@@ -165,6 +172,38 @@ final class RemotePairingProtocolTests: XCTestCase {
             try TLV8.decode(setupIdentity.data).value(for: 0x06),
             Data([0x05])
         )
+
+        let interruptedConnection = FakeConnection(
+            inbound: inbound,
+            receiveFailureAfterSendCount: 8
+        )
+        let interruptedClient = RemotePairingProtocolClient(
+            connection: interruptedConnection,
+            identity: identity,
+            ephemeralKey: hostAgreementKey,
+            makeSRPClient: {
+                try RemotePairingSRPClient(
+                    privateKey: Data((1...32).map(UInt8.init))
+                )
+            }
+        )
+        var didEnrollBeforeInterruption = false
+
+        await XCTAssertThrowsErrorAsync({
+            try await interruptedClient.establishTrustIfNeeded(
+                willEstablishTrust: {},
+                didEnrollIdentity: {
+                    didEnrollBeforeInterruption = true
+                }
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("Injected receive failure.")
+            )
+        }
+
+        XCTAssertTrue(didEnrollBeforeInterruption)
     }
 
     func testTrustEstablishmentStartsPairSetupAfterAuthenticationRejection() async throws {
