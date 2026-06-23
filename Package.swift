@@ -57,11 +57,11 @@ let swiftNIOSSL: Package.Dependency = .package(
 #if compiler(>=6.3)
 let swiftCertificates: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-certificates.git",
-    revision: "fc27ef848f1677db946f1fa87201c1fee3b3076a"
+    revision: "6cf7f351f4191de64a382a68aee398eb3be1621c"
 )
 let swiftCrypto: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-crypto.git",
-    revision: "b6c710cd588404890ab173d82b8a8fc9588ee382"
+    revision: "f171fca4c1718d685c495350fe9136a3fda6f262"
 )
 #elseif compiler(>=6.1)
 let swiftCertificates: Package.Dependency = .package(
@@ -83,13 +83,22 @@ let swiftCrypto: Package.Dependency = .package(
 )
 #endif
 
+let swiftArgumentParser: Package.Dependency = .package(
+    url: "https://github.com/apple/swift-argument-parser.git",
+    .upToNextMajor(from: "1.5.0")
+)
+let bigInt: Package.Dependency = .package(
+    url: "https://github.com/attaswift/BigInt.git",
+    .upToNextMajor(from: "5.7.0")
+)
+
 var dependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
+    swiftArgumentParser,
     swiftNIO,
     swiftNIOSSL,
     swiftCertificates,
     swiftCrypto,
-    .package(url: "https://github.com/attaswift/BigInt.git", .upToNextMajor(from: "5.7.0")),
+    bigInt,
 ]
 
 var targets: [Target] = [
