@@ -1,5 +1,6 @@
 import Foundation
 import NIOCore
+import NIOSSL
 
 /// Formats low-level transport errors for package-level diagnostics.
 ///
@@ -12,6 +13,9 @@ func describeTransportError(_ error: Error) -> String {
     }
     if let ioError = error as? NIOCore.IOError {
         return "SwiftNIO IOError errno=\(ioError.errnoCode): \(ioError.description)"
+    }
+    if let sslError = error as? NIOSSLError {
+        return String(reflecting: sslError)
     }
     return error.localizedDescription
 }

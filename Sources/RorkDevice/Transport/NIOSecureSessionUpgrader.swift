@@ -1,6 +1,22 @@
 import Foundation
 import NIOSSL
 
+/// Lockdown-specific TLS policies used to isolate device compatibility failures.
+///
+/// Every profile retains mutual TLS and exact device-certificate pinning. The
+/// variants change one negotiation input at a time so diagnostics can identify
+/// whether a device rejects the client chain or the offered protocol range.
+public enum LockdownTLSProfile: String, CaseIterable, Sendable {
+    /// Production configuration: host and root certificates with no TLS maximum.
+    case standard
+
+    /// Sends only the host leaf, matching go-ios and pymobiledevice3.
+    case hostCertificateOnly = "host-certificate-only"
+
+    /// Retains the complete client chain while preventing TLS 1.3 negotiation.
+    case tls12 = "tls-1.2"
+}
+
 /// SwiftNIO SSL backend for Lockdown and device-service connections.
 ///
 /// Lockdown negotiates TLS after a plain-text session or service connection is
@@ -8,8 +24,13 @@ import NIOSSL
 /// existing SwiftNIO channel, preserving usbmux forwarding while avoiding the
 /// deprecated Secure Transport APIs.
 public struct NIOSecureSessionUpgrader: SecureSessionUpgrader {
+    /// Lockdown TLS policy applied to each upgraded connection.
+    private let profile: LockdownTLSProfile
+
     /// Creates a SwiftNIO SSL secure-session upgrader.
-    public init() {}
+    public init(profile: LockdownTLSProfile = .standard) {
+        self.profile = profile
+    }
 
     /// Adds client-authenticated TLS to an established device connection.
     ///
@@ -31,7 +52,8 @@ public struct NIOSecureSessionUpgrader: SecureSessionUpgrader {
         pairingRecord: PairingRecord
     ) async throws -> DeviceConnection {
         let configuration = try NIOSecureSessionConfiguration(
-            pairingRecord: pairingRecord
+            pairingRecord: pairingRecord,
+            profile: profile
         )
         if let connection = connection as? NIOSecureSessionConnection {
             try await connection.startSecureSession(using: configuration)
@@ -74,7 +96,10 @@ struct NIOSecureSessionConfiguration: Sendable {
     let trustedServerCertificate: Data
 
     /// Parses and validates all pairing material before touching the channel.
-    init(pairingRecord: PairingRecord) throws {
+    init(
+        pairingRecord: PairingRecord,
+        profile: LockdownTLSProfile = .standard
+    ) throws {
         guard let deviceCertificateData = pairingRecord.deviceCertificate else {
             throw RorkDeviceError.invalidPairingRecord(
                 "Missing DeviceCertificate."
@@ -107,7 +132,8 @@ struct NIOSecureSessionConfiguration: Sendable {
         var certificateChain: [NIOSSLCertificateSource] = [
             .certificate(hostCertificate)
         ]
-        if let rootCertificateData = pairingRecord.rootCertificate {
+        if profile != .hostCertificateOnly,
+           let rootCertificateData = pairingRecord.rootCertificate {
             certificateChain.append(
                 .certificate(
                     try makeCertificate(
@@ -119,7 +145,10 @@ struct NIOSecureSessionConfiguration: Sendable {
         }
 
         var configuration = TLSConfiguration.makeClientConfiguration()
-        configureLockdownProtocolVersions(&configuration)
+        configureLockdownProtocolVersions(
+            &configuration,
+            profile: profile
+        )
         configuration.certificateVerification = .noHostnameVerification
         configuration.trustRoots = .certificates([deviceCertificate])
         configuration.certificateChain = certificateChain
@@ -146,9 +175,13 @@ struct NIOSecureSessionConfiguration: Sendable {
 /// intentional device-compatibility boundary rather than a public-network trust
 /// policy. Remote-pairing TLS remains governed by its separate TLS 1.2 policy.
 private func configureLockdownProtocolVersions(
-    _ configuration: inout TLSConfiguration
+    _ configuration: inout TLSConfiguration,
+    profile: LockdownTLSProfile
 ) {
     configuration.minimumTLSVersion = .tlsv1
+    if profile == .tls12 {
+        configuration.maximumTLSVersion = .tlsv12
+    }
 }
 
 /// Creates an in-memory certificate from PEM or DER pairing material.

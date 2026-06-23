@@ -133,10 +133,27 @@ struct ConnectionOptions: ParsableArguments {
     /// file was supplied. Direct endpoints cannot query usbmux for the remote
     /// host and therefore continue to require `--pairing-record`.
     func connectedSession(
-        label: String = "rorkdevice"
+        label: String = "rorkdevice",
+        client: DeviceClient = DeviceClient()
     ) async throws -> (
         session: DeviceSession,
         deviceIdentifier: String
+    ) {
+        let target = try await lockdownTarget(using: client)
+        let session = try await client.connect(
+            to: target.device,
+            using: target.pairingRecord,
+            label: label
+        )
+        return (session, target.device.identifier)
+    }
+
+    /// Resolves one stable Lockdown route and its pairing record without opening TLS.
+    func lockdownTarget(
+        using client: DeviceClient = DeviceClient()
+    ) async throws -> (
+        device: Device,
+        pairingRecord: PairingRecord
     ) {
         try validateConnectionOptions()
         guard !usesUserspaceRemoteServiceRoute else {
@@ -144,16 +161,15 @@ struct ConnectionOptions: ParsableArguments {
                 "This command requires a Lockdown connection and cannot reuse an existing userspace gateway."
             )
         }
-        let client = DeviceClient()
         if let host {
             let pairing = try pairingRecordValue()
-            let session = try await client.connect(
-                to: host,
-                port: port,
-                using: pairing,
-                label: label
+            return (
+                Device(
+                    identifier: pairing.udid,
+                    connection: .direct(host: host, port: port)
+                ),
+                pairing
             )
-            return (session, pairing.udid)
         }
 
         let devices = try await client.discoverDevices()
@@ -174,12 +190,7 @@ struct ConnectionOptions: ParsableArguments {
                 for: selected.identifier
             )
         }
-        let session = try await client.connect(
-            to: selected,
-            using: pairing,
-            label: label
-        )
-        return (session, selected.identifier)
+        return (selected, pairing)
     }
 
     /// Shared implementation for parse-time and runtime connection validation.
@@ -456,6 +467,7 @@ struct PairingCommand: AsyncParsableCommand {
             PairingEstablish.self,
             PairingExport.self,
             PairingRemove.self,
+            PairingDiagnose.self,
             PairingValidate.self,
             PairingEnableWireless.self,
         ]

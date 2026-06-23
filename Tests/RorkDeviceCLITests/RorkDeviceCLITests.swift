@@ -337,6 +337,85 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.connection.udid, "device-1")
     }
 
+    func testPairingDiagnoseCommandParsesJSONOutput() throws {
+        let command = try PairingDiagnose.parse([
+            "--udid", "device-1",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "device-1")
+        XCTAssertTrue(command.json)
+    }
+
+    func testPairingDiagnosticProfilesContinueAfterFailure() async {
+        let attempts = await runPairingDiagnosticProfiles { profile in
+            PairingDiagnosticAttempt(
+                profile: profile.rawValue,
+                succeeded: profile != .standard,
+                phase: profile == .standard
+                    ? PairingDiagnosticPhase.tlsHandshake.rawValue
+                    : PairingDiagnosticPhase.complete.rawValue,
+                error: profile == .standard ? "handshake failed" : nil
+            )
+        }
+
+        XCTAssertEqual(
+            attempts.map(\.profile),
+            LockdownTLSProfile.allCases.map(\.rawValue)
+        )
+        XCTAssertEqual(attempts.first?.error, "handshake failed")
+        XCTAssertTrue(attempts.dropFirst().allSatisfy(\.succeeded))
+    }
+
+    func testPairingDiagnosticJSONOmitsPrivatePairingMaterial() throws {
+        let record = try PairingRecord.parse(
+            PropertyListSerialization.data(
+                fromPropertyList: [
+                    "UDID": "device-1",
+                    "HostID": "host-1",
+                    "SystemBUID": "system-1",
+                    "DeviceCertificate": Data("device-certificate".utf8),
+                    "HostCertificate": Data("host-certificate".utf8),
+                    "HostPrivateKey": Data("private-key".utf8),
+                    "RootCertificate": Data("root-certificate".utf8),
+                    "RootPrivateKey": Data("root-private-key".utf8),
+                    "EscrowBag": Data("escrow".utf8),
+                ],
+                format: .binary,
+                options: 0
+            )
+        )
+        let report = PairingDiagnosticReport(
+            deviceIdentifier: "device-1",
+            pairingRecord: pairingRecordDiagnostic(record),
+            attempts: [
+                PairingDiagnosticAttempt(
+                    profile: LockdownTLSProfile.standard.rawValue,
+                    succeeded: false,
+                    phase: PairingDiagnosticPhase.tlsHandshake.rawValue,
+                    error: "TLSV1_ALERT_BAD_CERTIFICATE"
+                ),
+            ]
+        )
+
+        let data = try pairingDiagnosticJSON(report)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let pairing = try XCTUnwrap(
+            object["pairingRecord"] as? [String: Any]
+        )
+        let hostCertificate = try XCTUnwrap(
+            pairing["hostCertificate"] as? [String: Any]
+        )
+
+        XCTAssertEqual(hostCertificate["byteCount"] as? Int, 16)
+        XCTAssertNotNil(hostCertificate["sha256"] as? String)
+        XCTAssertNil(pairing["hostPrivateKey"])
+        XCTAssertNil(pairing["rootPrivateKey"])
+        XCTAssertNil(pairing["escrowBag"])
+    }
+
     func testPairingEstablishCommandParsesDeviceIdentifierAndTimeout() throws {
         let command = try PairingEstablish.parse([
             "--udid", "device-1",
@@ -381,6 +460,7 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("export"))
         XCTAssertTrue(help.contains("remove"))
         XCTAssertTrue(help.contains("validate"))
+        XCTAssertTrue(help.contains("diagnose"))
         XCTAssertTrue(help.contains("enable-wireless"))
     }
 

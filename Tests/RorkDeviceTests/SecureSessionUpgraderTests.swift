@@ -1,8 +1,10 @@
+import CryptoExtras
 import Foundation
 import NIOCore
 import NIOEmbedded
 import NIOPosix
 import NIOSSL
+import X509
 import XCTest
 
 @testable import RorkDevice
@@ -36,7 +38,53 @@ final class SecureSessionUpgraderTests: XCTestCase {
 
     /// Verifies that the NIO backend adds TLS to an established device stream.
     func testNIOSecureSessionUpgraderExchangesDataOverExistingConnection() async throws {
-        let server = try await SecureSessionTestServer.start()
+        try await assertSecureSessionRoundTrip(
+            pairingRecord: makeSecureSessionPairingRecord()
+        )
+    }
+
+    func testNIOSecureSessionUpgraderAcceptsGeneratedSHA1PairingCertificates() async throws {
+        let devicePrivateKey = try _RSA.Signing.PrivateKey(
+            keySize: .bits2048
+        )
+        let pairingRecord = try PairingRecord.candidate(
+            for: DevicePairingInformation(
+                deviceIdentifier: "secure-session-test-device",
+                devicePublicKey: Data(
+                    devicePrivateKey.publicKey.pemRepresentation.utf8
+                ),
+                wiFiMACAddress: "00:11:22:33:44:55"
+            ),
+            systemBUID: "secure-session-test-system",
+            validFrom: Date().addingTimeInterval(-60)
+        )
+        let hostCertificate = try Certificate(
+            pemEncoded: String(
+                decoding: try XCTUnwrap(pairingRecord.hostCertificate),
+                as: UTF8.self
+            )
+        )
+
+        XCTAssertEqual(
+            hostCertificate.signatureAlgorithm,
+            .sha1WithRSAEncryption
+        )
+        try await assertSecureSessionRoundTrip(
+            pairingRecord: pairingRecord,
+            devicePrivateKey: Data(
+                devicePrivateKey.pemRepresentation.utf8
+            )
+        )
+    }
+
+    private func assertSecureSessionRoundTrip(
+        pairingRecord: PairingRecord,
+        devicePrivateKey: Data? = nil
+    ) async throws {
+        let server = try await SecureSessionTestServer.start(
+            pairingRecord: pairingRecord,
+            devicePrivateKey: devicePrivateKey
+        )
         defer { server.stop() }
 
         let connection = try await TCPDeviceConnection.connect(
@@ -55,7 +103,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
 
         let secureConnection = try await NIOSecureSessionUpgrader().upgrade(
             connection,
-            pairingRecord: try makeSecureSessionPairingRecord()
+            pairingRecord: pairingRecord
         )
 
         let payload = Data("Lockdown over TLS".utf8)
@@ -65,6 +113,39 @@ final class SecureSessionUpgraderTests: XCTestCase {
         )
 
         XCTAssertEqual(received, payload)
+    }
+
+    func testStandardLockdownTLSProfileIncludesPairingRoot() throws {
+        let configuration = try NIOSecureSessionConfiguration(
+            pairingRecord: makeSecureSessionPairingRecord(),
+            profile: .standard
+        )
+
+        XCTAssertEqual(configuration.context.configuration.certificateChain.count, 2)
+        XCTAssertNil(configuration.context.configuration.maximumTLSVersion)
+    }
+
+    func testHostCertificateOnlyLockdownTLSProfileOmitsPairingRoot() throws {
+        let configuration = try NIOSecureSessionConfiguration(
+            pairingRecord: makeSecureSessionPairingRecord(),
+            profile: .hostCertificateOnly
+        )
+
+        XCTAssertEqual(configuration.context.configuration.certificateChain.count, 1)
+        XCTAssertNil(configuration.context.configuration.maximumTLSVersion)
+    }
+
+    func testTLS12LockdownTLSProfileCapsMaximumProtocolVersion() throws {
+        let configuration = try NIOSecureSessionConfiguration(
+            pairingRecord: makeSecureSessionPairingRecord(),
+            profile: .tls12
+        )
+
+        XCTAssertEqual(configuration.context.configuration.certificateChain.count, 2)
+        XCTAssertEqual(
+            configuration.context.configuration.maximumTLSVersion,
+            .tlsv12
+        )
     }
 
     /// Verifies that TLS can wrap an arbitrary streaming device transport.
@@ -252,22 +333,28 @@ private final class SecureSessionTestServer {
     }
 
     /// Starts a mutual-TLS echo server using the test pairing credentials.
-    static func start() async throws -> SecureSessionTestServer {
+    static func start(
+        pairingRecord: PairingRecord? = nil,
+        devicePrivateKey: Data? = nil
+    ) async throws -> SecureSessionTestServer {
         let deviceCertificate = try NIOSSLCertificate(
             bytes: Array(
-                try secureSessionFixture(named: "device-certificate")
+                try pairingRecord?.deviceCertificate
+                    ?? secureSessionFixture(named: "device-certificate")
             ),
             format: .pem
         )
         let devicePrivateKey = try NIOSSLPrivateKey(
             bytes: Array(
-                try secureSessionFixture(named: "device-private-key")
+                try devicePrivateKey
+                    ?? secureSessionFixture(named: "device-private-key")
             ),
             format: .pem
         )
         let rootCertificate = try NIOSSLCertificate(
             bytes: Array(
-                try secureSessionFixture(named: "root-certificate")
+                try pairingRecord?.rootCertificate
+                    ?? secureSessionFixture(named: "root-certificate")
             ),
             format: .pem
         )

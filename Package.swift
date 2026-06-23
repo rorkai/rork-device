@@ -158,6 +158,7 @@ var targets: [Target] = [
         dependencies: [
             "RorkDevice",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            .product(name: "Crypto", package: "swift-crypto"),
         ]
     ),
     .testTarget(
