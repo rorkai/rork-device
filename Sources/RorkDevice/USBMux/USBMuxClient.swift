@@ -193,20 +193,31 @@ public final class USBMuxClient: Sendable {
     /// clients, Finder, and other host tools consistent with the newly trusted
     /// identity.
     ///
-    /// - Parameter pairingRecord: Pairing material whose `udid` becomes the
-    ///   usbmux record identifier.
+    /// Associating the record with the current attachment lets usbmux publish
+    /// the accepted trust state without requiring a physical reconnect.
+    ///
+    /// - Parameters:
+    ///   - pairingRecord: Pairing material whose `udid` becomes the usbmux
+    ///     record identifier.
+    ///   - deviceID: Current usbmux attachment identifier, when the device is
+    ///     connected.
     /// - Throws: A serialization, transport, or usbmux rejection error.
     public func savePairingRecord(
-        _ pairingRecord: PairingRecord
+        _ pairingRecord: PairingRecord,
+        deviceID: UInt32? = nil
     ) async throws {
-        let response = try await request([
+        var requestValues: [String: Any] = [
             "MessageType": "SavePairRecord",
             "ClientVersionString": "rork-device",
             "ProgName": "rorkdevice",
             "kLibUSBMuxVersion": 3,
             "PairRecordID": pairingRecord.udid,
             "PairRecordData": try pairingRecord.propertyListData(),
-        ])
+        ]
+        if let deviceID {
+            requestValues["DeviceID"] = deviceID
+        }
+        let response = try await request(requestValues)
         try validateUSBMuxResult(
             response,
             operation: "SavePairRecord"

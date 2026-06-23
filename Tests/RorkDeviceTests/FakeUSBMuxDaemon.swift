@@ -62,6 +62,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     private var _houseArrestRequests: [[String: String]] = []
     private var _savedPairingRecordData: Data?
     private var _savedPairingRecordIdentifier: String?
+    private var _savedPairingRecordDeviceID: UInt32?
 
     /// Device identifier from the most recent DeletePairRecord request.
     private var _removedPairingRecordIdentifier: String?
@@ -137,6 +138,13 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _savedPairingRecordIdentifier
+    }
+
+    /// Active usbmux attachment associated with the saved pairing record.
+    var savedPairingRecordDeviceID: UInt32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _savedPairingRecordDeviceID
     }
 
     /// Device identifier whose host pairing record was removed.
@@ -364,7 +372,13 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             if let identifier = request.dictionary["PairRecordID"] as? String,
                 let data = request.dictionary["PairRecordData"] as? Data
             {
-                recordSavedPairingRecord(identifier: identifier, data: data)
+                recordSavedPairingRecord(
+                    identifier: identifier,
+                    data: data,
+                    deviceID: (request.dictionary["DeviceID"] as? NSNumber)?
+                        .uint32Value
+                        ?? request.dictionary["DeviceID"] as? UInt32
+                )
             }
             sendUSBMuxResponse(
                 ["Number": savePairingRecordStatus],
@@ -662,10 +676,15 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func recordSavedPairingRecord(identifier: String, data: Data) {
+    private func recordSavedPairingRecord(
+        identifier: String,
+        data: Data,
+        deviceID: UInt32?
+    ) {
         lock.lock()
         _savedPairingRecordIdentifier = identifier
         _savedPairingRecordData = data
+        _savedPairingRecordDeviceID = deviceID
         lock.unlock()
     }
 
