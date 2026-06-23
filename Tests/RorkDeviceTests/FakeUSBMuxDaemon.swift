@@ -19,6 +19,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     private let serverFD: Int32
     private let secureLockdown: Bool
     private let secureServices: Set<String>
+    private let devices: [USBMuxDevice]
     private let deviceEvents: [USBMuxDeviceEvent]
     private let listenResponse: [String: Any]
     private let pairingRecordData: Data?
@@ -161,6 +162,13 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     init(
         secureLockdown: Bool = false,
         secureServices: Set<String> = [],
+        devices: [USBMuxDevice] = [
+            USBMuxDevice(
+                deviceID: 1,
+                serialNumber: "fake-device-1",
+                properties: ["ConnectionType": "USB"]
+            )
+        ],
         deviceEvents: [USBMuxDeviceEvent] = [],
         listenResponse: [String: Any] = ["Number": 0],
         pairingRecordData: Data? = nil,
@@ -178,6 +186,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     ) throws {
         self.secureLockdown = secureLockdown
         self.secureServices = secureServices
+        self.devices = devices
         self.deviceEvents = deviceEvents
         self.listenResponse = listenResponse
         self.pairingRecordData = pairingRecordData
@@ -308,17 +317,17 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
         switch request.dictionary["MessageType"] as? String {
         case "ListDevices":
+            let deviceList: [[String: Any]] = devices.map { device in
+                var properties = device.properties
+                properties["SerialNumber"] = device.serialNumber
+                return [
+                    "DeviceID": device.deviceID,
+                    "Properties": properties,
+                ]
+            }
             sendUSBMuxResponse(
                 [
-                    "DeviceList": [
-                        [
-                            "DeviceID": 1,
-                            "Properties": [
-                                "SerialNumber": "fake-device-1",
-                                "ConnectionType": "USB",
-                            ],
-                        ]
-                    ]
+                    "DeviceList": deviceList
                 ], tag: request.packet.tag, to: fd)
         case "Listen":
             recordListenConnectionOpen()

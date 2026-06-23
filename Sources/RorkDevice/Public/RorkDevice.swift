@@ -10,6 +10,16 @@ public enum RorkDevice {
     public static let version = "0.9.1"
 }
 
+/// Returns whether usbmux identifies a discovered device record as a USB route.
+///
+/// usbmux may publish USB and network records for the same UDID in unstable
+/// order, so route selection must use `ConnectionType` instead of array order.
+/// Missing or unrecognized connection metadata is treated as non-USB.
+private func usesUSBRoute(_ device: Device) -> Bool {
+    device.properties["ConnectionType"]?
+        .caseInsensitiveCompare("USB") == .orderedSame
+}
+
 /// High-level entry point for device discovery and service sessions.
 ///
 /// `DeviceClient` supports two connection routes:
@@ -68,7 +78,11 @@ public final class DeviceClient {
     /// Returns devices currently visible through the local usbmux endpoint.
     ///
     /// The returned values contain the stable device identifier and the usbmux
-    /// device id needed to open a later Lockdown connection.
+    /// device id needed to open a later Lockdown connection. The array
+    /// preserves daemon order and every advertised route, so one physical
+    /// device may appear more than once when both USB and network access are
+    /// available. Use `discoverDevice(identifier:)` when only one preferred
+    /// route is needed.
     ///
     /// - Throws: `RorkDeviceError.transport` when the usbmux socket cannot be
     ///   opened, or `RorkDeviceError.protocolViolation` when the daemon returns
@@ -81,6 +95,32 @@ public final class DeviceClient {
                 properties: device.properties
             )
         }
+    }
+
+    /// Returns the preferred usbmux route for a device identifier.
+    ///
+    /// usbmux can advertise one physical device through USB and network at the
+    /// same time. This method prefers USB because host pairing and Trust-prompt
+    /// recovery require the cable route, then falls back to the first matching
+    /// route so already-paired network access remains available without a
+    /// cable.
+    ///
+    /// - Parameter identifier: Stable device identifier, normally the UDID.
+    /// - Returns: The preferred matching route, or `nil` when usbmux does not
+    ///   report the device.
+    /// - Throws: `RorkDeviceError.transport` when the usbmux socket cannot be
+    ///   opened, or `RorkDeviceError.protocolViolation` when the daemon returns
+    ///   malformed plist data.
+    public func discoverDevice(
+        identifier: String
+    ) async throws -> Device? {
+        let matchingDevices = try await discoverDevices().filter {
+            $0.identifier == identifier
+        }
+        if let usbDevice = matchingDevices.first(where: usesUSBRoute) {
+            return usbDevice
+        }
+        return matchingDevices.first
     }
 
     /// Reads the Lockdown pairing record stored by the local usbmux daemon.

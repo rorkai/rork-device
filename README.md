@@ -117,6 +117,11 @@ toolchain and can be added independently:
 
 ## Lockdown Example
 
+`discoverDevices()` preserves every route reported by usbmux, including
+separate USB and network records for the same physical device. When the UDID is
+already known, use `discoverDevice(identifier:)` to prefer USB while retaining
+network fallback.
+
 ```swift
 import Foundation
 import RorkDevice
