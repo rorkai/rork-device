@@ -83,13 +83,22 @@ let swiftCrypto: Package.Dependency = .package(
 )
 #endif
 
+let swiftArgumentParser: Package.Dependency = .package(
+    url: "https://github.com/apple/swift-argument-parser.git",
+    .upToNextMajor(from: "1.5.0")
+)
+let bigInt: Package.Dependency = .package(
+    url: "https://github.com/attaswift/BigInt.git",
+    .upToNextMajor(from: "5.7.0")
+)
+
 var dependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/apple/swift-argument-parser.git", .upToNextMajor(from: "1.5.0")),
+    swiftArgumentParser,
     swiftNIO,
     swiftNIOSSL,
     swiftCertificates,
     swiftCrypto,
-    .package(url: "https://github.com/attaswift/BigInt.git", .upToNextMajor(from: "5.7.0")),
+    bigInt,
 ]
 
 var targets: [Target] = [
