@@ -2,6 +2,16 @@ import XCTest
 @testable import RorkDevice
 
 final class USBMuxClientIntegrationTests: XCTestCase {
+    /// Protects callers that store the original one-argument API as a function
+    /// value.
+    func testSavePairingRecordOneArgumentMethodReferenceRemainsAvailable() {
+        let client = USBMuxClient(host: "127.0.0.1", port: 1)
+        let savePairingRecord: (PairingRecord) async throws -> Void =
+            client.savePairingRecord
+
+        _ = savePairingRecord
+    }
+
     func testListsDevicesFromFakeDaemon() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }

@@ -18,7 +18,7 @@ public struct USBMuxDevice: Equatable, Sendable {
     /// Creates a usbmux device record from decoded daemon fields.
     ///
     /// - Parameters:
-    ///   - deviceID: Numeric id assigned by usbmux for the current attachment.
+    ///   - deviceID: Numeric ID assigned by usbmux for the current attachment.
     ///   - serialNumber: Device serial number, normally the UDID.
     ///   - properties: Raw usbmux properties converted to strings where possible.
     public init(deviceID: UInt32, serialNumber: String, properties: [String: String]) {
@@ -193,20 +193,57 @@ public final class USBMuxClient: Sendable {
     /// clients, Finder, and other host tools consistent with the newly trusted
     /// identity.
     ///
+    /// Use `savePairingRecord(_:forDeviceID:)` when the record was freshly
+    /// accepted by an attached device.
+    ///
     /// - Parameter pairingRecord: Pairing material whose `udid` becomes the
     ///   usbmux record identifier.
     /// - Throws: A serialization, transport, or usbmux rejection error.
     public func savePairingRecord(
         _ pairingRecord: PairingRecord
     ) async throws {
-        let response = try await request([
+        try await savePairingRecord(
+            pairingRecord,
+            associatedWithDeviceID: nil
+        )
+    }
+
+    /// Saves a pairing record for the current usbmux device attachment.
+    ///
+    /// Associating a freshly accepted record with its attachment lets usbmux
+    /// publish the trusted state without requiring a physical reconnect.
+    ///
+    /// - Parameters:
+    ///   - pairingRecord: Pairing material whose `udid` becomes the usbmux
+    ///     record identifier.
+    ///   - deviceID: Numeric ID assigned by usbmux for the current attachment.
+    /// - Throws: A serialization, transport, or usbmux rejection error.
+    public func savePairingRecord(
+        _ pairingRecord: PairingRecord,
+        forDeviceID deviceID: UInt32
+    ) async throws {
+        try await savePairingRecord(
+            pairingRecord,
+            associatedWithDeviceID: deviceID
+        )
+    }
+
+    private func savePairingRecord(
+        _ pairingRecord: PairingRecord,
+        associatedWithDeviceID deviceID: UInt32?
+    ) async throws {
+        var requestValues: [String: Any] = [
             "MessageType": "SavePairRecord",
             "ClientVersionString": "rork-device",
             "ProgName": "rorkdevice",
             "kLibUSBMuxVersion": 3,
             "PairRecordID": pairingRecord.udid,
             "PairRecordData": try pairingRecord.propertyListData(),
-        ])
+        ]
+        if let deviceID {
+            requestValues["DeviceID"] = deviceID
+        }
+        let response = try await request(requestValues)
         try validateUSBMuxResult(
             response,
             operation: "SavePairRecord"
@@ -514,7 +551,7 @@ private func stringify(_ dictionary: [String: Any]) -> [String: String] {
 /// Parses a usbmux device record from a plist dictionary.
 private func parseDeviceRecord(_ item: [String: Any]) -> USBMuxDevice? {
     guard
-        let deviceID = (item["DeviceID"] as? NSNumber)?.uint32Value ?? item["DeviceID"] as? UInt32,
+        let deviceID = item.uint32("DeviceID"),
         let properties = item["Properties"] as? [String: Any],
         let serial = properties["SerialNumber"] as? String
     else {
@@ -533,8 +570,7 @@ private func parseDeviceEvent(_ message: [String: Any]) -> USBMuxDeviceEvent? {
         return .attached(device)
     case "Detached":
         guard
-            let deviceID = (message["DeviceID"] as? NSNumber)?.uint32Value ?? message["DeviceID"]
-                as? UInt32
+            let deviceID = message.uint32("DeviceID")
         else {
             return nil
         }

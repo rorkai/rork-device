@@ -124,6 +124,10 @@ final class DeviceClientIntegrationTests: XCTestCase {
             device.identifier
         )
         XCTAssertEqual(
+            daemon.savedPairingRecordDeviceID,
+            1
+        )
+        XCTAssertEqual(
             try PairingRecord.parse(
                 XCTUnwrap(daemon.savedPairingRecordData)
             ),
