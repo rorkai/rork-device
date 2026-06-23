@@ -11,6 +11,13 @@ import XCTest
 
 /// Tests for the platform default secure-session selection.
 final class SecureSessionUpgraderTests: XCTestCase {
+    func testZeroArgumentInitializerRemainsAvailableAsFunctionReference() {
+        let makeUpgrader: () -> NIOSecureSessionUpgrader =
+            NIOSecureSessionUpgrader.init
+
+        _ = makeUpgrader()
+    }
+
     /// Verifies that the default upgrader validates pairing material before use.
     func testDefaultUpgraderValidatesPairingMaterial() async throws {
         let pairingRecord = try PairingRecord.parse(
