@@ -375,9 +375,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                 recordSavedPairingRecord(
                     identifier: identifier,
                     data: data,
-                    deviceID: (request.dictionary["DeviceID"] as? NSNumber)?
-                        .uint32Value
-                        ?? request.dictionary["DeviceID"] as? UInt32
+                    deviceID: request.dictionary.uint32("DeviceID")
                 )
             }
             sendUSBMuxResponse(

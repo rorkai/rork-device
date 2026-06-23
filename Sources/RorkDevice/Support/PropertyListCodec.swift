@@ -90,4 +90,20 @@ extension Dictionary where Key == String, Value == Any {
         }
         return nil
     }
+
+    /// Returns an exact unsigned 32-bit field, accepting `NSNumber` for plist
+    /// compatibility.
+    func uint32(_ key: String) -> UInt32? {
+        if let value = self[key] as? UInt32 {
+            return value
+        }
+        guard let number = self[key] as? NSNumber else {
+            return nil
+        }
+        let integer = number.int64Value
+        guard number.doubleValue == Double(integer) else {
+            return nil
+        }
+        return UInt32(exactly: integer)
+    }
 }

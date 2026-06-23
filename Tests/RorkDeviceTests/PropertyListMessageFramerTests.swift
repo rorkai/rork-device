@@ -61,10 +61,26 @@ final class PropertyListMessageFramerTests: XCTestCase {
             "String": "value",
             "Bool": NSNumber(value: true),
             "Int": NSNumber(value: 42),
+            "UInt32": UInt32(43),
+            "NSNumberUInt32": NSNumber(value: UInt32(44)),
         ]
 
         XCTAssertEqual(dictionary.string("String"), "value")
         XCTAssertEqual(dictionary.bool("Bool"), true)
         XCTAssertEqual(dictionary.int("Int"), 42)
+        XCTAssertEqual(dictionary.uint32("UInt32"), 43)
+        XCTAssertEqual(dictionary.uint32("NSNumberUInt32"), 44)
+    }
+
+    func testUInt32DictionaryHelperRejectsLossyConversions() {
+        let dictionary: [String: Any] = [
+            "Negative": NSNumber(value: -1),
+            "Overflowing": NSNumber(value: UInt64(UInt32.max) + 1),
+            "Fractional": NSNumber(value: 44.5),
+        ]
+
+        XCTAssertNil(dictionary.uint32("Negative"))
+        XCTAssertNil(dictionary.uint32("Overflowing"))
+        XCTAssertNil(dictionary.uint32("Fractional"))
     }
 }

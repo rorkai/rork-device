@@ -207,7 +207,7 @@ public final class DeviceClient {
         onProgress?(.savingPairingRecord)
         try await usbmuxClient.savePairingRecord(
             acceptedRecord,
-            deviceID: deviceID
+            forDeviceID: deviceID
         )
         return acceptedRecord
     }
