@@ -50,10 +50,20 @@ let swiftNIOSSL: Package.Dependency = .package(
 )
 #endif
 
-// Swift Crypto 4.4 and Swift Certificates 1.19 raised their manifest floor to
-// Swift 6.1. Keep broad requirements for newer clients while allowing Swift
-// 6.0 clients to resolve the newest compatible minor releases.
-#if compiler(>=6.1)
+// Swift 6.3 selects coordinated WASI forks. The Certificates fork resolves the
+// same Crypto revision directly, which keeps the combined web package graph
+// free of duplicate swift-crypto identities. Earlier toolchains retain upstream
+// requirements and resolve the newest native releases their manifests support.
+#if compiler(>=6.3)
+let swiftCertificates: Package.Dependency = .package(
+    url: "https://github.com/rorkai/swift-certificates.git",
+    revision: "fc27ef848f1677db946f1fa87201c1fee3b3076a"
+)
+let swiftCrypto: Package.Dependency = .package(
+    url: "https://github.com/rorkai/swift-crypto.git",
+    revision: "b6c710cd588404890ab173d82b8a8fc9588ee382"
+)
+#elseif compiler(>=6.1)
 let swiftCertificates: Package.Dependency = .package(
     url: "https://github.com/apple/swift-certificates.git",
     from: "1.17.0"
