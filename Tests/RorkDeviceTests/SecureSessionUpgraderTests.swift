@@ -11,6 +11,7 @@ import XCTest
 
 /// Tests for the platform default secure-session selection.
 final class SecureSessionUpgraderTests: XCTestCase {
+    /// Protects clients that store the zero-argument initializer as a function value.
     func testZeroArgumentInitializerRemainsAvailableAsFunctionReference() {
         let makeUpgrader: () -> NIOSecureSessionUpgrader =
             NIOSecureSessionUpgrader.init
