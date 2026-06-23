@@ -3,6 +3,86 @@ import XCTest
 @testable import RorkDevice
 
 final class DeviceClientIntegrationTests: XCTestCase {
+    func testDiscoverDevicesPreservesEveryRouteReportedByUSBMux() async throws {
+        let daemon = try FakeUSBMuxDaemon(devices: [
+            USBMuxDevice(
+                deviceID: 1,
+                serialNumber: "device-1",
+                properties: ["ConnectionType": "Network"]
+            ),
+            USBMuxDevice(
+                deviceID: 2,
+                serialNumber: "device-1",
+                properties: ["ConnectionType": "USB"]
+            ),
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+
+        let devices = try await client.discoverDevices()
+
+        XCTAssertEqual(
+            devices.map(\.connection),
+            [.usbmux(deviceID: 1), .usbmux(deviceID: 2)]
+        )
+    }
+
+    func testDiscoverDevicePrefersUSBRouteForMatchingIdentifier() async throws {
+        let daemon = try FakeUSBMuxDaemon(devices: [
+            USBMuxDevice(
+                deviceID: 1,
+                serialNumber: "device-1",
+                properties: ["ConnectionType": "Network"]
+            ),
+            USBMuxDevice(
+                deviceID: 2,
+                serialNumber: "device-1",
+                properties: ["ConnectionType": "USB"]
+            ),
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+
+        let device = try await client.discoverDevice(
+            identifier: "device-1"
+        )
+
+        XCTAssertEqual(device?.connection, .usbmux(deviceID: 2))
+    }
+
+    func testDiscoverDeviceUsesNetworkRouteWhenUSBIsUnavailable() async throws {
+        let daemon = try FakeUSBMuxDaemon(devices: [
+            USBMuxDevice(
+                deviceID: 1,
+                serialNumber: "device-1",
+                properties: ["ConnectionType": "Network"]
+            )
+        ])
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(
+                host: "127.0.0.1",
+                port: daemon.port
+            )
+        )
+
+        let device = try await client.discoverDevice(
+            identifier: "device-1"
+        )
+
+        XCTAssertEqual(device?.connection, .usbmux(deviceID: 1))
+    }
+
     func testPairsAfterDeviceTrustApprovalAndSavesTheAcceptedRecord() async throws {
         let daemon = try FakeUSBMuxDaemon(pairingResponses: [
             [

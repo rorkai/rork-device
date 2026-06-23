@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.1"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.3"),
 ]
 ```
 
@@ -116,6 +116,11 @@ toolchain and can be added independently:
 ```
 
 ## Lockdown Example
+
+`discoverDevices()` preserves every route reported by usbmux, including
+separate USB and network records for the same physical device. When the UDID is
+already known, use `discoverDevice(identifier:)` to prefer USB while retaining
+network fallback.
 
 ```swift
 import Foundation

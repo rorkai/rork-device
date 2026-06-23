@@ -172,12 +172,13 @@ struct ConnectionOptions: ParsableArguments {
             )
         }
 
-        let devices = try await client.discoverDevices()
         let selected: Device?
         if let udid {
-            selected = devices.first { $0.identifier == udid }
+            selected = try await client.discoverDevice(
+                identifier: udid
+            )
         } else {
-            selected = devices.first
+            selected = try await client.discoverDevices().first
         }
         guard let selected else {
             throw ValidationError("No matching device found.")
