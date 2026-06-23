@@ -1,4 +1,5 @@
 import NIOCore
+import NIOSSL
 import XCTest
 @testable import RorkDevice
 
@@ -21,5 +22,17 @@ final class TransportErrorFormattingTests: XCTestCase {
         XCTAssertTrue(description.contains("connect"))
         XCTAssertTrue(description.contains(String(cString: strerror(ECONNREFUSED))))
         XCTAssertFalse(description.contains("NIOCore.IOError error 1"))
+    }
+
+    func testNIOSSLHandshakeErrorPreservesBoringSSLDetails() {
+        let error: Error = NIOSSLError.handshakeFailed(
+            .sslError([])
+        )
+
+        let description = describeTransportError(error)
+
+        XCTAssertTrue(description.contains("handshakeFailed"))
+        XCTAssertTrue(description.contains("sslError"))
+        XCTAssertFalse(description.contains("NIOSSL.NIOSSLError error 0"))
     }
 }
