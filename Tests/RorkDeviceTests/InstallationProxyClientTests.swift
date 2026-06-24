@@ -74,6 +74,47 @@ final class InstallationProxyClientTests: XCTestCase {
         )
     }
 
+    func testRawApplicationsRejectPageIndexOverflow() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "CurrentAmount": 2,
+            "CurrentIndex": Int.max,
+            "CurrentList": [
+                ["CFBundleIdentifier": "com.example.first"],
+                ["CFBundleIdentifier": "com.example.second"],
+            ],
+            "Status": "Complete",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = InstallationProxyClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.rawApplications(matching: .user) }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("InstallationProxy Browse response page index overflowed.")
+            )
+        }
+    }
+
+    func testRawApplicationsRejectNextPageIndexOverflow() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "CurrentAmount": 1,
+            "CurrentIndex": Int.max,
+            "CurrentList": [
+                ["CFBundleIdentifier": "com.example.app"],
+            ],
+            "Status": "Complete",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = InstallationProxyClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.rawApplications(matching: .user) }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation("InstallationProxy Browse response page range overflowed.")
+            )
+        }
+    }
+
     func testApplicationsReturnEmptyListWhenCurrentAmountIsZero() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "CurrentAmount": 0,

@@ -75,7 +75,12 @@ public final class InstallationProxyClient {
                     )
                 }
                 for (offset, application) in currentList.enumerated() {
-                    let index = currentIndex + offset
+                    let (index, indexOverflowed) = currentIndex.addingReportingOverflow(offset)
+                    guard !indexOverflowed else {
+                        throw RorkDeviceError.protocolViolation(
+                            "InstallationProxy Browse response page index overflowed."
+                        )
+                    }
                     guard applicationsByIndex[index] == nil else {
                         throw RorkDeviceError.protocolViolation(
                             "InstallationProxy Browse response included overlapping application pages."
@@ -83,7 +88,13 @@ public final class InstallationProxyClient {
                     }
                     applicationsByIndex[index] = application
                 }
-                nextIndex = max(nextIndex, currentIndex + currentList.count)
+                let (nextPageIndex, pageRangeOverflowed) = currentIndex.addingReportingOverflow(currentList.count)
+                guard !pageRangeOverflowed else {
+                    throw RorkDeviceError.protocolViolation(
+                        "InstallationProxy Browse response page range overflowed."
+                    )
+                }
+                nextIndex = max(nextIndex, nextPageIndex)
             } else if let currentAmount = response.int("CurrentAmount"),
                       currentAmount != 0 {
                 throw RorkDeviceError.protocolViolation(
