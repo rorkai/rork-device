@@ -434,6 +434,108 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(command.trustTimeout, 90)
     }
 
+    func testPairingActivationRetriesAfterTransientSecureSessionFailure()
+        async throws
+    {
+        var attempts = 0
+        var delays: [Duration] = []
+
+        let result = try await waitForSavedPairingActivation(
+            attemptDelays: [
+                .zero,
+                .milliseconds(25),
+            ],
+            sleep: { delay in
+                delays.append(delay)
+            },
+            onRetry: { _ in },
+            attempt: {
+                attempts += 1
+                if attempts == 1 {
+                    throw RorkDeviceError.secureSession(
+                        "TLS handshake failed: EOF during handshake"
+                    )
+                }
+                return "active-session"
+            }
+        )
+
+        XCTAssertEqual(result, "active-session")
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(delays, [.milliseconds(25)])
+    }
+
+    func testPairingActivationRetryWindowCoversDelayedTrustPublication() {
+        XCTAssertEqual(savedPairingActivationAttemptDelays, [
+            .zero,
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+            .seconds(4),
+            .seconds(8),
+        ])
+    }
+
+    func testPairingActivationDoesNotRetryProtocolFailure() async throws {
+        var attempts = 0
+        let failure = RorkDeviceError.protocolViolation(
+            "Lockdown returned malformed session data."
+        )
+
+        do {
+            try await waitForSavedPairingActivation(
+                attemptDelays: [
+                    .zero,
+                    .milliseconds(25),
+                ],
+                sleep: { _ in },
+                onRetry: { _ in },
+                attempt: {
+                    attempts += 1
+                    throw failure
+                }
+            )
+            XCTFail("Expected the protocol failure to leave immediately.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, failure)
+        }
+
+        XCTAssertEqual(attempts, 1)
+    }
+
+    func testPairingActivationThrowsTheFinalRetryableFailure() async {
+        let firstFailure = RorkDeviceError.secureSession(
+            "The first fresh Lockdown session closed."
+        )
+        let finalFailure = RorkDeviceError.transport(
+            "The final fresh Lockdown connection failed."
+        )
+        var attempts = 0
+        var retriedFailures: [RorkDeviceError] = []
+
+        do {
+            _ = try await waitForSavedPairingActivation(
+                attemptDelays: [.zero, .zero],
+                sleep: { _ in },
+                onRetry: { error in
+                    if let error = error as? RorkDeviceError {
+                        retriedFailures.append(error)
+                    }
+                },
+                attempt: {
+                    attempts += 1
+                    throw attempts == 1 ? firstFailure : finalFailure
+                }
+            )
+            XCTFail("Expected the final retryable failure.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, finalFailure)
+        }
+
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(retriedFailures, [firstFailure])
+    }
+
     func testPairingExportCommandParsesOptionalOutputPath() throws {
         let command = try PairingExport.parse([
             "--udid", "device-1",
@@ -576,6 +678,76 @@ final class RorkDeviceCLITests: XCTestCase {
             "--gateway-host", " \n ",
             "--gateway-port", "60112",
         ]))
+    }
+
+    func testRemotePairingDiagnoseCommandParsesFreshLockdownSequence() throws {
+        let command = try RemotePairingDiagnoseCommand.parse([
+            "--udid", "device-1",
+            "--identity", "selfIdentity.plist",
+            "--refresh-lockdown-pairing",
+            "--trust-timeout", "90",
+            "--mtu", "1500",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.udid, "device-1")
+        XCTAssertEqual(command.identityPath, "selfIdentity.plist")
+        XCTAssertTrue(command.refreshLockdownPairing)
+        XCTAssertEqual(command.trustTimeout, 90)
+        XCTAssertEqual(command.maximumTransmissionUnit, 1_500)
+        XCTAssertTrue(command.json)
+        XCTAssertTrue(
+            RemotePairingCommand.helpMessage().contains("diagnose")
+        )
+    }
+
+    func testRemotePairingDiagnosticReportPreservesEnrollmentStreamReset() throws {
+        let recorder = RemotePairingDiagnosticRecorder()
+        recorder.record(phase: .lockdownPairing)
+        recorder.record(phase: .lockdownSession)
+        recorder.record(phase: .coreDeviceTunnel)
+        recorder.record(progress: .openingServiceDiscovery)
+        recorder.record(progress: .openingPairingService)
+        recorder.record(progress: .verifyingIdentity)
+        recorder.record(progress: .enrollingIdentity)
+        recorder.record(
+            failure: RorkDeviceError.remoteXPCStreamReset(
+                streamIdentifier: 1,
+                errorCode: 5
+            )
+        )
+
+        let report = recorder.makeReport(
+            deviceIdentifier: "device-1",
+            identityIdentifier: "identity-1",
+            didRefreshLockdownPairing: true
+        )
+        let data = try remotePairingDiagnosticJSON(report)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertFalse(report.succeeded)
+        XCTAssertEqual(report.lastPhase, .enrollingIdentity)
+        XCTAssertEqual(
+            report.errorDescription,
+            "RemoteXPC reset HTTP/2 stream 1 with error code 5."
+        )
+        XCTAssertEqual(object["identityIdentifier"] as? String, "identity-1")
+        XCTAssertEqual(
+            object["refreshedLockdownPairing"] as? Bool,
+            true
+        )
+        XCTAssertEqual(
+            object["lastPhase"] as? String,
+            "enrolling-identity"
+        )
+        XCTAssertEqual(
+            object["error"] as? String,
+            report.errorDescription
+        )
+        XCTAssertNil(object["privateKey"])
+        XCTAssertNil(object["pairingRecord"])
     }
 
     func testTunnelStartCommandParsesGatewayConfiguration() throws {

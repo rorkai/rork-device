@@ -37,12 +37,12 @@ public enum RemotePairingTrust {
     private static let untrustedTunnelServiceName =
         "com.apple.internal.dt.coredevice.untrusted.tunnelservice"
 
-    /// Delays before fresh verification attempts after identity enrollment.
+    /// Delays before fresh verification attempts after enrollment starts.
     ///
     /// The first attempt is immediate. Later attempts cover the short interval
     /// in which the device has accepted the identity but has not yet published
     /// it to a newly opened remote-pairing service.
-    private static let enrollmentRecoveryDelays: [Duration] = [
+    private static let enrollmentVerificationAttemptDelays: [Duration] = [
         .zero,
         .milliseconds(500),
         .seconds(1),
@@ -58,6 +58,10 @@ public enum RemotePairingTrust {
     /// untrusted pairing service, and performs pair verification or manual
     /// setup over RemoteXPC. The supplied transport may be the package's
     /// embedded userspace network or an independently managed gateway.
+    ///
+    /// Once enrollment starts, retryable disconnects and unknown-peer responses
+    /// are resolved by verifying the same identity on fresh service connections.
+    /// The operation never submits the enrollment request a second time.
     ///
     /// - Parameters:
     ///   - identity: Host identity that future remote-pairing tunnels will use.
@@ -106,15 +110,15 @@ public enum RemotePairingTrust {
     /// Resolves the untrusted service and performs pairing over RemoteXPC.
     ///
     /// The injected connection factory keeps discovery and service lifetimes
-    /// testable without exposing transport internals in the public API. Retry
+    /// testable without exposing transport internals in the public API. Attempt
     /// delays include the wait before each fresh verification, so a leading
     /// `.zero` performs the first recovery attempt immediately.
     static func establishIfNeeded(
         for identity: RemotePairingIdentity,
         discoveryPort: UInt16,
         progress: @escaping (Progress) -> Void = { _ in },
-        verificationRetryDelays: [Duration] =
-            Self.enrollmentRecoveryDelays,
+        verificationAttemptDelays: [Duration] =
+            Self.enrollmentVerificationAttemptDelays,
         sleep: (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
         },
@@ -122,81 +126,71 @@ public enum RemotePairingTrust {
     ) async throws {
         try await establishWithRecovery(
             progress: progress,
-            verificationRetryDelays: verificationRetryDelays,
+            verificationAttemptDelays: verificationAttemptDelays,
             sleep: sleep,
-            initialAttempt: {
-                willBeginEnrollment,
-                didEnrollIdentity in
+            initialAttempt: { willBeginEnrollment in
                 try await withPairingClient(
                     for: identity,
                     discoveryPort: discoveryPort,
                     progress: progress,
-                    openConnection: openConnection,
-                    operation: { client in
-                        try await client.establishTrustIfNeeded(
-                            willEstablishTrust:
-                                willBeginEnrollment,
-                            didEnrollIdentity:
-                                didEnrollIdentity
-                        )
-                    }
-                )
+                    openConnection: openConnection
+                ) { client in
+                    try await client.establishTrustIfNeeded(
+                        willEstablishTrust:
+                            willBeginEnrollment,
+                        didEnrollIdentity: {}
+                    )
+                }
             },
             verificationAttempt: {
                 try await withPairingClient(
                     for: identity,
                     discoveryPort: discoveryPort,
                     progress: progress,
-                    openConnection: openConnection,
-                    operation: { client in
-                        try await client.verifyTrust()
-                    }
-                )
+                    openConnection: openConnection
+                ) { client in
+                    try await client.verifyTrust()
+                }
             }
         )
     }
 
-    /// Applies post-enrollment recovery around one protocol attempt.
+    /// Applies non-mutating recovery after one enrollment attempt begins.
     ///
-    /// Starting setup is not enough to infer that the device stored the
-    /// identity. Recovery becomes valid only after the protocol client reports
-    /// that M6 was accepted, and it never starts setup a second time.
+    /// Once setup starts, losing the response does not prove whether the device
+    /// stored the identity. Recovery therefore opens fresh connections and
+    /// verifies the same identity without ever submitting setup a second time.
     static func establishWithRecovery(
         progress: @escaping (Progress) -> Void,
-        verificationRetryDelays: [Duration],
+        verificationAttemptDelays: [Duration],
         sleep: (Duration) async throws -> Void,
         initialAttempt: (
-            _ willBeginEnrollment: () -> Void,
-            _ didEnrollIdentity: () -> Void
+            _ willBeginEnrollment: () -> Void
         ) async throws -> Void,
         verificationAttempt: () async throws -> Void
     ) async throws {
-        var didEnrollIdentity = false
-        var postEnrollmentError: Error?
+        var didBeginEnrollment = false
+        var enrollmentAttemptError: Error?
 
         do {
-            try await initialAttempt(
-                {
-                    progress(.enrollingIdentity)
-                },
-                {
-                    didEnrollIdentity = true
-                }
-            )
+            try await initialAttempt {
+                didBeginEnrollment = true
+                progress(.enrollingIdentity)
+            }
         } catch {
-            guard didEnrollIdentity,
+            guard didBeginEnrollment,
                   isRetryableEnrollmentRecoveryError(error) else {
                 throw error
             }
-            postEnrollmentError = error
+            enrollmentAttemptError = error
         }
 
-        if didEnrollIdentity {
-            try await verifyTrustAfterEnrollment(
-                retryDelays: verificationRetryDelays,
+        if didBeginEnrollment {
+            try await verifyTrustAfterEnrollmentStarts(
+                attemptDelays: verificationAttemptDelays,
                 sleep: sleep,
                 verificationAttempt: verificationAttempt,
-                postEnrollmentError: postEnrollmentError
+                enrollmentAttemptError: enrollmentAttemptError
             )
         }
 
@@ -258,22 +252,22 @@ public enum RemotePairingTrust {
     /// subsequent stream resets are retried for the same reason. Device rate
     /// limits, capacity failures, malformed responses, and cryptographic errors
     /// leave immediately.
-    private static func verifyTrustAfterEnrollment(
-        retryDelays: [Duration],
+    private static func verifyTrustAfterEnrollmentStarts(
+        attemptDelays: [Duration],
         sleep: (Duration) async throws -> Void,
         verificationAttempt: () async throws -> Void,
-        postEnrollmentError: Error?
+        enrollmentAttemptError: Error?
     ) async throws {
-        guard !retryDelays.isEmpty else {
-            if let postEnrollmentError {
-                throw postEnrollmentError
+        guard !attemptDelays.isEmpty else {
+            if let enrollmentAttemptError {
+                throw enrollmentAttemptError
             }
             throw RorkDeviceError.invalidInput(
-                "Post-enrollment verification requires at least one attempt."
+                "Enrollment verification requires at least one attempt."
             )
         }
 
-        for (index, delay) in retryDelays.enumerated() {
+        for (index, delay) in attemptDelays.enumerated() {
             if delay != .zero {
                 try await sleep(delay)
             }
@@ -281,7 +275,7 @@ public enum RemotePairingTrust {
                 try await verificationAttempt()
                 return
             } catch {
-                let hasNextAttempt = index + 1 < retryDelays.count
+                let hasNextAttempt = index + 1 < attemptDelays.count
                 guard hasNextAttempt,
                     isRetryableEnrollmentRecoveryError(error)
                 else {

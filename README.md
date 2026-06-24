@@ -283,6 +283,31 @@ rorkdevice tunnel start \
   --identity remote-pairing.plist
 ```
 
+Remote-pairing failures can be reproduced without starting an application
+install or a long-running userspace gateway:
+
+```bash
+# Re-run the current Lockdown pairing, CoreDevice tunnel, and remote trust path.
+rorkdevice remote-pairing diagnose \
+  --udid 00008140-000000000000001C \
+  --identity remote-pairing.plist \
+  --json
+
+# Replace Lockdown trust first to reproduce the complete first-use sequence.
+rorkdevice remote-pairing diagnose \
+  --udid 00008140-000000000000001C \
+  --identity remote-pairing.plist \
+  --refresh-lockdown-pairing \
+  --json
+```
+
+The refresh variant displays the iPhone Trust dialog and saves a new Lockdown
+pairing record before opening the CoreDevice tunnel. If that attempt fails,
+running the first command again with the same identity distinguishes a
+transient post-save or attachment-state failure from a persistent remote
+identity failure. The JSON report includes the last reached phase and exact
+error while omitting pairing records and private key material.
+
 ## Device Diagnostics
 
 The CLI can replace common USB discovery and Lockdown diagnostic helpers
@@ -448,6 +473,7 @@ rorkdevice profiles copy --output-directory Profiles --pairing-record pairing.pl
 rorkdevice profiles remove PROFILE-UUID --pairing-record pairing.plist
 rorkdevice install App.ipa --bundle-identifier com.example.app --pairing-record pairing.plist
 rorkdevice uninstall com.example.app --pairing-record pairing.plist
+rorkdevice remote-pairing diagnose --udid DEVICE-UDID --identity selfIdentity.plist --json
 rorkdevice remote-pairing trust --identity selfIdentity.plist --device-address fd01:172:3c68::1 --discovery-port 54130 --gateway-port 60106
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist
 ```

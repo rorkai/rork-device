@@ -479,7 +479,7 @@ struct PairingCommand: AsyncParsableCommand {
 ///
 /// The command waits for the user to respond to the Trust dialog and reuses one
 /// generated identity for every check. Successful pairing is persisted through
-/// usbmux before the command exits.
+/// usbmux and validated on a fresh Lockdown connection before the command exits.
 struct PairingEstablish: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "establish",
@@ -506,7 +506,7 @@ struct PairingEstablish: AsyncParsableCommand {
         let client = DeviceClient()
         let device = try await selectedUSBDevice(
             from: client,
-            udid: udid
+            matching: udid
         )
         _ = try await client.pair(
             with: device,
@@ -516,6 +516,19 @@ struct PairingEstablish: AsyncParsableCommand {
         ) { progress in
             writePairingProgress(progress)
         }
+        _ = try await waitForSavedPairingActivation(
+            attemptDelays: savedPairingActivationAttemptDelays,
+            sleep: {
+                try await Task.sleep(for: $0)
+            },
+            onRetry: writePairingActivationRetry,
+            attempt: {
+                try await openValidatedSavedPairingSession(
+                    for: device.identifier,
+                    label: "rorkdevice pairing establish"
+                )
+            }
+        )
         print("Pairing is established for \(device.identifier).")
     }
 }
@@ -541,7 +554,7 @@ struct PairingExport: AsyncParsableCommand {
         let client = DeviceClient()
         let device = try await selectedUSBDevice(
             from: client,
-            udid: udid
+            matching: udid
         )
         let record = try await client.pairingRecord(
             for: device.identifier
@@ -580,44 +593,11 @@ struct PairingRemove: AsyncParsableCommand {
         let client = DeviceClient()
         let device = try await selectedUSBDevice(
             from: client,
-            udid: udid
+            matching: udid
         )
         try await client.unpair(from: device)
         print("Pairing was removed for \(device.identifier).")
     }
-}
-
-/// Resolves one cable-attached device for pairing-specific commands.
-private func selectedUSBDevice(
-    from client: DeviceClient,
-    udid: String?
-) async throws -> Device {
-    let devices = try await client.discoverDevices()
-        .filter(isUSBDevice)
-    let selected = udid.map { expected in
-        devices.first { $0.identifier == expected }
-    } ?? devices.first
-    guard let selected else {
-        throw ValidationError("No matching USB device found.")
-    }
-    return selected
-}
-
-/// Writes pairing phases to stderr so stdout remains command output.
-private func writePairingProgress(_ progress: DevicePairingProgress) {
-    let message: String
-    switch progress {
-    case .waitingForUserConfirmation:
-        message = "Waiting for the iPhone to trust this Mac."
-    case .savingPairingRecord:
-        message = "Saving the accepted pairing record."
-    }
-    guard let data = "rorkdevice: \(message)\n".data(
-        using: .utf8
-    ) else {
-        return
-    }
-    try? FileHandle.standardError.write(contentsOf: data)
 }
 
 /// Verifies that the selected device accepts the stored host pairing.
@@ -749,6 +729,7 @@ struct RemotePairingCommand: AsyncParsableCommand {
         commandName: "remote-pairing",
         abstract: "Manage the identity used by CoreDevice remote pairing.",
         subcommands: [
+            RemotePairingDiagnoseCommand.self,
             RemotePairingTrustCommand.self,
         ]
     )
@@ -994,7 +975,7 @@ private func writeTunnelProgress(_ message: String) {
 }
 
 /// Converts typed trust phases into concise operator-facing CLI diagnostics.
-private func writeRemotePairingProgress(
+func writeRemotePairingProgress(
     _ progress: RemotePairingTrust.Progress
 ) {
     switch progress {
