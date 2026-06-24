@@ -56,4 +56,32 @@ final class WebUSBInterfaceClaimTests: XCTestCase {
         XCTAssertEqual(claimAttempts, 1)
         XCTAssertEqual(recoveryAttempts, 0)
     }
+
+    @MainActor
+    func testDoesNotRecoverNonOwnershipClaimFailure() async {
+        let expectedError = WebUSBError.browserOperationFailed(
+            operation: "claimInterface",
+            message: "The transfer failed before the interface was claimed."
+        )
+        var claimAttempts = 0
+        var recoveryAttempts = 0
+
+        do {
+            try await claimWebUSBInterface(
+                using: {
+                    claimAttempts += 1
+                    throw expectedError
+                },
+                recoveringWith: {
+                    recoveryAttempts += 1
+                }
+            )
+            XCTFail("Expected the original browser failure.")
+        } catch {
+            XCTAssertEqual(error as? WebUSBError, expectedError)
+        }
+
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertEqual(recoveryAttempts, 0)
+    }
 }

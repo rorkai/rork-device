@@ -67,16 +67,14 @@ final class WebUSBPipe: DirectUSBMuxIO {
             )
         }
 
-        let value = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "transferIn",
-                on: device,
-                arguments: [
-                    inputEndpoint,
-                    byteCount,
-                ]
-            ),
-            operation: "Reading from USB"
+        let value = try await awaitJavaScriptMethod(
+            "transferIn",
+            on: device,
+            arguments: [
+                inputEndpoint,
+                byteCount,
+            ],
+            describedAs: "Reading from USB"
         )
         guard let result = value.object else {
             throw WebUSBError.invalidBrowserResponse(
@@ -129,16 +127,14 @@ final class WebUSBPipe: DirectUSBMuxIO {
 
     /// Writes one browser transfer and validates complete delivery.
     private func writeTransfer(_ data: Data) async throws {
-        let value = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "transferOut",
-                on: device,
-                arguments: [
-                    outputEndpoint,
-                    data.jsTypedArray,
-                ]
-            ),
-            operation: "Writing to USB"
+        let value = try await awaitJavaScriptMethod(
+            "transferOut",
+            on: device,
+            arguments: [
+                outputEndpoint,
+                data.jsTypedArray,
+            ],
+            describedAs: "Writing to USB"
         )
         guard let result = value.object else {
             throw WebUSBError.invalidBrowserResponse(
@@ -177,25 +173,25 @@ final class WebUSBPipe: DirectUSBMuxIO {
 
         await closeWebUSBDevice(
             releaseInterface: {
-                _ = try await awaitJavaScriptPromise(
-                    try invokeJavaScriptMethod(
-                        "releaseInterface",
-                        on: device,
-                        arguments: [interfaceNumber]
-                    ),
-                    operation: "Releasing the USB interface"
+                _ = try await awaitJavaScriptMethod(
+                    "releaseInterface",
+                    on: device,
+                    arguments: [interfaceNumber],
+                    describedAs: "Releasing the USB interface"
                 )
             },
             resetDevice: {
-                _ = try await awaitJavaScriptPromise(
-                    try invokeJavaScriptMethod("reset", on: device),
-                    operation: "Resetting the USB device"
+                _ = try await awaitJavaScriptMethod(
+                    "reset",
+                    on: device,
+                    describedAs: "Resetting the USB device"
                 )
             },
             closeDevice: {
-                _ = try await awaitJavaScriptPromise(
-                    try invokeJavaScriptMethod("close", on: device),
-                    operation: "Closing the USB device"
+                _ = try await awaitJavaScriptMethod(
+                    "close",
+                    on: device,
+                    describedAs: "Closing the USB device"
                 )
             }
         )

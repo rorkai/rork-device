@@ -5,7 +5,7 @@ import XCTest
 final class WebUSBErrorTests: XCTestCase {
     func testClassifiesDisconnectedDeviceDuringOpen() {
         let error = webUSBError(
-            for: "open",
+            forMethod: "open",
             message:
                 "JSException(NotFoundError: Failed to execute 'open' on "
                 + "'USBDevice': The device was disconnected.)"
@@ -16,7 +16,7 @@ final class WebUSBErrorTests: XCTestCase {
 
     func testClassifiesInterfaceOwnedByAnotherApplication() {
         let error = webUSBError(
-            for: "claimInterface",
+            forMethod: "claimInterface",
             message:
                 "JSException(NetworkError: Failed to execute "
                 + "'claimInterface' on 'USBDevice': Unable to claim "
@@ -28,7 +28,19 @@ final class WebUSBErrorTests: XCTestCase {
 
     func testClassifiesFailedResetAfterOwnershipChanges() {
         let error = webUSBError(
-            for: "reset",
+            forMethod: "reset",
+            message:
+                "JSException(NetworkError: Failed to execute 'reset' on "
+                + "'USBDevice': Unable to reset the device.)"
+        )
+
+        XCTAssertEqual(error, .deviceUnavailable)
+    }
+
+    func testClassifiesResetIndependentlyOfDisplayDescription() {
+        let error = webUSBError(
+            forMethod: "reset",
+            describedAs: "Resetting the USB device",
             message:
                 "JSException(NetworkError: Failed to execute 'reset' on "
                 + "'USBDevice': Unable to reset the device.)"
@@ -39,7 +51,7 @@ final class WebUSBErrorTests: XCTestCase {
 
     func testPreservesUnrecognizedBrowserFailureDetails() {
         let error = webUSBError(
-            for: "selectConfiguration",
+            forMethod: "selectConfiguration",
             message: "The selected configuration is unavailable."
         )
 

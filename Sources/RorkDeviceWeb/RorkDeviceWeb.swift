@@ -160,9 +160,10 @@ public enum WebUSB {
             throw WebUSBError.unavailable
         }
 
-        let result = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod("getDevices", on: usb),
-            operation: "Listing authorized USB devices"
+        let result = try await awaitJavaScriptMethod(
+            "getDevices",
+            on: usb,
+            describedAs: "Listing authorized USB devices"
         )
         let devices = try webUSBArray(
             result,
@@ -206,13 +207,11 @@ public enum WebUSB {
         options["filters"] = .object(
             JSObject.global.Array.function!.new(filter)
         )
-        let selected = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "requestDevice",
-                on: usb,
-                arguments: [options]
-            ),
-            operation: "Requesting a USB device"
+        let selected = try await awaitJavaScriptMethod(
+            "requestDevice",
+            on: usb,
+            arguments: [options],
+            describedAs: "Requesting a USB device"
         )
         guard let device = selected.object else {
             throw WebUSBError.invalidBrowserResponse(

@@ -257,13 +257,10 @@ public final class WebUSBDevice {
         _ name: String,
         arguments: [any ConvertibleToJSValue] = []
     ) async throws {
-        _ = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                name,
-                on: device,
-                arguments: arguments
-            ),
-            operation: name
+        _ = try await awaitJavaScriptMethod(
+            name,
+            on: device,
+            arguments: arguments
         )
     }
 
@@ -272,9 +269,9 @@ public final class WebUSBDevice {
         guard device.opened.boolean == true else {
             return
         }
-        _ = try? await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod("close", on: device),
-            operation: "close"
+        _ = try? await awaitJavaScriptMethod(
+            "close",
+            on: device
         )
     }
 }

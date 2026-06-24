@@ -172,17 +172,15 @@ private struct WebCryptography {
             "sign",
             "verify"
         )
-        let generated = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "generateKey",
-                on: subtleCrypto,
-                arguments: [
-                    algorithm,
-                    true,
-                    usages,
-                ]
-            ),
-            operation: "Generating a pairing key"
+        let generated = try await awaitJavaScriptMethod(
+            "generateKey",
+            on: subtleCrypto,
+            arguments: [
+                algorithm,
+                true,
+                usages,
+            ],
+            describedAs: "Generating a pairing key"
         )
         guard let keyPair = generated.object,
             let publicKey = keyPair.publicKey.object,
@@ -217,16 +215,14 @@ private struct WebCryptography {
 
     /// Computes the RFC 5280 subject-key identifier digest.
     func sha1(_ data: Data) async throws -> Data {
-        let result = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "digest",
-                on: subtleCrypto,
-                arguments: [
-                    "SHA-1",
-                    data.jsTypedArray,
-                ]
-            ),
-            operation: "Hashing a pairing public key"
+        let result = try await awaitJavaScriptMethod(
+            "digest",
+            on: subtleCrypto,
+            arguments: [
+                "SHA-1",
+                data.jsTypedArray,
+            ],
+            describedAs: "Hashing a pairing public key"
         )
         return try dataFromJavaScriptArrayBuffer(
             result,
@@ -241,17 +237,15 @@ private struct WebCryptography {
     ) async throws -> Data {
         let algorithm = JSObject()
         algorithm["name"] = "RSASSA-PKCS1-v1_5"
-        let result = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "sign",
-                on: subtleCrypto,
-                arguments: [
-                    algorithm,
-                    privateKey,
-                    data.jsTypedArray,
-                ]
-            ),
-            operation: "Signing a pairing certificate"
+        let result = try await awaitJavaScriptMethod(
+            "sign",
+            on: subtleCrypto,
+            arguments: [
+                algorithm,
+                privateKey,
+                data.jsTypedArray,
+            ],
+            describedAs: "Signing a pairing certificate"
         )
         return try dataFromJavaScriptArrayBuffer(
             result,
@@ -264,16 +258,14 @@ private struct WebCryptography {
         _ format: String,
         key: JSObject
     ) async throws -> Data {
-        let result = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "exportKey",
-                on: subtleCrypto,
-                arguments: [
-                    format,
-                    key,
-                ]
-            ),
-            operation: "Exporting a pairing key"
+        let result = try await awaitJavaScriptMethod(
+            "exportKey",
+            on: subtleCrypto,
+            arguments: [
+                format,
+                key,
+            ],
+            describedAs: "Exporting a pairing key"
         )
         return try dataFromJavaScriptArrayBuffer(
             result,

@@ -15,8 +15,11 @@ func claimWebUSBInterface(
         switch error {
         case .interfaceInUse:
             break
-        case .browserOperationFailed(let operation, _)
-            where operation == "claimInterface":
+        case .browserOperationFailed(let operation, let message)
+            where operation == "claimInterface"
+                && message.lowercased().contains(
+                    "unable to claim interface"
+                ):
             break
         default:
             throw error

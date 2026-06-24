@@ -3,32 +3,34 @@ import Foundation
 /// Converts browser diagnostics into stable transport failures.
 ///
 /// Chromium does not expose a structured error code for several WebUSB
-/// lifecycle failures. Keeping the exact message matching at this boundary
-/// prevents browser-specific text from leaking into clients.
+/// lifecycle failures. The JavaScript method name remains the stable
+/// classification key, while an optional description can make unclassified
+/// errors readable without affecting recovery behavior.
 func webUSBError(
-    for operation: String,
+    forMethod method: String,
+    describedAs operation: String? = nil,
     message: String
 ) -> WebUSBError {
-    let normalizedOperation = operation.lowercased()
+    let normalizedMethod = method.lowercased()
     let normalizedMessage = message.lowercased()
 
     if normalizedMessage.contains("device was disconnected")
-        || (normalizedOperation == "open"
+        || (normalizedMethod == "open"
             && normalizedMessage.contains("notfounderror"))
-        || (normalizedOperation == "reset"
+        || (normalizedMethod == "reset"
             && normalizedMessage.contains("unable to reset the device"))
     {
         return .deviceUnavailable
     }
 
-    if normalizedOperation == "claiminterface"
+    if normalizedMethod == "claiminterface"
         && normalizedMessage.contains("unable to claim interface")
     {
         return .interfaceInUse
     }
 
     return .browserOperationFailed(
-        operation: operation,
+        operation: operation ?? method,
         message: message
     )
 }
@@ -56,30 +58,42 @@ func invokeJavaScriptMethod(
         )
     } catch let error as JSException {
         throw webUSBError(
-            for: name,
+            forMethod: name,
             message: error.description
         )
     }
 }
 
-/// Waits for a JavaScript promise without moving its value off-actor.
+/// Invokes a promise-returning JavaScript method and awaits its result.
+///
+/// The method name remains the stable classifier key. `operation` is used only
+/// when presenting a failure that has no typed WebUSB classification.
 @MainActor
-func awaitJavaScriptPromise(
-    _ value: JSValue,
-    operation: String
+func awaitJavaScriptMethod(
+    _ name: String,
+    on object: JSObject,
+    arguments: [any ConvertibleToJSValue] = [],
+    describedAs operation: String? = nil
 ) async throws -> JSValue {
+    let operationDescription = operation ?? name
+    let value = try invokeJavaScriptMethod(
+        name,
+        on: object,
+        arguments: arguments
+    )
     guard let object = value.object,
         let promise = JSPromise(object)
     else {
         throw WebUSBError.invalidBrowserResponse(
-            "\(operation) did not return a Promise."
+            "\(operationDescription) did not return a Promise."
         )
     }
     do {
         return try await promise.value()
     } catch {
         throw webUSBError(
-            for: operation,
+            forMethod: name,
+            describedAs: operationDescription,
             message: error.description
         )
     }
