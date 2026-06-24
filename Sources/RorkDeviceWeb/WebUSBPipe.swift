@@ -1,3 +1,20 @@
+/// Closes a WebUSB device without skipping later cleanup after one step fails.
+///
+/// A physical disconnect can invalidate any browser operation in this
+/// sequence. The remaining steps must still run because reset is what returns
+/// an attached iPhone to the host's USB stack, while close releases the
+/// browser's device handle.
+@MainActor
+func closeWebUSBDevice(
+    releaseInterface: () async throws -> Void,
+    resetDevice: () async throws -> Void,
+    closeDevice: () async throws -> Void
+) async {
+    _ = try? await releaseInterface()
+    _ = try? await resetDevice()
+    _ = try? await closeDevice()
+}
+
 #if canImport(JavaScriptKit)
 import Foundation
 import JavaScriptFoundationCompat
@@ -50,16 +67,14 @@ final class WebUSBPipe: DirectUSBMuxIO {
             )
         }
 
-        let value = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "transferIn",
-                on: device,
-                arguments: [
-                    inputEndpoint,
-                    byteCount,
-                ]
-            ),
-            operation: "Reading from USB"
+        let value = try await awaitJavaScriptMethod(
+            "transferIn",
+            on: device,
+            arguments: [
+                inputEndpoint,
+                byteCount,
+            ],
+            describedAs: "Reading from USB"
         )
         guard let result = value.object else {
             throw WebUSBError.invalidBrowserResponse(
@@ -112,16 +127,14 @@ final class WebUSBPipe: DirectUSBMuxIO {
 
     /// Writes one browser transfer and validates complete delivery.
     private func writeTransfer(_ data: Data) async throws {
-        let value = try await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "transferOut",
-                on: device,
-                arguments: [
-                    outputEndpoint,
-                    data.jsTypedArray,
-                ]
-            ),
-            operation: "Writing to USB"
+        let value = try await awaitJavaScriptMethod(
+            "transferOut",
+            on: device,
+            arguments: [
+                outputEndpoint,
+                data.jsTypedArray,
+            ],
+            describedAs: "Writing to USB"
         )
         guard let result = value.object else {
             throw WebUSBError.invalidBrowserResponse(
@@ -144,7 +157,11 @@ final class WebUSBPipe: DirectUSBMuxIO {
         }
     }
 
-    /// Releases the claimed interface and closes the browser device.
+    /// Releases the claimed interface and returns the device to the host.
+    ///
+    /// Chromium can leave an iPhone absent from the host's usbmux service after
+    /// direct interface access ends. Resetting after release forces the host to
+    /// re-enumerate the device so native clients can discover it again.
     func close() async {
         guard !isClosed else {
             return
@@ -154,17 +171,29 @@ final class WebUSBPipe: DirectUSBMuxIO {
             return
         }
 
-        _ = try? await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod(
-                "releaseInterface",
-                on: device,
-                arguments: [interfaceNumber]
-            ),
-            operation: "Releasing the USB interface"
-        )
-        _ = try? await awaitJavaScriptPromise(
-            try invokeJavaScriptMethod("close", on: device),
-            operation: "Closing the USB device"
+        await closeWebUSBDevice(
+            releaseInterface: {
+                _ = try await awaitJavaScriptMethod(
+                    "releaseInterface",
+                    on: device,
+                    arguments: [interfaceNumber],
+                    describedAs: "Releasing the USB interface"
+                )
+            },
+            resetDevice: {
+                _ = try await awaitJavaScriptMethod(
+                    "reset",
+                    on: device,
+                    describedAs: "Resetting the USB device"
+                )
+            },
+            closeDevice: {
+                _ = try await awaitJavaScriptMethod(
+                    "close",
+                    on: device,
+                    describedAs: "Closing the USB device"
+                )
+            }
         )
     }
 
