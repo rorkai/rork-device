@@ -803,22 +803,15 @@ struct ImageAuto: AsyncParsableCommand {
     func validate() throws {
         try connection.requireLockdownRoute(for: "image auto")
         _ = try source()
+        _ = try store()
     }
 
     func run() async throws {
         let session = try await connection.session()
-        let store = cacheDirectory.map {
-            DeveloperDiskImageStore(
-                cacheDirectory: URL(
-                    fileURLWithPath: $0,
-                    isDirectory: true
-                )
-            )
-        } ?? DeveloperDiskImageStore()
         let result = try await session
             .mountPersonalizedDeveloperDiskImage(
                 from: source(),
-                using: store
+                using: store()
             )
         try writeDeveloperDiskImageMountResult(
             result,
@@ -826,6 +819,7 @@ struct ImageAuto: AsyncParsableCommand {
         )
     }
 
+    /// Validates the user-supplied archive URL and pinned digest together.
     private func source() throws -> DeveloperDiskImageSource {
         guard let url = URL(string: archiveURL) else {
             throw ValidationError(
@@ -835,6 +829,26 @@ struct ImageAuto: AsyncParsableCommand {
         return try DeveloperDiskImageSource(
             archiveURL: url,
             expectedSHA256: sha256
+        )
+    }
+
+    /// Builds either the default store or a validated cache override.
+    private func store() throws -> DeveloperDiskImageStore {
+        guard let cacheDirectory else {
+            return DeveloperDiskImageStore()
+        }
+        guard !cacheDirectory.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            throw ValidationError(
+                "--cache-directory cannot be empty."
+            )
+        }
+        return DeveloperDiskImageStore(
+            cacheDirectory: URL(
+                fileURLWithPath: cacheDirectory,
+                isDirectory: true
+            )
         )
     }
 }

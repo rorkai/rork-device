@@ -6,19 +6,24 @@ import FoundationNetworking
 
 /// HTTP response shape used to test TSS behavior without network access.
 struct TSSHTTPResponse: Sendable {
+    /// HTTP status returned by Apple's signing endpoint.
     let statusCode: Int
+
+    /// Raw key-value-prefixed TSS response body.
     let body: Data
 }
 
 /// Minimal HTTP boundary for Apple's TSS request.
 protocol TSSHTTPTransport: Sendable {
+    /// Sends one prepared TSS request through an authenticated HTTP transport.
     func response(for request: URLRequest) async throws -> TSSHTTPResponse
 }
 
 /// Ticket boundary used by the image-mounting workflow.
-protocol DeveloperDiskImageTicketRequesting {
+protocol DeveloperDiskImageTicketRequesting: Sendable {
+    /// Requests the IMG4 ticket for one device, nonce, and build identity.
     func ticket(
-        for identity: DeveloperDiskImageIdentity,
+        for buildIdentity: DeveloperDiskImageBuildIdentity,
         identifiers: PersonalizationIdentifiers,
         nonce: Data,
         ecid: UInt64
@@ -27,16 +32,19 @@ protocol DeveloperDiskImageTicketRequesting {
 
 /// URLSession transport that retains the platform's default certificate checks.
 private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
-    private let session: URLSession
-
-    init() {
+    /// Sends a request through a short-lived, HTTPS-only ephemeral session.
+    func response(for request: URLRequest) async throws -> TSSHTTPResponse {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60
-        session = URLSession(configuration: configuration)
-    }
-
-    func response(for request: URLRequest) async throws -> TSSHTTPResponse {
+        let session = URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
+        defer {
+            session.finishTasksAndInvalidate()
+        }
         let (body, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw RorkDeviceError.transport(
@@ -52,10 +60,20 @@ private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
 
 /// Builds the property list accepted by Apple's TSS endpoint.
 struct AppleTSSRequest {
+    /// Request body ready for XML property-list serialization.
     let propertyList: [String: Any]
 
+    /// Builds a production IMG4 ticket request for one device and image.
+    ///
+    /// - Parameters:
+    ///   - buildIdentity: Matching DDI identity and trusted manifest entries.
+    ///   - identifiers: Hardware values reported by the connected device.
+    ///   - nonce: Fresh personalization nonce reported by the device.
+    ///   - ecid: Device ECID reported by Lockdown.
+    ///   - requestIdentifier: Unique request identifier sent to Apple.
+    /// - Throws: An input error when a trusted manifest entry is incomplete.
     init(
-        identity: DeveloperDiskImageIdentity,
+        buildIdentity: DeveloperDiskImageBuildIdentity,
         identifiers: PersonalizationIdentifiers,
         nonce: Data,
         ecid: UInt64,
@@ -83,15 +101,15 @@ struct AppleTSSRequest {
             "UID_MODE": false,
         ]
 
-        for (key, value) in identity.values
+        for (key, value) in buildIdentity.propertyList
         where key == "UniqueBuildID" || key.hasPrefix("Ap,") {
             propertyList[key] = value
         }
-        for (key, value) in identifiers.additionalValues
+        for (key, value) in identifiers.additionalTSSParameters
         where key.hasPrefix("Ap,") {
             propertyList[key] = value
         }
-        for (key, value) in identity.manifest {
+        for (key, value) in buildIdentity.manifestEntries {
             guard let entry = value as? [String: Any],
                 plistBoolean(entry["Trusted"]) == true,
                 entry["Info"] is [String: Any]
@@ -109,8 +127,14 @@ struct AppleTSSRequest {
 
 /// Parsed response from Apple's key-value-prefixed TSS protocol.
 struct AppleTSSResponse {
+    /// IMG4 ticket returned by Apple.
     let ticket: Data
 
+    /// Parses and validates a bounded Apple TSS response.
+    ///
+    /// - Parameter data: Raw HTTP response body.
+    /// - Throws: A protocol violation when the response is malformed, rejected,
+    ///   oversized, or missing `ApImg4Ticket`.
     init(data: Data) throws {
         guard data.count <= 16 * 1024 * 1024 else {
             throw RorkDeviceError.protocolViolation(
@@ -179,24 +203,32 @@ struct AppleTSSResponse {
 
 /// Requests personalized Developer Disk Image tickets from Apple.
 struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
+    /// Apple's production signing endpoint.
     private static let endpoint = URL(
         string: "https://gs.apple.com/TSS/controller?action=2"
     )!
 
+    /// HTTP transport retained for dependency injection and strict TLS tests.
     private let transport: any TSSHTTPTransport
 
+    /// Creates a ticket client with the supplied authenticated HTTP transport.
     init(transport: any TSSHTTPTransport = URLSessionTSSHTTPTransport()) {
         self.transport = transport
     }
 
+    /// Requests an IMG4 ticket for the selected Developer Disk Image.
+    ///
+    /// - Returns: Nonempty `ApImg4Ticket` bytes accepted by image mounter.
+    /// - Throws: An input or protocol error while building/parsing the request,
+    ///   or a transport error when Apple TSS cannot be reached successfully.
     func ticket(
-        for identity: DeveloperDiskImageIdentity,
+        for buildIdentity: DeveloperDiskImageBuildIdentity,
         identifiers: PersonalizationIdentifiers,
         nonce: Data,
         ecid: UInt64
     ) async throws -> Data {
         let propertyList = try AppleTSSRequest(
-            identity: identity,
+            buildIdentity: buildIdentity,
             identifiers: identifiers,
             nonce: nonce,
             ecid: ecid

@@ -24,7 +24,10 @@ public struct DeveloperDiskImageSource: Equatable, Sendable {
     ///
     /// - Parameters:
     ///   - archiveURL: HTTPS URL for the ZIP archive.
-    ///   - expectedSHA256: Expected archive SHA-256 in hexadecimal form.
+    ///   - expectedSHA256: Expected archive SHA-256 in hexadecimal form. The
+    ///     stored value is normalized to lowercase.
+    /// - Throws: `RorkDeviceError.invalidInput` when the URL is not HTTPS or
+    ///   the digest is not exactly 64 hexadecimal characters.
     public init(archiveURL: URL, expectedSHA256: String) throws {
         guard archiveURL.scheme?.lowercased() == "https",
             archiveURL.host != nil
@@ -53,12 +56,16 @@ public struct DeveloperDiskImageSource: Equatable, Sendable {
 
 /// HTTP metadata returned after an archive download.
 struct DeveloperDiskImageArchiveHTTPResponse: Sendable {
+    /// Final HTTP status returned by the archive host.
     let statusCode: Int
+
+    /// Declared response length, or `nil` when the server omitted it.
     let expectedContentLength: Int64?
 }
 
 /// Download boundary used to keep archive storage tests offline.
-protocol DeveloperDiskImageArchiveDownloading {
+protocol DeveloperDiskImageArchiveDownloading: Sendable {
+    /// Downloads an archive while enforcing the caller's byte budget.
     func download(
         from sourceURL: URL,
         to destinationURL: URL,
@@ -67,20 +74,26 @@ protocol DeveloperDiskImageArchiveDownloading {
 }
 
 /// Resource bounds applied before extracting an untrusted archive.
-struct DeveloperDiskImageArchiveLimits {
+struct DeveloperDiskImageArchiveLimits: Sendable {
+    /// Production limits for archive size, entry count, and expansion.
     static let standard = DeveloperDiskImageArchiveLimits(
         maximumArchiveSize: 512 * 1024 * 1024,
         maximumEntryCount: 10_000,
         maximumExpandedSize: 2 * 1024 * 1024 * 1024
     )
 
+    /// Maximum compressed archive size accepted on disk or over the network.
     let maximumArchiveSize: UInt64
+
+    /// Maximum number of ZIP entries inspected before extraction.
     let maximumEntryCount: Int
+
+    /// Maximum total uncompressed size across all ZIP entries.
     let maximumExpandedSize: UInt64
 }
 
 /// Downloads, authenticates, and caches personalized DDI archives.
-public struct DeveloperDiskImageStore {
+public struct DeveloperDiskImageStore: Sendable {
     private let cacheDirectory: URL
     private let downloader: any DeveloperDiskImageArchiveDownloading
     private let limits: DeveloperDiskImageArchiveLimits
@@ -110,6 +123,7 @@ public struct DeveloperDiskImageStore {
         )
     }
 
+    /// Creates a store with injectable I/O and resource limits for tests.
     init(
         cacheDirectory: URL,
         downloader: any DeveloperDiskImageArchiveDownloading,
@@ -127,6 +141,8 @@ public struct DeveloperDiskImageStore {
     ///
     /// - Parameter source: HTTPS archive location and expected digest.
     /// - Returns: Local directory containing `BuildManifest.plist`.
+    /// - Throws: An input error when the archive, digest, ZIP layout, or cache
+    ///   contents are invalid; a transport error when the download fails.
     public func prepareRestoreDirectory(
         from source: DeveloperDiskImageSource
     ) async throws -> URL {
@@ -291,12 +307,13 @@ public struct DeveloperDiskImageStore {
 private struct URLSessionDeveloperDiskImageArchiveDownloader:
     DeveloperDiskImageArchiveDownloading
 {
+    /// Downloads one archive to a caller-owned temporary destination.
     func download(
         from sourceURL: URL,
         to destinationURL: URL,
         maximumByteCount: UInt64
     ) async throws -> DeveloperDiskImageArchiveHTTPResponse {
-        let delegate = DeveloperDiskImageDownloadLimitDelegate(
+        let delegate = DeveloperDiskImageDownloadDelegate(
             maximumByteCount: maximumByteCount
         )
         let configuration = URLSessionConfiguration.ephemeral
@@ -344,26 +361,33 @@ private struct URLSessionDeveloperDiskImageArchiveDownloader:
     }
 }
 
-/// Cancels chunked responses that exceed the archive budget before completion.
-private final class DeveloperDiskImageDownloadLimitDelegate:
-    NSObject,
+/// Enforces archive size and HTTPS redirect policy during a download.
+private final class DeveloperDiskImageDownloadDelegate:
+    HTTPSOnlyURLSessionDelegate,
     URLSessionDownloadDelegate,
     @unchecked Sendable
 {
+    /// Maximum number of compressed bytes accepted from the response body.
     private let maximumByteCount: UInt64
+
+    /// Serializes byte-limit state across URLSession delegate callbacks.
     private let lock = NSLock()
+
+    /// Records whether cancellation was caused by the configured byte limit.
     private var exceededLimit = false
 
+    /// Creates a delegate with one compressed-response byte budget.
     init(maximumByteCount: UInt64) {
         self.maximumByteCount = maximumByteCount
     }
 
+    /// Whether this delegate cancelled a download after exceeding its limit.
     var didExceedLimit: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return exceededLimit
+        lock.withLock { exceededLimit }
     }
 
+    /// Cancels a chunked response as soon as its compressed bytes exceed the
+    /// configured archive limit.
     func urlSession(
         _: URLSession,
         downloadTask: URLSessionDownloadTask,
@@ -376,12 +400,13 @@ private final class DeveloperDiskImageDownloadLimitDelegate:
         else {
             return
         }
-        lock.lock()
-        exceededLimit = true
-        lock.unlock()
+        lock.withLock {
+            exceededLimit = true
+        }
         downloadTask.cancel()
     }
 
+    /// Leaves file ownership to URLSession's async download API.
     func urlSession(
         _: URLSession,
         downloadTask _: URLSessionDownloadTask,
@@ -406,6 +431,7 @@ func sha256HexDigest(of fileURL: URL) throws -> String {
     }.joined()
 }
 
+/// Returns the nonzero size of a regular, non-symbolic-link archive.
 private func fileSize(at fileURL: URL) throws -> UInt64 {
     let values = try fileURL.resourceValues(
         forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
@@ -423,6 +449,7 @@ private func fileSize(at fileURL: URL) throws -> UInt64 {
 }
 
 #if canImport(ZIPFoundation)
+/// Rejects unsafe or resource-exhausting ZIP metadata before extraction.
 private func validateArchive(
     at archiveURL: URL,
     limits: DeveloperDiskImageArchiveLimits
@@ -451,12 +478,8 @@ private func validateArchive(
                 "Developer Disk Image archive contains symbolic links."
             )
         }
-        guard !entry.path.isEmpty,
-            !entry.path.hasPrefix("/"),
-            !entry.path.contains("\\"),
-            !entry.path.split(separator: "/", omittingEmptySubsequences: false)
-                .contains(".."),
-            paths.insert(entry.path).inserted
+        guard let canonicalPath = canonicalArchivePath(entry.path),
+            paths.insert(canonicalPath).inserted
         else {
             throw RorkDeviceError.invalidInput(
                 "Developer Disk Image archive contains an unsafe or duplicate path."
@@ -481,6 +504,35 @@ private func validateArchive(
     }
 }
 
+/// Canonicalizes safe ZIP paths so filesystem-equivalent entries deduplicate.
+private func canonicalArchivePath(_ path: String) -> String? {
+    guard !path.isEmpty,
+        !path.hasPrefix("/"),
+        !path.contains("\\")
+    else {
+        return nil
+    }
+
+    var canonicalComponents: [Substring] = []
+    for component in path.split(
+        separator: "/",
+        omittingEmptySubsequences: false
+    ) {
+        if component.isEmpty || component == "." {
+            continue
+        }
+        guard component != ".." else {
+            return nil
+        }
+        canonicalComponents.append(component)
+    }
+    guard !canonicalComponents.isEmpty else {
+        return nil
+    }
+    return canonicalComponents.joined(separator: "/")
+}
+
+/// Finds exactly one complete `Restore` directory in a common ZIP layout.
 private func restoreDirectory(in extractedDirectory: URL) throws -> URL {
     let direct = extractedDirectory.appendingPathComponent(
         "Restore",
@@ -533,6 +585,7 @@ private func restoreDirectory(in extractedDirectory: URL) throws -> URL {
 }
 #endif
 
+/// Checks the cache marker without following a symbolic-link manifest.
 private func isCompleteRestoreDirectory(_ directory: URL) -> Bool {
     let manifestURL = directory.appendingPathComponent(
         "BuildManifest.plist"

@@ -21,15 +21,15 @@ final class PersonalizedDeveloperDiskImageTests: XCTestCase {
                 boardID: 12,
                 chipID: 0x8150,
                 securityDomain: 1,
-                additionalValues: [:]
+                additionalTSSParameters: [:]
             )
         )
 
         XCTAssertEqual(payload.imageURL.lastPathComponent, "DeveloperDiskImage.dmg")
         XCTAssertEqual(payload.trustCacheURL.lastPathComponent, "DeveloperDiskImage.dmg.trustcache")
-        XCTAssertEqual(payload.identity.boardID, 12)
-        XCTAssertEqual(payload.identity.chipID, 0x8150)
-        XCTAssertEqual(payload.identity.securityDomain, 1)
+        XCTAssertEqual(payload.buildIdentity.boardID, 12)
+        XCTAssertEqual(payload.buildIdentity.chipID, 0x8150)
+        XCTAssertEqual(payload.buildIdentity.securityDomain, 1)
     }
 
     func testPayloadRejectsIdentityForAnotherSecurityDomain() throws {
@@ -49,7 +49,7 @@ final class PersonalizedDeveloperDiskImageTests: XCTestCase {
                     boardID: 12,
                     chipID: 0x8150,
                     securityDomain: 1,
-                    additionalValues: [:]
+                    additionalTSSParameters: [:]
                 )
             )
         ) { error in
@@ -80,7 +80,7 @@ final class PersonalizedDeveloperDiskImageTests: XCTestCase {
                     boardID: 12,
                     chipID: 0x8150,
                     securityDomain: 1,
-                    additionalValues: [:]
+                    additionalTSSParameters: [:]
                 )
             )
         ) { error in
@@ -115,7 +115,7 @@ final class PersonalizedDeveloperDiskImageTests: XCTestCase {
                     boardID: 12,
                     chipID: 0x8150,
                     securityDomain: 1,
-                    additionalValues: [:]
+                    additionalTSSParameters: [:]
                 )
             )
         ) { error in

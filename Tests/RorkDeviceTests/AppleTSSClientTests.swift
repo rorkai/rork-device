@@ -5,12 +5,12 @@ import XCTest
 
 final class AppleTSSClientTests: XCTestCase {
     func testRequestIncludesHardwareValuesAndAppliesRestoreRules() throws {
-        let identity = DeveloperDiskImageIdentity(
+        let buildIdentity = DeveloperDiskImageBuildIdentity(
             boardID: 12,
             chipID: 0x8150,
             securityDomain: 1,
-            values: [:],
-            manifest: [
+            propertyList: [:],
+            manifestEntries: [
                 "PersonalizedDMG": [
                     "Digest": Data(repeating: 0x11, count: 48),
                     "Info": [
@@ -48,14 +48,14 @@ final class AppleTSSClientTests: XCTestCase {
             boardID: 12,
             chipID: 0x8150,
             securityDomain: 1,
-            additionalValues: [
+            additionalTSSParameters: [
                 "Ap,ProductType": "iPhone18,1",
                 "Ignored": "value",
             ]
         )
 
         let request = try AppleTSSRequest(
-            identity: identity,
+            buildIdentity: buildIdentity,
             identifiers: identifiers,
             nonce: Data([0x01, 0x02]),
             ecid: 123,
@@ -147,18 +147,18 @@ final class AppleTSSClientTests: XCTestCase {
         let client = AppleTSSClient(transport: transport)
 
         let result = try await client.ticket(
-            for: DeveloperDiskImageIdentity(
+            for: DeveloperDiskImageBuildIdentity(
                 boardID: 12,
                 chipID: 0x8150,
                 securityDomain: 1,
-                values: [:],
-                manifest: [:]
+                propertyList: [:],
+                manifestEntries: [:]
             ),
             identifiers: PersonalizationIdentifiers(
                 boardID: 12,
                 chipID: 0x8150,
                 securityDomain: 1,
-                additionalValues: [:]
+                additionalTSSParameters: [:]
             ),
             nonce: Data([0x04]),
             ecid: 123
@@ -188,18 +188,18 @@ final class AppleTSSClientTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             {
                 try await client.ticket(
-                    for: DeveloperDiskImageIdentity(
+                    for: DeveloperDiskImageBuildIdentity(
                         boardID: 12,
                         chipID: 0x8150,
                         securityDomain: 1,
-                        values: [:],
-                        manifest: [:]
+                        propertyList: [:],
+                        manifestEntries: [:]
                     ),
                     identifiers: PersonalizationIdentifiers(
                         boardID: 12,
                         chipID: 0x8150,
                         securityDomain: 1,
-                        additionalValues: [:]
+                        additionalTSSParameters: [:]
                     ),
                     nonce: Data([0x04]),
                     ecid: 123

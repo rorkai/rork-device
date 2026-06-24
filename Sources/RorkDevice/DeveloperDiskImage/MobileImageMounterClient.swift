@@ -1,18 +1,26 @@
 import Foundation
 
-/// Failure that requires reopening mobile_image_mounter before querying a nonce.
+/// Signals the service-close response used when no cached manifest is present.
+///
+/// This sentinel is deliberately narrower than a generic transport error.
+/// Callers may request a new ticket only when the device closes this specific
+/// query, not when communication fails for another reason.
 private struct PersonalizationManifestUnavailable: Error {}
 
 /// Protocol client for iOS 17+ personalized image-mounter commands.
 private struct MobileImageMounterClient {
+    /// Image type Apple uses for personalized developer services.
     private static let personalizedImageType = "DeveloperDiskImage"
 
+    /// Active `com.apple.mobile.mobile_image_mounter` byte stream.
     private let connection: DeviceConnection
 
+    /// Creates a client over one image-mounter service connection.
     init(connection: DeviceConnection) {
         self.connection = connection
     }
 
+    /// Reports whether any personalized Developer Disk Image is mounted.
     func isPersonalizedImageMounted() async throws -> Bool {
         try await send([
             "Command": "LookupImage",
@@ -39,6 +47,7 @@ private struct MobileImageMounterClient {
         )
     }
 
+    /// Reads the hardware values needed to select a matching build identity.
     func personalizationIdentifiers() async throws
         -> PersonalizationIdentifiers
     {
@@ -65,12 +74,16 @@ private struct MobileImageMounterClient {
             boardID: boardID,
             chipID: chipID,
             securityDomain: securityDomain,
-            additionalValues: values.filter {
+            additionalTSSParameters: values.filter {
                 $0.key.hasPrefix("Ap,")
             }
         )
     }
 
+    /// Returns a cached personalization manifest for the image digest.
+    ///
+    /// The device closes this service when it has no reusable manifest. Other
+    /// transport failures and explicit device errors remain actionable errors.
     func personalizationManifest(for imageDigest: Data) async throws -> Data {
         try await send([
             "Command": "QueryPersonalizationManifest",
@@ -81,24 +94,26 @@ private struct MobileImageMounterClient {
 
         let response: [String: Any]
         do {
-            response = try await PropertyListMessageFramer.receive(
-                from: connection
+            response = try await receive(
+                command: "QueryPersonalizationManifest"
             )
         } catch {
-            // This command may close the service when the device has no cached
-            // manifest. The protocol requires a fresh service for QueryNonce.
+            guard isPeerClosedConnectionError(error) else {
+                throw error
+            }
             throw PersonalizationManifestUnavailable()
         }
-        guard response["Error"] == nil,
-            response["DetailedError"] == nil,
-            let signature = response["ImageSignature"] as? Data,
+        guard let signature = response["ImageSignature"] as? Data,
             !signature.isEmpty
         else {
-            throw PersonalizationManifestUnavailable()
+            throw RorkDeviceError.protocolViolation(
+                "QueryPersonalizationManifest response did not contain ImageSignature."
+            )
         }
         return signature
     }
 
+    /// Returns a fresh nonce for an Apple TSS personalization request.
     func personalizationNonce() async throws -> Data {
         try await send([
             "Command": "QueryNonce",
@@ -116,6 +131,10 @@ private struct MobileImageMounterClient {
         return nonce
     }
 
+    /// Streams the disk image after the device accepts its size and ticket.
+    ///
+    /// The image stays file-backed so a multi-gigabyte DDI is never retained
+    /// in memory as one `Data` value.
     func uploadImage(
         at imageURL: URL,
         ticket: Data
@@ -181,6 +200,7 @@ private struct MobileImageMounterClient {
         }
     }
 
+    /// Mounts an uploaded image with its ticket and validated trust cache.
     func mount(ticket: Data, trustCache: Data) async throws {
         try await send([
             "Command": "MountImage",
@@ -196,10 +216,12 @@ private struct MobileImageMounterClient {
         }
     }
 
+    /// Ends the image-mounter session after a successful mount.
     func hangUp() async throws {
         try await send(["Command": "Hangup"])
     }
 
+    /// Sends one framed image-mounter command.
     private func send(_ command: [String: Any]) async throws {
         try await PropertyListMessageFramer.send(
             command,
@@ -207,6 +229,7 @@ private struct MobileImageMounterClient {
         )
     }
 
+    /// Receives one response and preserves Apple error details in the failure.
     private func receive(command: String) async throws -> [String: Any] {
         let response = try await PropertyListMessageFramer.receive(
             from: connection
@@ -228,11 +251,23 @@ private struct MobileImageMounterClient {
     }
 }
 
+/// Returns whether the peer ended a NIO byte stream before sending a response.
+private func isPeerClosedConnectionError(_ error: Error) -> Bool {
+    guard case RorkDeviceError.transport("Connection closed.") = error else {
+        return false
+    }
+    return true
+}
+
 /// Coordinates manifest reuse, TSS fallback, upload, and mounting.
 struct PersonalizedDeveloperDiskImageMounter {
+    /// Opens a fresh image-mounter service after a manifest cache miss.
     private let openConnection: () async throws -> DeviceConnection
+
+    /// Requests an Apple ticket when the device has no reusable manifest.
     private let ticketRequester: any DeveloperDiskImageTicketRequesting
 
+    /// Creates a mounter with replaceable connection and ticket boundaries.
     init(
         openConnection: @escaping () async throws -> DeviceConnection,
         ticketRequester: any DeveloperDiskImageTicketRequesting
@@ -241,6 +276,10 @@ struct PersonalizedDeveloperDiskImageMounter {
         self.ticketRequester = ticketRequester
     }
 
+    /// Reuses a cached ticket when possible, otherwise requests one from TSS.
+    ///
+    /// A manifest cache miss closes the initial service, so the nonce and
+    /// upload sequence must continue on a freshly opened connection.
     func mount(
         _ image: PersonalizedDeveloperDiskImage,
         ecid: UInt64
@@ -255,10 +294,7 @@ struct PersonalizedDeveloperDiskImageMounter {
             connection: initialConnection
         )
         if try await client.isPersonalizedImageMounted() {
-            return DeveloperDiskImageMountResult(
-                status: .alreadyMounted,
-                ticketSource: nil
-            )
+            return .alreadyMounted
         }
 
         let identifiers = try await client.personalizationIdentifiers()
@@ -270,7 +306,7 @@ struct PersonalizedDeveloperDiskImageMounter {
             ticket = try await client.personalizationManifest(
                 for: payload.imageDigest
             )
-            ticketSource = .device
+            ticketSource = .deviceManifest
         } catch is PersonalizationManifestUnavailable {
             connection?.close()
             connection = nil
@@ -282,7 +318,7 @@ struct PersonalizedDeveloperDiskImageMounter {
             )
             let nonce = try await client.personalizationNonce()
             ticket = try await ticketRequester.ticket(
-                for: payload.identity,
+                for: payload.buildIdentity,
                 identifiers: identifiers,
                 nonce: nonce,
                 ecid: ecid
@@ -310,9 +346,6 @@ struct PersonalizedDeveloperDiskImageMounter {
             trustCache: trustCache
         )
         try await client.hangUp()
-        return DeveloperDiskImageMountResult(
-            status: .mounted,
-            ticketSource: ticketSource
-        )
+        return .mounted(ticketSource: ticketSource)
     }
 }

@@ -3,34 +3,61 @@ import Foundation
 
 /// Hardware values returned by the personalized image-mounter service.
 struct PersonalizationIdentifiers {
+    /// Board identifier used to select a build identity.
     let boardID: UInt64
+
+    /// Chip identifier used to select a build identity.
     let chipID: UInt64
+
+    /// Apple security domain used to select a build identity.
     let securityDomain: UInt64
-    let additionalValues: [String: Any]
+
+    /// Additional `Ap,` values copied into Apple TSS requests.
+    let additionalTSSParameters: [String: Any]
 }
 
 /// One hardware-specific build identity from `BuildManifest.plist`.
-struct DeveloperDiskImageIdentity {
+struct DeveloperDiskImageBuildIdentity {
+    /// Board identifier represented by this build identity.
     let boardID: UInt64
+
+    /// Chip identifier represented by this build identity.
     let chipID: UInt64
+
+    /// Apple security domain represented by this build identity.
     let securityDomain: UInt64
-    let values: [String: Any]
-    let manifest: [String: Any]
+
+    /// Complete build-identity property list used to populate Apple TSS fields.
+    let propertyList: [String: Any]
+
+    /// Manifest entries eligible for the Apple TSS ticket request.
+    let manifestEntries: [String: Any]
 }
 
 /// Files and manifest values selected for one connected device.
 struct PersonalizedDeveloperDiskImagePayload {
+    /// Personalized disk image selected by the build identity.
     let imageURL: URL
+
+    /// Validated SHA-384 digest sent to the device and Apple TSS.
     let imageDigest: Data
+
+    /// Trust cache paired with the personalized disk image.
     let trustCacheURL: URL
-    let identity: DeveloperDiskImageIdentity
+
+    /// Build identity used to request or reuse a personalization ticket.
+    let buildIdentity: DeveloperDiskImageBuildIdentity
 }
 
 /// Parsed iOS 17+ personalized Developer Disk Image Restore directory.
 struct PersonalizedDeveloperDiskImage {
+    /// Root containing the build manifest and all referenced files.
     private let restoreDirectory: URL
+
+    /// Hardware-specific identities decoded from `BuildManifest.plist`.
     private let buildIdentities: [[String: Any]]
 
+    /// Parses and validates the manifest structure in a Restore directory.
     init(contentsOf restoreDirectory: URL) throws {
         let restoreDirectory = restoreDirectory.standardizedFileURL
         let manifestURL = restoreDirectory.appendingPathComponent(
@@ -58,6 +85,10 @@ struct PersonalizedDeveloperDiskImage {
         self.buildIdentities = buildIdentities
     }
 
+    /// Selects and authenticates the files for the connected hardware.
+    ///
+    /// - Throws: An input error when no build identity matches, a manifest
+    ///   entry is incomplete, a path escapes `Restore`, or a digest differs.
     func payload(
         matching identifiers: PersonalizationIdentifiers
     ) throws -> PersonalizedDeveloperDiskImagePayload {
@@ -105,16 +136,17 @@ struct PersonalizedDeveloperDiskImage {
             imageURL: imageURL,
             imageDigest: imageDigest,
             trustCacheURL: trustCacheURL,
-            identity: DeveloperDiskImageIdentity(
+            buildIdentity: DeveloperDiskImageBuildIdentity(
                 boardID: identifiers.boardID,
                 chipID: identifiers.chipID,
                 securityDomain: identifiers.securityDomain,
-                values: values,
-                manifest: manifest
+                propertyList: values,
+                manifestEntries: manifest
             )
         )
     }
 
+    /// Resolves one manifest path without allowing traversal or symlink escape.
     private func fileURL(for entry: [String: Any]) throws -> URL {
         guard let info = entry["Info"] as? [String: Any],
             let relativePath = info["Path"] as? String,
@@ -154,6 +186,7 @@ struct PersonalizedDeveloperDiskImage {
         return resolvedCandidate
     }
 
+    /// Builds the consistent diagnostic used for every path-containment check.
     private func escapedPathError(_ path: String) -> RorkDeviceError {
         .invalidInput(
             "Developer Disk Image manifest path escapes the Restore directory: \(path)"
@@ -225,6 +258,7 @@ func sha384Digest(of fileURL: URL) throws -> Data {
 }
 
 private extension URL {
+    /// Checks path containment on component boundaries after standardization.
     func isContained(in directory: URL) -> Bool {
         let directoryPath = directory.standardizedFileURL.path
         let candidatePath = standardizedFileURL.path

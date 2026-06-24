@@ -181,7 +181,8 @@ final class DeveloperDiskImageSessionTests: XCTestCase {
 }
 
 private final class UnexpectedDeveloperDiskImageArchiveDownloader:
-    DeveloperDiskImageArchiveDownloading
+    DeveloperDiskImageArchiveDownloading,
+    @unchecked Sendable
 {
     private(set) var downloadCount = 0
 

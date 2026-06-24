@@ -65,12 +65,20 @@ final class RorkDeviceCLITests: XCTestCase {
         ]))
     }
 
+    func testImageAutoCommandRejectsBlankCacheDirectory() {
+        for cacheDirectory in ["", " \n "] {
+            XCTAssertThrowsError(try ImageAuto.parse([
+                "--pairing-record", "pairing.plist",
+                "--archive-url", "https://example.com/ddi.zip",
+                "--sha256", String(repeating: "a", count: 64),
+                "--cache-directory", cacheDirectory,
+            ]))
+        }
+    }
+
     func testDeveloperDiskImageMountJSONIncludesTunnelRestart() throws {
         let data = try developerDiskImageMountJSON(
-            DeveloperDiskImageMountResult(
-                status: .mounted,
-                ticketSource: .appleTSS
-            )
+            .mounted(ticketSource: .appleTSS)
         )
         let output = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data)

@@ -229,10 +229,70 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
             )
         }
     }
+
+    func testPrepareRestoreDirectoryRejectsCanonicalDuplicatePaths()
+        async throws
+    {
+        for alias in [
+            "Restore/./BuildManifest.plist",
+            "Restore//BuildManifest.plist",
+        ] {
+            let archive = try makeArchive(entries: [
+                ("Restore/BuildManifest.plist", Data("first".utf8)),
+                (alias, Data("second".utf8)),
+            ])
+            defer { archive.remove() }
+            let cacheDirectory = temporaryDirectory()
+            defer {
+                try? FileManager.default.removeItem(at: cacheDirectory)
+            }
+            let downloader = RecordingDeveloperDiskImageArchiveDownloader(
+                archiveURL: archive.url
+            )
+            let source = try DeveloperDiskImageSource(
+                archiveURL: URL(string: "https://example.com/ddi.zip")!,
+                expectedSHA256: try sha256HexDigest(of: archive.url)
+            )
+            let store = DeveloperDiskImageStore(
+                cacheDirectory: cacheDirectory,
+                downloader: downloader
+            )
+
+            await XCTAssertThrowsErrorAsync({
+                try await store.prepareRestoreDirectory(from: source)
+            }) { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput(
+                        "Developer Disk Image archive contains an unsafe or duplicate path."
+                    )
+                )
+            }
+        }
+    }
+
+    func testHTTPSRedirectPolicyRequiresHTTPS() {
+        let secureRequest = URLRequest(
+            url: URL(string: "https://cdn.example.com/ddi.zip")!
+        )
+        let insecureRequest = URLRequest(
+            url: URL(string: "http://cdn.example.com/ddi.zip")!
+        )
+
+        XCTAssertNotNil(
+            HTTPSOnlyURLSessionDelegate
+                .approvedRedirectRequest(secureRequest)
+        )
+        XCTAssertNil(
+            HTTPSOnlyURLSessionDelegate
+                .approvedRedirectRequest(insecureRequest)
+        )
+    }
 }
 
 private final class RecordingDeveloperDiskImageArchiveDownloader:
-    DeveloperDiskImageArchiveDownloading
+    DeveloperDiskImageArchiveDownloading,
+    @unchecked Sendable
 {
     private let archiveURL: URL
     private let statusCode: Int
@@ -288,6 +348,38 @@ private func makeArchive(
         shouldKeepParent: true,
         compressionMethod: .deflate
     )
+    return DeveloperDiskImageArchiveFixture(
+        directory: directory,
+        url: archiveURL
+    )
+}
+
+private func makeArchive(
+    entries: [(path: String, data: Data)]
+) throws -> DeveloperDiskImageArchiveFixture {
+    let directory = temporaryDirectory()
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let archiveURL = directory.appendingPathComponent("ddi.zip")
+    let archive = try Archive(url: archiveURL, accessMode: .create)
+    for entry in entries {
+        try archive.addEntry(
+            with: entry.path,
+            type: .file,
+            uncompressedSize: Int64(entry.data.count)
+        ) { position, size in
+            let lowerBound = Int(position)
+            let upperBound = min(
+                lowerBound + size,
+                entry.data.count
+            )
+            return entry.data.subdata(
+                in: lowerBound ..< upperBound
+            )
+        }
+    }
     return DeveloperDiskImageArchiveFixture(
         directory: directory,
         url: archiveURL

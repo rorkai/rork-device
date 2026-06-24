@@ -48,11 +48,11 @@ final class MobileImageMounterClientTests: XCTestCase {
 
         XCTAssertEqual(
             result,
-            DeveloperDiskImageMountResult(
-                status: .mounted,
-                ticketSource: .device
-            )
+            .mounted(ticketSource: .deviceManifest)
         )
+        XCTAssertEqual(result.status, .mounted)
+        XCTAssertEqual(result.ticketSource, .deviceManifest)
+        XCTAssertTrue(result.requiresTunnelRestart)
         XCTAssertEqual(requester.requestCount, 0)
         XCTAssertTrue(connection.isClosed)
         XCTAssertEqual(
@@ -107,7 +107,8 @@ final class MobileImageMounterClientTests: XCTestCase {
                 ],
                 personalizationIdentifiersResponse(),
             ]),
-            receiveFailureAfterSendCount: 3
+            receiveFailureAfterSendCount: 3,
+            receiveFailure: .transport("Connection closed.")
         )
         let replacementConnection = FakeConnection(
             inbound: try framedMessages([
@@ -144,10 +145,7 @@ final class MobileImageMounterClientTests: XCTestCase {
 
         XCTAssertEqual(
             result,
-            DeveloperDiskImageMountResult(
-                status: .mounted,
-                ticketSource: .appleTSS
-            )
+            .mounted(ticketSource: .appleTSS)
         )
         XCTAssertEqual(requester.requestCount, 1)
         XCTAssertEqual(requester.nonce, Data([0x10, 0x20]))
@@ -205,14 +203,112 @@ final class MobileImageMounterClientTests: XCTestCase {
 
         XCTAssertEqual(
             result,
-            DeveloperDiskImageMountResult(
-                status: .alreadyMounted,
-                ticketSource: nil
-            )
+            .alreadyMounted
         )
         XCTAssertEqual(connection.sent.count, 1)
         XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertEqual(result.status, .alreadyMounted)
+        XCTAssertNil(result.ticketSource)
         XCTAssertFalse(result.requiresTunnelRestart)
+    }
+
+    func testMountSurfacesPersonalizationManifestDeviceError()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                personalizationIdentifiersResponse(),
+                [
+                    "Error": "PersonalizationFailed",
+                    "DetailedError": "device rejected manifest query",
+                ],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0xCC])
+        )
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                ),
+                ecid: 123
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .lockdown(
+                    "QueryPersonalizationManifest failed: PersonalizationFailed: device rejected manifest query"
+                )
+            )
+        }
+        XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testMountDoesNotTreatTransportFailureAsMissingManifest()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                personalizationIdentifiersResponse(),
+            ]),
+            receiveFailureAfterSendCount: 3
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0xCC])
+        )
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                ),
+                ecid: 123
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("Injected receive failure.")
+            )
+        }
+        XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertTrue(connection.isClosed)
     }
 }
 
@@ -234,7 +330,8 @@ private final class ImageMounterConnectionQueue {
 }
 
 private final class RecordingDeveloperDiskImageTicketRequester:
-    DeveloperDiskImageTicketRequesting
+    DeveloperDiskImageTicketRequesting,
+    @unchecked Sendable
 {
     private let ticketValue: Data
     private(set) var requestCount = 0
@@ -246,8 +343,8 @@ private final class RecordingDeveloperDiskImageTicketRequester:
     }
 
     func ticket(
-        for identity: DeveloperDiskImageIdentity,
-        identifiers: PersonalizationIdentifiers,
+        for _: DeveloperDiskImageBuildIdentity,
+        identifiers _: PersonalizationIdentifiers,
         nonce: Data,
         ecid: UInt64
     ) async throws -> Data {

@@ -117,6 +117,9 @@ public final class DeviceSession {
     /// - Parameter restoreDirectory: Extracted personalized DDI `Restore`
     ///   directory.
     /// - Returns: Mount status and personalization-ticket origin.
+    /// - Throws: An input error for an unsupported device, disabled Developer
+    ///   Mode, or invalid image; a protocol or transport error when Lockdown,
+    ///   image mounter, or Apple TSS cannot complete the operation.
     public func mountPersonalizedDeveloperDiskImage(
         from restoreDirectory: URL
     ) async throws -> DeveloperDiskImageMountResult {
@@ -140,6 +143,10 @@ public final class DeviceSession {
     ///   - source: HTTPS archive and expected digest.
     ///   - store: Download and extraction cache.
     /// - Returns: Mount status and personalization-ticket origin.
+    /// - Throws: An input error for an unsupported device, disabled Developer
+    ///   Mode, invalid archive, or incompatible image; a protocol or transport
+    ///   error when the archive host, Lockdown, image mounter, or Apple TSS
+    ///   cannot complete the operation.
     public func mountPersonalizedDeveloperDiskImage(
         from source: DeveloperDiskImageSource,
         using store: DeveloperDiskImageStore = DeveloperDiskImageStore()
