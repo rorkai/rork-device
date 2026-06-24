@@ -1,5 +1,5 @@
 {
-  "originHash" : "6fb0df6812228929bf60b58ae421524fbd98630e29a8c0d5dacb794a8048049d",
+  "originHash" : "eb3e5187e876f9040ec299011c346485d151ff02fb30e8b0987fcfb40eb57ce9",
   "pins" : [
     {
       "identity" : "bigint",
@@ -51,7 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-certificates.git",
       "state" : {
-        "revision" : "6cf7f351f4191de64a382a68aee398eb3be1621c"
+        "revision" : "6c2afd3adb76735da852f11b31eecda1262687c9",
+        "version" : "1.19.1-rork.1"
       }
     },
     {
@@ -68,7 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-crypto.git",
       "state" : {
-        "revision" : "f171fca4c1718d685c495350fe9136a3fda6f262"
+        "revision" : "f171fca4c1718d685c495350fe9136a3fda6f262",
+        "version" : "4.5.0-rork.1"
       }
     },
     {
@@ -76,7 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-nio.git",
       "state" : {
-        "revision" : "e2bafeaa861f944ce5eb00103937c5a0a9528fc1"
+        "revision" : "e2bafeaa861f944ce5eb00103937c5a0a9528fc1",
+        "version" : "2.100.0-rork.1"
       }
     },
     {
@@ -84,7 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-nio-ssl.git",
       "state" : {
-        "revision" : "e32077fabdc372bfa732f16f4c006f7562293534"
+        "revision" : "62ba997fb6066664a747d77427b2fa26e3b272d4",
+        "version" : "2.37.1-rork.1"
       }
     },
     {
