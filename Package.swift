@@ -33,11 +33,11 @@ var products: [Product] = [
 #if compiler(>=6.3)
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio.git",
-    revision: "e2bafeaa861f944ce5eb00103937c5a0a9528fc1"
+    exact: "2.100.0-rork.1"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
-    revision: "e32077fabdc372bfa732f16f4c006f7562293534"
+    exact: "2.37.1-rork.1"
 )
 #else
 let swiftNIO: Package.Dependency = .package(
@@ -57,11 +57,11 @@ let swiftNIOSSL: Package.Dependency = .package(
 #if compiler(>=6.3)
 let swiftCertificates: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-certificates.git",
-    revision: "6cf7f351f4191de64a382a68aee398eb3be1621c"
+    exact: "1.19.1-rork.1"
 )
 let swiftCrypto: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-crypto.git",
-    revision: "f171fca4c1718d685c495350fe9136a3fda6f262"
+    exact: "4.5.0-rork.1"
 )
 #elseif compiler(>=6.1)
 let swiftCertificates: Package.Dependency = .package(
