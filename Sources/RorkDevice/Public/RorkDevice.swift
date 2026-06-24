@@ -7,7 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.9.4"
+    public static let version = "0.9.5"
 }
 
 /// Returns whether usbmux identifies a discovered device record as a USB route.
