@@ -123,14 +123,17 @@ final class NIODeviceConnection:
         let handshakePromise = channel.eventLoop.makePromise(of: Void.self)
 
         channel.eventLoop.execute {
+            let handshakeObserver = NIOSSLHandshakeObserver(
+                promise: handshakePromise
+            )
             do {
+                guard channel.isActive else {
+                    throw NIODeviceConnection.peerClosedError
+                }
                 let tlsHandler = try NIOSSLClientHandler(
                     context: configuration.context,
                     serverHostname: nil,
                     customVerificationCallback: certificatePin.verify
-                )
-                let handshakeObserver = NIOSSLHandshakeObserver(
-                    promise: handshakePromise
                 )
                 try channel.pipeline.syncOperations.addHandlers(
                     [tlsHandler, handshakeObserver],
@@ -138,6 +141,7 @@ final class NIODeviceConnection:
                 )
                 setupPromise.succeed(())
             } catch {
+                handshakeObserver.handlerInstallationFailed(with: error)
                 setupPromise.fail(error)
             }
         }
@@ -314,6 +318,11 @@ private final class NIOSSLHandshakeObserver: ChannelInboundHandler {
     func channelInactive(context: ChannelHandlerContext) {
         complete(.failure(NIODeviceConnection.peerClosedError))
         context.fireChannelInactive()
+    }
+
+    /// Resolves the waiter when pipeline installation fails before events can reach it.
+    func handlerInstallationFailed(with error: Error) {
+        complete(.failure(error))
     }
 
     /// Resolves the handshake promise exactly once on its event loop.

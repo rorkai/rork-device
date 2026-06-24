@@ -85,7 +85,7 @@ final class RemotePairingTrustTests: XCTestCase {
         XCTAssertTrue(pairingConnection.isClosed)
     }
 
-    func testVerifiesTheSameIdentityOnAFreshSessionAfterEnrollment()
+    func testVerifiesTheSameIdentityOnAFreshSessionAfterEnrollmentStarts()
         async throws
     {
         let progress = TrustProgressRecorder()
@@ -93,12 +93,11 @@ final class RemotePairingTrustTests: XCTestCase {
 
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            verificationRetryDelays: [.zero],
+            verificationAttemptDelays: [.zero],
             sleep: { _ in },
-            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+            initialAttempt: { willBeginEnrollment in
                 attempts.recordInitialAttempt()
                 willBeginEnrollment()
-                didEnrollIdentity()
             },
             verificationAttempt: {
                 attempts.recordVerificationAttempt()
@@ -158,64 +157,70 @@ final class RemotePairingTrustTests: XCTestCase {
         ])
     }
 
-    func testDoesNotRecoverAStreamResetBeforeIdentityEnrollmentCommits()
+    func testVerifiesAfterEnrollmentStartsWhenSetupStreamResetsBeforeM6()
         async throws
     {
         let progress = TrustProgressRecorder()
         let attempts = TrustAttemptRecorder()
+        let attemptDelays = TrustAttemptDelayRecorder()
         let resetError = RorkDeviceError.remoteXPCStreamReset(
             streamIdentifier: 1,
             errorCode: 0x08
         )
 
-        do {
-            try await RemotePairingTrust.establishWithRecovery(
-                progress: progress.record,
-                verificationRetryDelays: [.zero],
-                sleep: { _ in },
-                initialAttempt: { willBeginEnrollment, _ in
-                    attempts.recordInitialAttempt()
-                    willBeginEnrollment()
-                    throw resetError
-                },
-                verificationAttempt: {
-                    attempts.recordVerificationAttempt()
-                }
-            )
-            XCTFail("Expected the uncommitted enrollment to fail.")
-        } catch {
-            XCTAssertEqual(error as? RorkDeviceError, resetError)
-        }
-
-        XCTAssertEqual(attempts.initialAttempts, 1)
-        XCTAssertEqual(attempts.verificationAttempts, 0)
-        XCTAssertEqual(progress.values, [
-            .enrollingIdentity,
-        ])
-    }
-
-    func testRetriesPostEnrollmentVerificationWithoutRepeatingEnrollment()
-        async throws
-    {
-        let progress = TrustProgressRecorder()
-        let attempts = TrustAttemptRecorder()
-        let retryDelays = TrustRetryDelayRecorder()
-
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            verificationRetryDelays: [
+            verificationAttemptDelays: [
                 .zero,
                 .milliseconds(25),
             ],
             sleep: { duration in
-                await retryDelays.record(duration)
+                await attemptDelays.record(duration)
             },
-            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+            initialAttempt: { willBeginEnrollment in
                 attempts.recordInitialAttempt()
                 willBeginEnrollment()
-                didEnrollIdentity()
+                throw resetError
+            },
+            verificationAttempt: {
+                let attempt = attempts.recordVerificationAttempt()
+                if attempt == 1 {
+                    throw RorkDeviceError.remotePairing(.unknownPeer)
+                }
+            }
+        )
+
+        XCTAssertEqual(attempts.initialAttempts, 1)
+        XCTAssertEqual(attempts.verificationAttempts, 2)
+        XCTAssertEqual(progress.values, [
+            .enrollingIdentity,
+            .established,
+        ])
+        let recordedAttemptDelays = await attemptDelays.values
+        XCTAssertEqual(recordedAttemptDelays, [.milliseconds(25)])
+    }
+
+    func testRetriesTransportFailureAfterEnrollmentStartsWithoutRepeatingEnrollment()
+        async throws
+    {
+        let progress = TrustProgressRecorder()
+        let attempts = TrustAttemptRecorder()
+        let attemptDelays = TrustAttemptDelayRecorder()
+
+        try await RemotePairingTrust.establishWithRecovery(
+            progress: progress.record,
+            verificationAttemptDelays: [
+                .zero,
+                .milliseconds(25),
+            ],
+            sleep: { duration in
+                await attemptDelays.record(duration)
+            },
+            initialAttempt: { willBeginEnrollment in
+                attempts.recordInitialAttempt()
+                willBeginEnrollment()
                 throw RorkDeviceError.transport(
-                    "The enrollment stream closed after M6."
+                    "The enrollment stream closed."
                 )
             },
             verificationAttempt: {
@@ -232,11 +237,11 @@ final class RemotePairingTrustTests: XCTestCase {
             .enrollingIdentity,
             .established,
         ])
-        let recordedRetryDelays = await retryDelays.values
-        XCTAssertEqual(recordedRetryDelays, [.milliseconds(25)])
+        let recordedAttemptDelays = await attemptDelays.values
+        XCTAssertEqual(recordedAttemptDelays, [.milliseconds(25)])
     }
 
-    func testDoesNotMaskNonRetryableFailuresAfterIdentityEnrollment()
+    func testDoesNotMaskNonRetryableFailuresAfterEnrollmentStarts()
         async throws
     {
         let attempts = TrustAttemptRecorder()
@@ -247,11 +252,11 @@ final class RemotePairingTrustTests: XCTestCase {
         do {
             try await RemotePairingTrust.establishWithRecovery(
                 progress: { _ in },
-                verificationRetryDelays: [.zero],
+                verificationAttemptDelays: [.zero],
                 sleep: { _ in },
-                initialAttempt: { _, didEnrollIdentity in
+                initialAttempt: { willBeginEnrollment in
                     attempts.recordInitialAttempt()
-                    didEnrollIdentity()
+                    willBeginEnrollment()
                     throw protocolError
                 },
                 verificationAttempt: {
@@ -286,6 +291,7 @@ private func makeTrustIdentity() -> RemotePairingIdentity {
     )
 }
 
+/// Serializes progress callbacks because they may arrive from different tasks.
 private final class TrustProgressRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedValues: [RemotePairingTrust.Progress] = []
@@ -331,8 +337,8 @@ private final class TrustAttemptRecorder: @unchecked Sendable {
 }
 
 /// Records injected verification delays without introducing wall-clock waits.
-private actor TrustRetryDelayRecorder {
-    /// Delays requested by the bounded post-enrollment retry loop.
+private actor TrustAttemptDelayRecorder {
+    /// Delays requested by the bounded post-enrollment attempt loop.
     private var recordedValues: [Duration] = []
 
     /// Snapshot of every requested delay in call order.

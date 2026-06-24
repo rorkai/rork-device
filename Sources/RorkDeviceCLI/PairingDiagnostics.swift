@@ -150,7 +150,7 @@ private func diagnosePairing(
             profile: profile.rawValue,
             succeeded: false,
             phase: phase.rawValue,
-            error: pairingDiagnosticErrorDescription(error)
+            error: diagnosticDescription(of: error)
         )
     }
 }
@@ -234,14 +234,6 @@ private func certificateDiagnostic(
         encoding: encoding,
         sha256: digest
     )
-}
-
-/// Avoids another Foundation NSError bridge when an unexpected error escapes.
-private func pairingDiagnosticErrorDescription(_ error: Error) -> String {
-    if let deviceError = error as? RorkDeviceError {
-        return deviceError.description
-    }
-    return String(reflecting: error)
 }
 
 /// Formats the redacted report for interactive terminal collection.

@@ -1,5 +1,5 @@
 {
-  "originHash" : "0bc874e9366db152a270b0ef633b67692c48ae008cc0c3b3f9bff4a8f5293fc9",
+  "originHash" : "6fb0df6812228929bf60b58ae421524fbd98630e29a8c0d5dacb794a8048049d",
   "pins" : [
     {
       "identity" : "bigint",
@@ -49,10 +49,9 @@
     {
       "identity" : "swift-certificates",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-certificates.git",
+      "location" : "https://github.com/rorkai/swift-certificates.git",
       "state" : {
-        "revision" : "bde8ca32a096825dfce37467137c903418c1893d",
-        "version" : "1.19.1"
+        "revision" : "6cf7f351f4191de64a382a68aee398eb3be1621c"
       }
     },
     {
@@ -67,10 +66,9 @@
     {
       "identity" : "swift-crypto",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-crypto.git",
+      "location" : "https://github.com/rorkai/swift-crypto.git",
       "state" : {
-        "revision" : "1b6b2e274e85105bfa155183145a1dcfd63331f1",
-        "version" : "4.5.0"
+        "revision" : "f171fca4c1718d685c495350fe9136a3fda6f262"
       }
     },
     {

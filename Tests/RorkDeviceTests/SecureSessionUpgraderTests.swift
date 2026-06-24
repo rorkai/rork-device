@@ -283,6 +283,42 @@ final class SecureSessionUpgraderTests: XCTestCase {
         }
     }
 
+    func testNIODeviceConnectionReportsTLSInstallationFailure() async throws {
+        let server = try await SecureSessionTestServer.start()
+        defer { server.stop() }
+
+        let asyncChannel = try await ClientBootstrap(
+            group: NIOTransportRuntime.eventLoopGroup
+        ).connect(
+            host: "127.0.0.1",
+            port: Int(server.port)
+        ) { channel in
+            channel.eventLoop.makeCompletedFuture {
+                try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                    wrappingChannelSynchronously: channel
+                )
+            }
+        }
+        try await asyncChannel.channel.close().get()
+
+        let connection = NIODeviceConnection(asyncChannel: asyncChannel)
+        defer { connection.close() }
+        let configuration = try NIOSecureSessionConfiguration(
+            pairingRecord: makeSecureSessionPairingRecord()
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await connection.startSecureSession(using: configuration)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .secureSession(
+                    "TLS handshake failed: Transport error: Connection closed."
+                )
+            )
+        }
+    }
+
     /// Verifies that callers receive an explicit error for non-NIO transports.
     func testNIOSecureSessionUpgraderRejectsUnsupportedConnection() async throws {
         await XCTAssertThrowsErrorAsync({
