@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.4"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.5"),
 ]
 ```
 
