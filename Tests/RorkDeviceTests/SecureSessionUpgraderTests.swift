@@ -310,10 +310,12 @@ final class SecureSessionUpgraderTests: XCTestCase {
         await XCTAssertThrowsErrorAsync({
             try await connection.startSecureSession(using: configuration)
         }) { error in
-            guard case .secureSession(let description) = error as? RorkDeviceError else {
-                return XCTFail("Expected a secure-session error, received \(error).")
-            }
-            XCTAssertTrue(description.hasPrefix("TLS handshake failed:"))
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .secureSession(
+                    "TLS handshake failed: Transport error: Connection closed."
+                )
+            )
         }
     }
 

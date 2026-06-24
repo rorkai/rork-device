@@ -127,6 +127,9 @@ final class NIODeviceConnection:
                 promise: handshakePromise
             )
             do {
+                guard channel.isActive else {
+                    throw NIODeviceConnection.peerClosedError
+                }
                 let tlsHandler = try NIOSSLClientHandler(
                     context: configuration.context,
                     serverHostname: nil,

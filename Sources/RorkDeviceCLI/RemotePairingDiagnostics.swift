@@ -49,11 +49,7 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
         ).isEmpty else {
             throw ValidationError("--identity cannot be empty.")
         }
-        guard trustTimeout.isFinite, trustTimeout >= 0 else {
-            throw ValidationError(
-                "--trust-timeout must be a nonnegative finite number."
-            )
-        }
+        _ = try lockdownTrustTimeout
         guard maximumTransmissionUnit >= 1_280 else {
             throw ValidationError("--mtu must be at least 1280.")
         }
@@ -76,15 +72,16 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
             from: client,
             matching: udid
         )
+        let pairingTrustTimeout = try lockdownTrustTimeout
 
         do {
-            recorder.record(phase: .lockdownPairing)
-            if refreshLockdownPairing {
+            try await performLockdownPairing(
+                ifRequested: refreshLockdownPairing,
+                recorder: recorder
+            ) {
                 _ = try await client.pair(
                     with: device,
-                    trustTimeout: .milliseconds(
-                        Int64(trustTimeout * 1_000)
-                    )
+                    trustTimeout: pairingTrustTimeout
                 ) { progress in
                     writePairingProgress(progress)
                 }
@@ -163,6 +160,35 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
             asJSON: json
         )
     }
+
+    /// Converts the CLI value only after proving its millisecond representation is safe.
+    private var lockdownTrustTimeout: Duration {
+        get throws {
+            guard trustTimeout.isFinite, trustTimeout >= 0 else {
+                throw ValidationError(
+                    "--trust-timeout must be a nonnegative finite number."
+                )
+            }
+            let milliseconds = trustTimeout * 1_000
+            guard milliseconds < Double(Int64.max) else {
+                throw ValidationError("--trust-timeout is too large.")
+            }
+            return .milliseconds(Int64(milliseconds))
+        }
+    }
+}
+
+/// Couples the diagnostic phase to the optional operation that actually changes trust.
+func performLockdownPairing(
+    ifRequested isRequested: Bool,
+    recorder: RemotePairingDiagnosticRecorder,
+    operation: () async throws -> Void
+) async rethrows {
+    guard isRequested else {
+        return
+    }
+    recorder.record(phase: .lockdownPairing)
+    try await operation()
 }
 
 /// Operator-visible state reached by the diagnostic attempt.

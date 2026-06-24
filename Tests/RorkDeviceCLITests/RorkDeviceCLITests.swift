@@ -701,6 +701,36 @@ final class RorkDeviceCLITests: XCTestCase {
         )
     }
 
+    func testRemotePairingDiagnoseCommandRejectsOverflowingTrustTimeout() {
+        XCTAssertThrowsError(try RemotePairingDiagnoseCommand.parse([
+            "--identity", "selfIdentity.plist",
+            "--trust-timeout", String(Double(Int64.max)),
+        ]))
+    }
+
+    func testRemotePairingDiagnosticSkipsLockdownPairingWithoutRefresh()
+        async
+    {
+        let recorder = RemotePairingDiagnosticRecorder()
+        var didPair = false
+
+        await performLockdownPairing(
+            ifRequested: false,
+            recorder: recorder
+        ) {
+            didPair = true
+        }
+        recorder.record(phase: .lockdownSession)
+        let report = recorder.makeReport(
+            deviceIdentifier: "device-1",
+            identityIdentifier: "identity-1",
+            didRefreshLockdownPairing: false
+        )
+
+        XCTAssertFalse(didPair)
+        XCTAssertEqual(report.reachedPhases, [.lockdownSession])
+    }
+
     func testRemotePairingDiagnosticReportPreservesEnrollmentStreamReset() throws {
         let recorder = RemotePairingDiagnosticRecorder()
         recorder.record(phase: .lockdownPairing)
