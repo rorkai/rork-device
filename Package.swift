@@ -31,14 +31,8 @@ var products: [Product] = [
 // toolchains retain the native package's Swift 6.0 compatibility by resolving
 // the last upstream releases whose manifests support that toolchain.
 #if compiler(>=6.3)
-let swiftNIO: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-nio.git",
-    exact: "2.100.0-rork.1"
-)
-let swiftNIOSSL: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-nio-ssl.git",
-    exact: "2.37.1-rork.1"
-)
+let swiftNIO: Package.Dependency = .package(url: "https://github.com/rorkai/swift-nio.git", exact: "2.100.0-rork.1")
+let swiftNIOSSL: Package.Dependency = .package(url: "https://github.com/rorkai/swift-nio-ssl.git", exact: "2.37.1-rork.1")
 #else
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/apple/swift-nio.git",
@@ -55,14 +49,8 @@ let swiftNIOSSL: Package.Dependency = .package(
 // free of duplicate swift-crypto identities. Earlier toolchains retain upstream
 // requirements and resolve the newest native releases their manifests support.
 #if compiler(>=6.3)
-let swiftCertificates: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-certificates.git",
-    exact: "1.19.1-rork.1"
-)
-let swiftCrypto: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-crypto.git",
-    exact: "4.5.0-rork.1"
-)
+let swiftCertificates: Package.Dependency = .package(url: "https://github.com/rorkai/swift-certificates.git", exact: "1.19.1-rork.1")
+let swiftCrypto: Package.Dependency = .package(url: "https://github.com/rorkai/swift-crypto.git", exact: "4.5.0-rork.1")
 #elseif compiler(>=6.1)
 let swiftCertificates: Package.Dependency = .package(
     url: "https://github.com/apple/swift-certificates.git",
