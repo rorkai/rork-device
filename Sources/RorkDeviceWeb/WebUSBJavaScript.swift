@@ -1,5 +1,39 @@
-#if canImport(JavaScriptKit)
 import Foundation
+
+/// Converts browser diagnostics into stable transport failures.
+///
+/// Chromium does not expose a structured error code for several WebUSB
+/// lifecycle failures. Keeping the exact message matching at this boundary
+/// prevents browser-specific text from leaking into clients.
+func webUSBError(
+    for operation: String,
+    message: String
+) -> WebUSBError {
+    let normalizedOperation = operation.lowercased()
+    let normalizedMessage = message.lowercased()
+
+    if normalizedMessage.contains("device was disconnected")
+        || (normalizedOperation == "open"
+            && normalizedMessage.contains("notfounderror"))
+        || (normalizedOperation == "reset"
+            && normalizedMessage.contains("unable to reset the device"))
+    {
+        return .deviceUnavailable
+    }
+
+    if normalizedOperation == "claiminterface"
+        && normalizedMessage.contains("unable to claim interface")
+    {
+        return .interfaceInUse
+    }
+
+    return .browserOperationFailed(
+        operation: operation,
+        message: message
+    )
+}
+
+#if canImport(JavaScriptKit)
 import JavaScriptEventLoop
 import JavaScriptKit
 
@@ -21,8 +55,8 @@ func invokeJavaScriptMethod(
             arguments: arguments
         )
     } catch let error as JSException {
-        throw WebUSBError.browserOperationFailed(
-            operation: name,
+        throw webUSBError(
+            for: name,
             message: error.description
         )
     }
@@ -44,8 +78,8 @@ func awaitJavaScriptPromise(
     do {
         return try await promise.value()
     } catch {
-        throw WebUSBError.browserOperationFailed(
-            operation: operation,
+        throw webUSBError(
+            for: operation,
             message: error.description
         )
     }

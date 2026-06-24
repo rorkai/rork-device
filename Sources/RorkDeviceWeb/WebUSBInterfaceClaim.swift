@@ -1,9 +1,9 @@
 /// Claims a WebUSB interface, resetting the device once when Chrome retains a
 /// claim from a terminated page.
 ///
-/// Recovery is intentionally limited to `claimInterface` browser failures.
-/// Retrying descriptor, configuration, or transport errors would hide a
-/// different invalid state and could repeat an unsafe operation.
+/// Recovery is intentionally limited to interface-ownership failures. Retrying
+/// descriptor, configuration, or transport errors would hide a different
+/// invalid state and could repeat an unsafe operation.
 @MainActor
 func claimWebUSBInterface(
     using claim: () async throws -> Void,
@@ -12,9 +12,13 @@ func claimWebUSBInterface(
     do {
         try await claim()
     } catch let error as WebUSBError {
-        guard case .browserOperationFailed(let operation, _) = error,
-            operation == "claimInterface"
-        else {
+        switch error {
+        case .interfaceInUse:
+            break
+        case .browserOperationFailed(let operation, _)
+            where operation == "claimInterface":
+            break
+        default:
             throw error
         }
         try await recover()

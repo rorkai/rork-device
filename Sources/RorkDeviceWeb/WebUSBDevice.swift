@@ -7,6 +7,9 @@ import RorkDevice
 ///
 /// This type retains the browser-owned `USBDevice` handle on the main actor.
 /// It does not open the device or claim an interface until `connect()` runs.
+/// The handle is valid only for the device's current physical attachment. Use
+/// `WebUSB.requestDevice()` from a new user activation after a disconnect or
+/// USB ownership change.
 @MainActor
 public final class WebUSBDevice {
     /// Product name reported by the USB device descriptor.
@@ -33,8 +36,9 @@ public final class WebUSBDevice {
     ///
     /// - Returns: Connected device environment ready for pairing or an
     ///   authenticated Lockdown session.
-    /// - Throws: Browser, descriptor, transfer, or direct-usbmux negotiation
-    ///   errors.
+    /// - Throws: `WebUSBError.deviceUnavailable` when this handle is stale,
+    ///   `WebUSBError.interfaceInUse` when another application owns the USB
+    ///   interface, or another descriptor, transfer, or mux negotiation error.
     public func connect() async throws -> WebUSBDeviceConnection {
         if device.opened.boolean != true {
             try await perform("open")

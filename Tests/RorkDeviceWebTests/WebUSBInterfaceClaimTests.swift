@@ -12,10 +12,7 @@ final class WebUSBInterfaceClaimTests: XCTestCase {
             using: {
                 claimAttempts += 1
                 if claimAttempts == 1 {
-                    throw WebUSBError.browserOperationFailed(
-                        operation: "claimInterface",
-                        message: "The interface is still owned by a prior page."
-                    )
+                    throw WebUSBError.interfaceInUse
                 }
             },
             recoveringWith: {

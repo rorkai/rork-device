@@ -76,6 +76,20 @@ public enum WebUSBError:
     /// Device selection or another browser operation was rejected.
     case browserOperationFailed(operation: String, message: String)
 
+    /// The selected device is no longer available through its browser handle.
+    ///
+    /// WebUSB handles represent one physical attachment. Reconnects and USB
+    /// ownership changes require the caller to obtain a current handle.
+    /// `WebUSB.requestDevice()` is the reliable recovery path when the browser
+    /// continues returning an invalidated authorized-device object.
+    case deviceUnavailable
+
+    /// Another application currently owns the device's direct USB interface.
+    ///
+    /// WebUSB cannot share a claimed interface with a native device service.
+    /// The owning application must release the device before retrying.
+    case interfaceInUse
+
     /// The selected device does not expose Apple's direct-usbmux interface.
     case directUSBMuxInterfaceUnavailable
 
@@ -98,6 +112,10 @@ public enum WebUSBError:
             return "WebUSB is not available in this browser environment."
         case .browserOperationFailed(let operation, let message):
             return "\(operation) failed: \(message)"
+        case .deviceUnavailable:
+            return "The selected Apple device is no longer available. Reconnect it, close other device-management apps, and try again."
+        case .interfaceInUse:
+            return "The selected Apple device is in use by another application. Close the other application and try again."
         case .directUSBMuxInterfaceUnavailable:
             return "The selected device does not expose a compatible direct USB interface."
         case .invalidBrowserResponse(let message):
@@ -127,6 +145,11 @@ public enum WebUSB {
     /// any device. Browser authorization is distinct from Lockdown trust: a
     /// returned device can still require `WebUSBDeviceConnection.pair(using:)`
     /// before authenticated services are available.
+    ///
+    /// Browser authorization does not guarantee that a returned handle remains
+    /// usable after another application temporarily owns USB. If `connect()`
+    /// reports `WebUSBError.deviceUnavailable`, obtain a new handle through
+    /// `requestDevice()` from a subsequent user activation.
     ///
     /// - Returns: Attached Apple devices previously granted to this origin.
     /// - Throws: `WebUSBError.unavailable`, a browser operation failure, or a

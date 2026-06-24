@@ -164,13 +164,7 @@ guard WebUSB.isSupported else {
     throw WebUSBError.unavailable
 }
 
-let authorizedDevices = try await WebUSB.authorizedDevices()
-let device: WebUSBDevice
-if let authorizedDevice = authorizedDevices.first {
-    device = authorizedDevice
-} else {
-    device = try await WebUSB.requestDevice()
-}
+let device = try await WebUSB.requestDevice()
 let connection = try await device.connect()
 
 let hostIdentifier = WebUSBHostIdentifier()
@@ -193,14 +187,20 @@ await connection.close()
 
 Persist `hostIdentifier` once for the browser application installation and
 persist each accepted `pairingRecord` for its device. On later visits, decode
-the same `WebUSBHostIdentifier`, discover previously granted devices with
-`authorizedDevices()`, and call `openSession(using:)` with the saved record
-instead of pairing again.
+the same `WebUSBHostIdentifier` and call `openSession(using:)` with the saved
+record instead of pairing again.
 
-Query `authorizedDevices()` while preparing the page and retain its result.
-When no authorized device is available, invoke `requestDevice()` directly from
-the user's click handler without awaiting another operation first; browsers
-require the permission picker to consume that user activation.
+WebUSB and native device services cannot own the iPhone's direct USB interface
+at the same time. An object returned by `authorizedDevices()` can also remain
+invalid after another application temporarily owns that interface. Use
+`authorizedDevices()` only for passive discovery or an automatic first
+attempt. An explicit Connect or Retry action should invoke `requestDevice()`
+directly from its click handler so the browser supplies a current handle.
+Browsers require the permission picker to consume that user activation.
+
+Always call `WebUSBDeviceConnection.close()` when leaving the device workflow.
+The connection releases and resets the interface so the host operating system
+and native usbmux clients can discover the iPhone again.
 
 The embedding web application remains responsible for user activation,
 permission UI, storage, progress presentation, and reconnect policy.
