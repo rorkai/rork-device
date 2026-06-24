@@ -3,47 +3,6 @@ import XCTest
 @testable import RorkDevice
 
 final class DeviceSessionCoreDeviceTests: XCTestCase {
-    func testListsDeveloperApplicationsThroughCoreDevice() async throws {
-        let connection = try coreDeviceAppServiceConnection(responses: [
-            .array([
-                .dictionary([
-                    "bundleIdentifier": .string(
-                        "com.example.developer-app"
-                    ),
-                    "name": .string("Example Developer App"),
-                    "path": .string(
-                        "/private/var/containers/Bundle/Application/UUID/Example Developer App.app"
-                    ),
-                    "isDeveloperApp": .bool(true),
-                    "isFirstParty": .bool(false),
-                    "isInternal": .bool(false),
-                ]),
-            ]),
-        ])
-        let backend = CoreDeviceSessionTestBackend(
-            remoteConnections: [connection]
-        )
-        let session = DeviceSession(backend: backend)
-
-        let applications = try await session.installedApplications(
-            matching: .all
-        )
-
-        XCTAssertEqual(
-            applications.map(\.bundleIdentifier),
-            ["com.example.developer-app"]
-        )
-        XCTAssertEqual(
-            applications.map(\.applicationType),
-            [ApplicationType.user.rawValue]
-        )
-        XCTAssertEqual(
-            backend.startedRemoteServices,
-            [CoreDeviceApplicationService.serviceName]
-        )
-        XCTAssertTrue(backend.startedLockdownServices.isEmpty)
-    }
-
     func testTerminatesDeveloperApplicationByItsBundlePath() async throws {
         let applicationConnection = try coreDeviceAppServiceConnection(
             responses: [
@@ -147,9 +106,6 @@ final class DeviceSessionCoreDeviceTests: XCTestCase {
 
 /// Device-session backend that exposes only direct CoreDevice services.
 private final class CoreDeviceSessionTestBackend: DeviceSessionBackend {
-    /// Signals that typed application listing should use CoreDevice.
-    let usesRemoteServiceDiscovery = true
-
     /// Connections returned in service-open order.
     private var remoteConnections: [DeviceConnection]
 

@@ -230,23 +230,14 @@ public final class DeviceSession {
 
     /// Lists installed applications through the active session backend.
     ///
-    /// Remote Service Discovery sessions use CoreDevice so developer-installed
-    /// apps remain visible on current iOS versions. Lockdown sessions use
-    /// InstallationProxy for compatibility with older devices.
+    /// Both Lockdown and Remote Service Discovery sessions use
+    /// InstallationProxy. RSD-backed sessions open its advertised shim, so app
+    /// inventory remains available when the Developer Disk Image is not
+    /// mounted and CoreDevice's app service is absent.
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Typed application metadata values.
     public func installedApplications(matching type: ApplicationType = .user) async throws -> [InstalledApplication] {
-        if backend.usesRemoteServiceDiscovery {
-            let service = try await openCoreDeviceApplicationService()
-            defer {
-                service.close()
-            }
-            return try await service.applications(matching: type).map(
-                \.installedApplication
-            )
-        }
-
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         return try await client.applications(matching: type)
@@ -305,8 +296,7 @@ public final class DeviceSession {
     /// CoreDevice supplies both the installed bundle path and live process
     /// executable paths. Processes whose executables reside inside the selected
     /// bundle receive `SIGKILL`, matching the behavior expected by in-place app
-    /// updates without relying on InstallationProxy's incomplete developer-app
-    /// browse results.
+    /// updates while resolving both sides of the comparison through one service.
     ///
     /// - Parameter bundleIdentifier: Bundle identifier of the installed app.
     /// - Returns: `true` when at least one matching process was terminated, or

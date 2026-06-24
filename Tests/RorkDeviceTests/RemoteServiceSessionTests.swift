@@ -63,6 +63,57 @@ final class RemoteServiceSessionTests: XCTestCase {
         XCTAssertEqual(request["Request"] as? String, "RSDCheckin")
     }
 
+    func testListsApplicationsThroughShimWhenCoreDeviceAppServiceIsAbsent() async throws {
+        var inbound = try checkinResponses()
+        inbound.append(try PropertyListMessageFramer.encode([
+            "CurrentAmount": 1,
+            "CurrentIndex": 0,
+            "CurrentList": [
+                [
+                    "ApplicationType": "User",
+                    "CFBundleDisplayName": "Example Developer App",
+                    "CFBundleIdentifier": "com.example.developer-app",
+                    "CFBundleShortVersionString": "1.2.3",
+                    "CFBundleVersion": "456",
+                ],
+            ],
+        ]))
+        inbound.append(try PropertyListMessageFramer.encode([
+            "Status": "Complete",
+        ]))
+        let connection = FakeConnection(inbound: inbound)
+        let connections = RemoteServiceConnectionRecorder(connection: connection)
+        let backend = RemoteServiceSessionBackend(
+            host: "fd00::2",
+            directory: RemoteServiceDirectory(
+                deviceIdentifier: "device-1",
+                services: [
+                    "com.apple.mobile.installation_proxy.shim.remote": 51_005,
+                ]
+            ),
+            label: "RorkAppInstaller",
+            openConnection: connections.connect
+        )
+        let session = DeviceSession(backend: backend)
+
+        let applications = try await session.installedApplications(matching: .all)
+
+        XCTAssertEqual(applications.map(\.bundleIdentifier), [
+            "com.example.developer-app",
+        ])
+        XCTAssertEqual(applications.map(\.version), ["1.2.3"])
+        XCTAssertEqual(applications.map(\.buildVersion), ["456"])
+        XCTAssertEqual(connections.endpoints, [
+            RemoteServiceEndpoint(host: "fd00::2", port: 51_005),
+        ])
+        XCTAssertEqual(connection.sent.count, 2)
+        let request = try decodePropertyListFrame(connection.sent[1])
+        XCTAssertEqual(request["Command"] as? String, "Browse")
+        let options = try XCTUnwrap(request["ClientOptions"] as? [String: Any])
+        XCTAssertNil(options["ApplicationType"])
+        XCTAssertEqual(options["ShowLaunchProhibitedApps"] as? Bool, true)
+    }
+
     func testRejectsMissingRemoteService() async throws {
         let directory = RemoteServiceDirectory(
             deviceIdentifier: "device-1",

@@ -108,10 +108,9 @@ public struct DeviceInfo: Equatable, Sendable {
 
 /// Installed application metadata returned by a device service.
 ///
-/// Lockdown sessions populate this value from InstallationProxy, while Remote
-/// Service Discovery sessions use CoreDevice so developer-installed apps are
-/// included. The model provides typed access to common fields while retaining
-/// scalar raw values for diagnostics and custom workflows.
+/// Device sessions populate this value from InstallationProxy. The model
+/// provides typed access to common fields while retaining scalar raw values
+/// for diagnostics and custom workflows.
 public struct InstalledApplication: Equatable, Sendable {
     /// Bundle identifier, such as `com.example.app`.
     public let bundleIdentifier: String?

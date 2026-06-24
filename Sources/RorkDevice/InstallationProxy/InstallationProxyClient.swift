@@ -34,20 +34,75 @@ public final class InstallationProxyClient {
     /// - Parameter type: Application class to request from the device.
     /// - Returns: Raw application dictionaries returned in `CurrentList`.
     public func rawApplications(matching type: ApplicationType = .user) async throws -> [[String: Any]] {
+        var clientOptions: [String: Any] = [:]
+        if type != .all {
+            clientOptions["ApplicationType"] = type.rawValue
+        }
+        if type == .user || type == .all {
+            clientOptions["ShowLaunchProhibitedApps"] = true
+        }
+
         try await PropertyListMessageFramer.send([
             "Command": "Browse",
-            "ClientOptions": [
-                "ApplicationType": type.rawValue,
-            ],
+            "ClientOptions": clientOptions,
         ], to: connection)
-        let response = try await PropertyListMessageFramer.receive(from: connection)
-        if let currentList = response["CurrentList"] as? [[String: Any]] {
-            return currentList
+
+        var applicationsByIndex: [Int: [String: Any]] = [:]
+        var nextIndex = 0
+        while true {
+            let response = try await PropertyListMessageFramer.receive(from: connection)
+            if let errorCode = response.string("Error") {
+                throw RorkDeviceError.installationProxy(
+                    InstallationError(
+                        code: .init(rawValue: errorCode),
+                        message: response.string("ErrorDescription")
+                    )
+                )
+            }
+
+            if let currentList = response["CurrentList"] as? [[String: Any]] {
+                if let currentAmount = response.int("CurrentAmount"),
+                   currentAmount != currentList.count {
+                    throw RorkDeviceError.protocolViolation(
+                        "InstallationProxy Browse response CurrentAmount did not match CurrentList."
+                    )
+                }
+
+                let currentIndex = response.int("CurrentIndex") ?? nextIndex
+                guard currentIndex >= 0 else {
+                    throw RorkDeviceError.protocolViolation(
+                        "InstallationProxy Browse response included a negative CurrentIndex."
+                    )
+                }
+                for (offset, application) in currentList.enumerated() {
+                    let index = currentIndex + offset
+                    guard applicationsByIndex[index] == nil else {
+                        throw RorkDeviceError.protocolViolation(
+                            "InstallationProxy Browse response included overlapping application pages."
+                        )
+                    }
+                    applicationsByIndex[index] = application
+                }
+                nextIndex = max(nextIndex, currentIndex + currentList.count)
+            } else if let currentAmount = response.int("CurrentAmount"),
+                      currentAmount != 0 {
+                throw RorkDeviceError.protocolViolation(
+                    "InstallationProxy Browse response did not include CurrentList."
+                )
+            }
+
+            guard response.string("Status") == InstallationStatus.complete.rawValue else {
+                continue
+            }
+
+            let indexes = applicationsByIndex.keys.sorted()
+            guard indexes == Array(0 ..< applicationsByIndex.count) else {
+                throw RorkDeviceError.protocolViolation(
+                    "InstallationProxy Browse response did not include a contiguous application list."
+                )
+            }
+            return indexes.compactMap { applicationsByIndex[$0] }
         }
-        if let currentAmount = response.int("CurrentAmount"), currentAmount == 0 {
-            return []
-        }
-        throw RorkDeviceError.protocolViolation("InstallationProxy Browse response did not include CurrentList.")
     }
 
     /// Installs a package already staged on the device.

@@ -11,10 +11,9 @@ struct CoreDeviceProcess: Equatable, Sendable {
 
 /// One installed application returned by CoreDevice's app service.
 ///
-/// CoreDevice includes developer-installed applications that InstallationProxy
-/// may omit on recent iOS versions. The bundle path is retained internally so
-/// process-control workflows can associate an executable with its containing
-/// application without guessing the executable name.
+/// The bundle path is retained internally so process-control workflows can
+/// associate an executable with its containing application without guessing
+/// the executable name.
 struct CoreDeviceApplication: Equatable, Sendable {
     /// Stable bundle identifier used by launch and uninstall operations.
     let bundleIdentifier: String
@@ -40,11 +39,10 @@ struct CoreDeviceApplication: Equatable, Sendable {
     /// Whether iOS classifies the application as internal software.
     let isInternal: Bool
 
-    /// Tests whether this application belongs to a public application class.
+    /// Tests whether this application belongs to an InstallationProxy class.
     ///
     /// CoreDevice reports independent first-party and internal flags rather
-    /// than InstallationProxy's `ApplicationType` string. This mapping keeps
-    /// the existing public filter meaningful across both service backends.
+    /// than InstallationProxy's `ApplicationType` string.
     func matches(_ type: ApplicationType) -> Bool {
         switch type {
         case .user:
@@ -58,36 +56,6 @@ struct CoreDeviceApplication: Equatable, Sendable {
         }
     }
 
-    /// Converts CoreDevice metadata into the package's public app model.
-    var installedApplication: InstalledApplication {
-        var values: [String: Any] = [
-            "ApplicationType": applicationType,
-            "CFBundleDisplayName": displayName,
-            "CFBundleIdentifier": bundleIdentifier,
-            "CoreDeviceBundlePath": bundlePath,
-            "CoreDeviceIsDeveloperApp": isDeveloperApplication,
-            "CoreDeviceIsFirstParty": isFirstParty,
-            "CoreDeviceIsInternal": isInternal,
-        ]
-        if let version {
-            values["CFBundleShortVersionString"] = version
-        }
-        if let buildVersion {
-            values["CFBundleVersion"] = buildVersion
-        }
-        return InstalledApplication(values: values)
-    }
-
-    /// InstallationProxy-compatible class name derived from CoreDevice flags.
-    private var applicationType: String {
-        if isInternal {
-            return ApplicationType.internalApplications.rawValue
-        }
-        if isFirstParty {
-            return ApplicationType.system.rawValue
-        }
-        return ApplicationType.user.rawValue
-    }
 }
 
 /// RemoteXPC client for `com.apple.coredevice.appservice`.
@@ -141,9 +109,8 @@ final class CoreDeviceApplicationService {
 
     /// Lists installed applications visible to CoreDevice.
     ///
-    /// All device categories are requested because filtering the response
-    /// locally preserves developer-installed applications and gives
-    /// `ApplicationType` consistent behavior across iOS versions.
+    /// All device categories are requested because process-control workflows
+    /// need to resolve user, system, and internal bundle paths.
     ///
     /// - Parameter type: Public application class to retain.
     /// - Returns: CoreDevice metadata for matching installed applications.
