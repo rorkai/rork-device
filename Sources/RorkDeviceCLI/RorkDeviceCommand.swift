@@ -1242,7 +1242,7 @@ struct Apps: AsyncParsableCommand {
     )
 }
 
-/// Lists installed applications through the selected session backend.
+/// Lists installed applications through InstallationProxy.
 struct AppsList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -1278,8 +1278,7 @@ struct AppsList: AsyncParsableCommand {
 /// Encodes installed applications for machine-readable CLI consumers.
 ///
 /// The JSON representation exposes stable, commonly used bundle metadata
-/// without coupling callers to backend-specific InstallationProxy or
-/// CoreDevice records.
+/// without coupling callers to raw InstallationProxy records.
 func installedApplicationListJSON(
     _ applications: [InstalledApplication]
 ) throws -> Data {

@@ -10,9 +10,6 @@ private typealias BoundRemoteServiceConnectionFactory = (_ port: UInt16) async t
 
 /// Resolves and opens services from a live Remote Service Discovery session.
 final class RemoteServiceSessionBackend: DeviceSessionBackend {
-    /// RSD sessions can open CoreDevice services without Lockdown check-in.
-    let usesRemoteServiceDiscovery = true
-
     /// Service map advertised by the retained discovery session.
     private let directory: RemoteServiceDirectory
 
