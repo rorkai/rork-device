@@ -91,6 +91,10 @@ let bigInt: Package.Dependency = .package(
     url: "https://github.com/attaswift/BigInt.git",
     .upToNextMajor(from: "5.7.0")
 )
+let zipFoundation: Package.Dependency = .package(
+    url: "https://github.com/weichsel/ZIPFoundation.git",
+    exact: "0.9.20"
+)
 
 var dependencies: [Package.Dependency] = [
     swiftArgumentParser,
@@ -99,6 +103,7 @@ var dependencies: [Package.Dependency] = [
     swiftCertificates,
     swiftCrypto,
     bigInt,
+    zipFoundation,
 ]
 
 var targets: [Target] = [
@@ -165,10 +170,19 @@ var targets: [Target] = [
                 package: "swift-crypto",
                 condition: .when(platforms: nativePlatforms)
             ),
+            .product(name: "Crypto", package: "swift-crypto"),
             .product(
-                name: "Crypto",
-                package: "swift-crypto",
-                condition: .when(platforms: [.wasi])
+                name: "ZIPFoundation",
+                package: "ZIPFoundation",
+                condition: .when(platforms: [
+                    .macOS,
+                    .macCatalyst,
+                    .iOS,
+                    .tvOS,
+                    .watchOS,
+                    .visionOS,
+                    .linux,
+                ])
             ),
         ]
     ),
@@ -190,6 +204,7 @@ var targets: [Target] = [
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "CryptoExtras", package: "swift-crypto"),
+            .product(name: "ZIPFoundation", package: "ZIPFoundation"),
         ],
         resources: [
             .process("Fixtures"),

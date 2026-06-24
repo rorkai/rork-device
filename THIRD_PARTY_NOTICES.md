@@ -38,6 +38,12 @@ incorporated works are reproduced in:
 License. The complete license text is reproduced in
 [BigInt-LICENSE.md](ThirdPartyLicenses/BigInt-LICENSE.md).
 
+### ZIPFoundation 0.9.20
+
+[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) is distributed
+under the MIT License. The complete license text is reproduced in
+[ZIPFoundation-LICENSE.txt](ThirdPartyLicenses/ZIPFoundation-LICENSE.txt).
+
 ### BoringSSL
 
 SwiftNIO SSL statically incorporates

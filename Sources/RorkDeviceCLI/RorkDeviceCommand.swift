@@ -15,6 +15,7 @@ struct RorkDeviceCommand: AsyncParsableCommand {
             Info.self,
             PairingCommand.self,
             DeveloperModeCommand.self,
+            ImageCommand.self,
             Apps.self,
             Files.self,
             Install.self,
@@ -721,6 +722,164 @@ struct DeveloperModeReveal: AsyncParsableCommand {
         try await session.revealDeveloperMode()
         print("Developer Mode is available in Settings.")
     }
+}
+
+/// Groups personalized Developer Disk Image operations.
+struct ImageCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "image",
+        abstract: "Mount personalized Developer Disk Images.",
+        subcommands: [
+            ImageMount.self,
+            ImageAuto.self,
+        ]
+    )
+}
+
+/// Mounts an already extracted personalized DDI Restore directory.
+struct ImageMount: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mount",
+        abstract: "Mount a local personalized DDI Restore directory."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Option(
+        name: .customLong("path"),
+        help: "Path to the extracted DDI Restore directory."
+    )
+    var restorePath: String
+
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
+    func validate() throws {
+        try connection.requireLockdownRoute(for: "image mount")
+        guard !restorePath.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            throw ValidationError("--path cannot be empty.")
+        }
+    }
+
+    func run() async throws {
+        let session = try await connection.session()
+        let result = try await session
+            .mountPersonalizedDeveloperDiskImage(
+                from: URL(
+                    fileURLWithPath: restorePath,
+                    isDirectory: true
+                )
+            )
+        try writeDeveloperDiskImageMountResult(
+            result,
+            asJSON: json
+        )
+    }
+}
+
+/// Downloads, authenticates, caches, and mounts a personalized DDI archive.
+struct ImageAuto: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "auto",
+        abstract: "Download and mount an authenticated personalized DDI archive."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Option(help: "HTTPS URL of the personalized DDI ZIP archive.")
+    var archiveURL: String
+
+    @Option(help: "Expected SHA-256 of the ZIP archive.")
+    var sha256: String
+
+    @Option(help: "Override the extracted DDI cache directory.")
+    var cacheDirectory: String?
+
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
+    func validate() throws {
+        try connection.requireLockdownRoute(for: "image auto")
+        _ = try source()
+    }
+
+    func run() async throws {
+        let session = try await connection.session()
+        let store = cacheDirectory.map {
+            DeveloperDiskImageStore(
+                cacheDirectory: URL(
+                    fileURLWithPath: $0,
+                    isDirectory: true
+                )
+            )
+        } ?? DeveloperDiskImageStore()
+        let result = try await session
+            .mountPersonalizedDeveloperDiskImage(
+                from: source(),
+                using: store
+            )
+        try writeDeveloperDiskImageMountResult(
+            result,
+            asJSON: json
+        )
+    }
+
+    private func source() throws -> DeveloperDiskImageSource {
+        guard let url = URL(string: archiveURL) else {
+            throw ValidationError(
+                "--archive-url must be a valid HTTPS URL."
+            )
+        }
+        return try DeveloperDiskImageSource(
+            archiveURL: url,
+            expectedSHA256: sha256
+        )
+    }
+}
+
+/// Encodes the stable machine-readable image-mount result.
+func developerDiskImageMountJSON(
+    _ result: DeveloperDiskImageMountResult
+) throws -> Data {
+    let output = DeveloperDiskImageMountOutput(
+        status: result.status,
+        ticketSource: result.ticketSource,
+        requiresTunnelRestart: result.requiresTunnelRestart
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(output)
+}
+
+/// Writes image-mount output without mixing human text into JSON mode.
+private func writeDeveloperDiskImageMountResult(
+    _ result: DeveloperDiskImageMountResult,
+    asJSON: Bool
+) throws {
+    if asJSON {
+        try FileHandle.standardOutput.write(
+            contentsOf: developerDiskImageMountJSON(result)
+        )
+        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        return
+    }
+    switch result.status {
+    case .alreadyMounted:
+        print("Personalized Developer Disk Image is already mounted.")
+    case .mounted:
+        print(
+            "Personalized Developer Disk Image mounted. Recreate any existing CoreDevice tunnel before using developer services."
+        )
+    }
+}
+
+/// Stable JSON shape emitted by `image mount` and `image auto`.
+private struct DeveloperDiskImageMountOutput: Encodable {
+    let status: DeveloperDiskImageMountResult.Status
+    let ticketSource: DeveloperDiskImageMountResult.TicketSource?
+    let requiresTunnelRestart: Bool
 }
 
 /// Parent command for remote-pairing identity operations.

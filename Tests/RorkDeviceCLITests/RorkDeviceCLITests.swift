@@ -16,8 +16,76 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("profiles"))
         XCTAssertTrue(help.contains("pairing"))
         XCTAssertTrue(help.contains("developer-mode"))
+        XCTAssertTrue(help.contains("image"))
         XCTAssertTrue(help.contains("remote-pairing"))
         XCTAssertTrue(help.contains("tunnel"))
+    }
+
+    func testImageMountCommandParsesRestorePath() throws {
+        let command = try ImageMount.parse([
+            "--pairing-record", "pairing.plist",
+            "--path", "/tmp/DDI/Restore",
+            "--json",
+        ])
+
+        XCTAssertEqual(
+            command.connection.pairingRecord,
+            "pairing.plist"
+        )
+        XCTAssertEqual(command.restorePath, "/tmp/DDI/Restore")
+        XCTAssertTrue(command.json)
+    }
+
+    func testImageAutoCommandParsesAuthenticatedSource() throws {
+        let command = try ImageAuto.parse([
+            "--pairing-record", "pairing.plist",
+            "--archive-url", "https://example.com/ddi.zip",
+            "--sha256", String(repeating: "a", count: 64),
+            "--cache-directory", "/tmp/ddi-cache",
+            "--json",
+        ])
+
+        XCTAssertEqual(
+            command.archiveURL,
+            "https://example.com/ddi.zip"
+        )
+        XCTAssertEqual(
+            command.sha256,
+            String(repeating: "a", count: 64)
+        )
+        XCTAssertEqual(command.cacheDirectory, "/tmp/ddi-cache")
+        XCTAssertTrue(command.json)
+    }
+
+    func testImageAutoCommandRejectsInsecureSource() {
+        XCTAssertThrowsError(try ImageAuto.parse([
+            "--pairing-record", "pairing.plist",
+            "--archive-url", "http://example.com/ddi.zip",
+            "--sha256", String(repeating: "a", count: 64),
+        ]))
+    }
+
+    func testDeveloperDiskImageMountJSONIncludesTunnelRestart() throws {
+        let data = try developerDiskImageMountJSON(
+            DeveloperDiskImageMountResult(
+                status: .mounted,
+                ticketSource: .appleTSS
+            )
+        )
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        )
+
+        XCTAssertEqual(output["status"] as? String, "mounted")
+        XCTAssertEqual(
+            output["ticketSource"] as? String,
+            "appleTSS"
+        )
+        XCTAssertEqual(
+            output["requiresTunnelRestart"] as? Bool,
+            true
+        )
     }
 
     func testInstallCommandParsesArguments() throws {
