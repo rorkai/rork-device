@@ -1,5 +1,5 @@
 {
-  "originHash" : "575fd050540067d03500f0864753ce16dd50c0039f68dd0e70ef80da9ec80e35",
+  "originHash" : "d822b4fe7722972676d875bf089b93f9d8f9cf70d6612b4cbbb769fdb891511b",
   "pins" : [
     {
       "identity" : "bigint",
@@ -110,12 +110,11 @@
       }
     },
     {
-      "identity" : "zipfoundation",
+      "identity" : "swift-zip-archive",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "location" : "https://github.com/rorkai/swift-zip-archive.git",
       "state" : {
-        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
-        "version" : "0.9.20"
+        "revision" : "a611fb98910fc3b933b03c57b19a379af7efe7cf"
       }
     }
   ],

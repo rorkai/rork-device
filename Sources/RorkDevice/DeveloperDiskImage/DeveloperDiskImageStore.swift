@@ -5,8 +5,8 @@ import Foundation
 import FoundationNetworking
 #endif
 
-#if canImport(ZIPFoundation)
-import ZIPFoundation
+#if canImport(ZipArchive)
+import ZipArchive
 #endif
 
 /// Remote archive containing an iOS 17+ personalized DDI Restore directory.
@@ -116,9 +116,15 @@ public struct DeveloperDiskImageStore: Sendable {
     public init(
         cacheDirectory: URL = DeveloperDiskImageStore.defaultCacheDirectory
     ) {
+        let downloader: any DeveloperDiskImageArchiveDownloading
+        #if canImport(FoundationNetworking) || canImport(Darwin)
+        downloader = URLSessionDeveloperDiskImageArchiveDownloader()
+        #else
+        downloader = UnavailableDeveloperDiskImageArchiveDownloader()
+        #endif
         self.init(
             cacheDirectory: cacheDirectory,
-            downloader: URLSessionDeveloperDiskImageArchiveDownloader(),
+            downloader: downloader,
             limits: .standard
         )
     }
@@ -146,7 +152,7 @@ public struct DeveloperDiskImageStore: Sendable {
     public func prepareRestoreDirectory(
         from source: DeveloperDiskImageSource
     ) async throws -> URL {
-#if canImport(ZIPFoundation)
+#if canImport(ZipArchive)
         let finalDirectory = cacheDirectory.appendingPathComponent(
             source.expectedSHA256,
             isDirectory: true
@@ -233,7 +239,6 @@ public struct DeveloperDiskImageStore: Sendable {
             )
         }
 
-        try validateArchive(at: archiveURL, limits: limits)
         let extractedDirectory = operationDirectory.appendingPathComponent(
             "extracted",
             isDirectory: true
@@ -243,19 +248,16 @@ public struct DeveloperDiskImageStore: Sendable {
                 at: extractedDirectory,
                 withIntermediateDirectories: true
             )
-            try FileManager.default.unzipItem(
-                at: archiveURL,
-                to: extractedDirectory,
-                skipCRC32: false,
-                allowUncontainedSymlinks: false
-            )
-        } catch let error as RorkDeviceError {
-            throw error
         } catch {
             throw RorkDeviceError.invalidInput(
-                "Could not extract Developer Disk Image archive: \(error.localizedDescription)"
+                "Could not prepare Developer Disk Image extraction: \(error.localizedDescription)"
             )
         }
+        try extractArchive(
+            at: archiveURL,
+            to: extractedDirectory,
+            limits: limits
+        )
 
         let extractedRestoreDirectory = try restoreDirectory(
             in: extractedDirectory
@@ -304,6 +306,7 @@ public struct DeveloperDiskImageStore: Sendable {
 }
 
 /// URLSession downloader that preserves default certificate validation.
+#if canImport(FoundationNetworking) || canImport(Darwin)
 private struct URLSessionDeveloperDiskImageArchiveDownloader:
     DeveloperDiskImageArchiveDownloading
 {
@@ -413,6 +416,22 @@ private final class DeveloperDiskImageDownloadDelegate:
         didFinishDownloadingTo _: URL
     ) {}
 }
+#else
+/// Reports that this platform has no authenticated HTTP client implementation.
+private struct UnavailableDeveloperDiskImageArchiveDownloader:
+    DeveloperDiskImageArchiveDownloading
+{
+    func download(
+        from _: URL,
+        to _: URL,
+        maximumByteCount _: UInt64
+    ) async throws -> DeveloperDiskImageArchiveHTTPResponse {
+        throw RorkDeviceError.transport(
+            "Developer Disk Image archive downloads are unavailable on this platform."
+        )
+    }
+}
+#endif
 
 /// Returns a lowercase streaming SHA-256 for a file.
 func sha256HexDigest(of fileURL: URL) throws -> String {
@@ -448,88 +467,73 @@ private func fileSize(at fileURL: URL) throws -> UInt64 {
     return UInt64(size)
 }
 
-#if canImport(ZIPFoundation)
-/// Rejects unsafe or resource-exhausting ZIP metadata before extraction.
-private func validateArchive(
+#if canImport(ZipArchive)
+/// Extracts one authenticated archive using DDI-specific safety policies.
+private func extractArchive(
     at archiveURL: URL,
+    to extractedDirectory: URL,
     limits: DeveloperDiskImageArchiveLimits
 ) throws {
-    let archive: Archive
+    let options = ZipArchiveExtractionOptions(
+        symbolicLinkPolicy: .reject,
+        limits: .init(
+            maximumEntryCount: limits.maximumEntryCount,
+            maximumTotalUncompressedSize: Int64(
+                clamping: limits.maximumExpandedSize
+            )
+        )
+    )
     do {
-        archive = try Archive(url: archiveURL, accessMode: .read)
+        try ZipArchiveReader.withFile(archiveURL.path) { reader in
+            try reader.extract(
+                to: .init(extractedDirectory.path),
+                options: options
+            )
+        }
+    } catch let error as ZipArchiveReaderError {
+        throw developerDiskImageArchiveError(
+            for: error,
+            limits: limits
+        )
     } catch {
         throw RorkDeviceError.invalidInput(
-            "Could not read Developer Disk Image archive: \(error.localizedDescription)"
-        )
-    }
-
-    var entryCount = 0
-    var expandedSize: UInt64 = 0
-    var paths: Set<String> = []
-    for entry in archive {
-        entryCount += 1
-        guard entryCount <= limits.maximumEntryCount else {
-            throw RorkDeviceError.invalidInput(
-                "Developer Disk Image archive contains more than \(limits.maximumEntryCount) entries."
-            )
-        }
-        guard entry.type != .symlink else {
-            throw RorkDeviceError.invalidInput(
-                "Developer Disk Image archive contains symbolic links."
-            )
-        }
-        guard let canonicalPath = canonicalArchivePath(entry.path),
-            paths.insert(canonicalPath).inserted
-        else {
-            throw RorkDeviceError.invalidInput(
-                "Developer Disk Image archive contains an unsafe or duplicate path."
-            )
-        }
-        let (newSize, overflowed) = expandedSize.addingReportingOverflow(
-            entry.uncompressedSize
-        )
-        guard !overflowed,
-            newSize <= limits.maximumExpandedSize
-        else {
-            throw RorkDeviceError.invalidInput(
-                "Developer Disk Image archive expands beyond the \(limits.maximumExpandedSize)-byte limit."
-            )
-        }
-        expandedSize = newSize
-    }
-    guard entryCount > 0 else {
-        throw RorkDeviceError.invalidInput(
-            "Developer Disk Image archive is empty."
+            "Could not extract Developer Disk Image archive: \(error.localizedDescription)"
         )
     }
 }
 
-/// Canonicalizes safe ZIP paths so filesystem-equivalent entries deduplicate.
-private func canonicalArchivePath(_ path: String) -> String? {
-    guard !path.isEmpty,
-        !path.hasPrefix("/"),
-        !path.contains("\\")
-    else {
-        return nil
+/// Maps backend-specific safety failures to store-level diagnostics.
+private func developerDiskImageArchiveError(
+    for error: ZipArchiveReaderError,
+    limits: DeveloperDiskImageArchiveLimits
+) -> RorkDeviceError {
+    if error == .entryCountLimitExceeded {
+        return .invalidInput(
+            "Developer Disk Image archive contains more than \(limits.maximumEntryCount) entries."
+        )
     }
-
-    var canonicalComponents: [Substring] = []
-    for component in path.split(
-        separator: "/",
-        omittingEmptySubsequences: false
-    ) {
-        if component.isEmpty || component == "." {
-            continue
-        }
-        guard component != ".." else {
-            return nil
-        }
-        canonicalComponents.append(component)
+    if error == .totalUncompressedSizeLimitExceeded {
+        return .invalidInput(
+            "Developer Disk Image archive expands beyond the \(limits.maximumExpandedSize)-byte limit."
+        )
     }
-    guard !canonicalComponents.isEmpty else {
-        return nil
+    if error == .symbolicLinkNotAllowed {
+        return .invalidInput(
+            "Developer Disk Image archive contains symbolic links."
+        )
     }
-    return canonicalComponents.joined(separator: "/")
+    if error == .unsafeExtractionPath
+        || error == .duplicateExtractionPath
+        || error == .conflictingExtractionPath
+        || error == .unsafeDestinationPath
+    {
+        return .invalidInput(
+            "Developer Disk Image archive contains an unsafe or duplicate path."
+        )
+    }
+    return .invalidInput(
+        "Could not extract Developer Disk Image archive: \(error.localizedDescription)"
+    )
 }
 
 /// Finds exactly one complete `Restore` directory in a common ZIP layout.

@@ -16,6 +16,21 @@ let nativePlatforms: [Platform] = [
     .openbsd,
 ]
 
+var zipArchivePlatforms: [Platform] = [
+    .macOS,
+    .macCatalyst,
+    .iOS,
+    .tvOS,
+    .watchOS,
+    .visionOS,
+    .linux,
+    .windows,
+    .android,
+]
+#if compiler(>=6.3)
+zipArchivePlatforms.append(.wasi)
+#endif
+
 var products: [Product] = [
     .library(
         name: "RorkDevice",
@@ -91,9 +106,9 @@ let bigInt: Package.Dependency = .package(
     url: "https://github.com/attaswift/BigInt.git",
     .upToNextMajor(from: "5.7.0")
 )
-let zipFoundation: Package.Dependency = .package(
-    url: "https://github.com/weichsel/ZIPFoundation.git",
-    exact: "0.9.20"
+let swiftZipArchive: Package.Dependency = .package(
+    url: "https://github.com/rorkai/swift-zip-archive.git",
+    revision: "a611fb98910fc3b933b03c57b19a379af7efe7cf"
 )
 
 var dependencies: [Package.Dependency] = [
@@ -103,7 +118,7 @@ var dependencies: [Package.Dependency] = [
     swiftCertificates,
     swiftCrypto,
     bigInt,
-    zipFoundation,
+    swiftZipArchive,
 ]
 
 var targets: [Target] = [
@@ -172,17 +187,9 @@ var targets: [Target] = [
             ),
             .product(name: "Crypto", package: "swift-crypto"),
             .product(
-                name: "ZIPFoundation",
-                package: "ZIPFoundation",
-                condition: .when(platforms: [
-                    .macOS,
-                    .macCatalyst,
-                    .iOS,
-                    .tvOS,
-                    .watchOS,
-                    .visionOS,
-                    .linux,
-                ])
+                name: "ZipArchive",
+                package: "swift-zip-archive",
+                condition: .when(platforms: zipArchivePlatforms)
             ),
         ]
     ),
@@ -204,7 +211,7 @@ var targets: [Target] = [
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "CryptoExtras", package: "swift-crypto"),
-            .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            .product(name: "ZipArchive", package: "swift-zip-archive"),
         ],
         resources: [
             .process("Fixtures"),

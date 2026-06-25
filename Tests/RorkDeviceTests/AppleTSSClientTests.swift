@@ -166,14 +166,14 @@ final class AppleTSSClientTests: XCTestCase {
 
         XCTAssertEqual(result, ticket)
         let request = try XCTUnwrap(transport.request)
-        XCTAssertEqual(request.url?.scheme, "https")
-        XCTAssertEqual(request.url?.host, "gs.apple.com")
-        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url.scheme, "https")
+        XCTAssertEqual(request.url.host, "gs.apple.com")
+        XCTAssertEqual(request.method, "POST")
         XCTAssertEqual(
-            request.value(forHTTPHeaderField: "Content-Type"),
+            request.headers["Content-Type"],
             "text/xml; charset=utf-8"
         )
-        XCTAssertNotNil(request.httpBody)
+        XCTAssertFalse(request.body.isEmpty)
     }
 
     func testClientRejectsNonSuccessfulHTTPStatus() async throws {
@@ -222,13 +222,15 @@ private final class RecordingTSSHTTPTransport:
     @unchecked Sendable
 {
     private let response: TSSHTTPResponse
-    private(set) var request: URLRequest?
+    private(set) var request: TSSHTTPRequest?
 
     init(response: TSSHTTPResponse) {
         self.response = response
     }
 
-    func response(for request: URLRequest) async throws -> TSSHTTPResponse {
+    func response(
+        for request: TSSHTTPRequest
+    ) async throws -> TSSHTTPResponse {
         self.request = request
         return response
     }

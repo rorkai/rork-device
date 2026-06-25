@@ -4,6 +4,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
+#if canImport(FoundationNetworking) || canImport(Darwin)
 /// Prevents URLSession requests from following redirects to plaintext HTTP.
 ///
 /// Initial request URLs are validated by their callers. Centralizing redirect
@@ -35,3 +36,4 @@ class HTTPSOnlyURLSessionDelegate:
         completionHandler(Self.approvedRedirectRequest(request))
     }
 }
+#endif

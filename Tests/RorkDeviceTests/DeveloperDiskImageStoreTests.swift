@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 import XCTest
-import ZIPFoundation
+import ZipArchive
 
 @testable import RorkDevice
 
@@ -148,19 +148,10 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
     }
 
     func testPrepareRestoreDirectoryRejectsSymbolicLinks() async throws {
-        let fixture = try makeImageFixture(
-            boardID: "0x0C",
-            chipID: "0x8150",
-            securityDomain: "0x01"
+        let archive = try makeSymbolicLinkArchive(
+            path: "Restore/image-link",
+            target: "DeveloperDiskImage.dmg"
         )
-        defer { fixture.remove() }
-        try FileManager.default.createSymbolicLink(
-            at: fixture.restoreDirectory.appendingPathComponent("image-link"),
-            withDestinationURL: fixture.restoreDirectory.appendingPathComponent(
-                "DeveloperDiskImage.dmg"
-            )
-        )
-        let archive = try makeArchive(containing: fixture.restoreDirectory)
         defer { archive.remove() }
         let cacheDirectory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: cacheDirectory) }
@@ -271,6 +262,45 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
         }
     }
 
+    func testPrepareRestoreDirectoryRejectsFileDirectoryPathConflicts()
+        async throws
+    {
+        let archive = try makeArchive(entries: [
+            ("Restore", Data("file".utf8)),
+            (
+                "Restore/BuildManifest.plist",
+                Data("manifest".utf8)
+            ),
+        ])
+        defer { archive.remove() }
+        let cacheDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: cacheDirectory)
+        }
+        let downloader = RecordingDeveloperDiskImageArchiveDownloader(
+            archiveURL: archive.url
+        )
+        let source = try DeveloperDiskImageSource(
+            archiveURL: URL(string: "https://example.com/ddi.zip")!,
+            expectedSHA256: try sha256HexDigest(of: archive.url)
+        )
+        let store = DeveloperDiskImageStore(
+            cacheDirectory: cacheDirectory,
+            downloader: downloader
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await store.prepareRestoreDirectory(from: source)
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "Developer Disk Image archive contains an unsafe or duplicate path."
+                )
+            )
+        }
+    }
+
     func testHTTPSRedirectPolicyRequiresHTTPS() {
         let secureRequest = URLRequest(
             url: URL(string: "https://cdn.example.com/ddi.zip")!
@@ -342,12 +372,12 @@ private func makeArchive(
         withIntermediateDirectories: true
     )
     let archiveURL = directory.appendingPathComponent("ddi.zip")
-    try FileManager.default.zipItem(
-        at: restoreDirectory,
-        to: archiveURL,
-        shouldKeepParent: true,
-        compressionMethod: .deflate
+    let writer = ZipArchiveWriter()
+    try writer.writeFolderContents(
+        .init(restoreDirectory.path),
+        options: [.recursive, .includeContainingFolder]
     )
+    try Data(writer.finalizeBuffer()).write(to: archiveURL)
     return DeveloperDiskImageArchiveFixture(
         directory: directory,
         url: archiveURL
@@ -363,27 +393,111 @@ private func makeArchive(
         withIntermediateDirectories: true
     )
     let archiveURL = directory.appendingPathComponent("ddi.zip")
-    let archive = try Archive(url: archiveURL, accessMode: .create)
+    let writer = ZipArchiveWriter()
+    var pathReplacements: [(safe: String, requested: String)] = []
+    let requestedPaths = entries.map { $0.path }
     for entry in entries {
-        try archive.addEntry(
-            with: entry.path,
-            type: .file,
-            uncompressedSize: Int64(entry.data.count)
-        ) { position, size in
-            let lowerBound = Int(position)
-            let upperBound = min(
-                lowerBound + size,
-                entry.data.count
-            )
-            return entry.data.subdata(
-                in: lowerBound ..< upperBound
-            )
+        let safePath = safeArchiveFixturePath(
+            for: entry.path,
+            among: requestedPaths
+        )
+        try writer.writeFile(
+            filename: safePath,
+            contents: Array(entry.data)
+        )
+        if safePath != entry.path {
+            pathReplacements.append((safePath, entry.path))
         }
     }
+    var archiveData = Data(try writer.finalizeBuffer())
+    for replacement in pathReplacements {
+        try replaceArchiveFixturePath(
+            replacement.safe,
+            with: replacement.requested,
+            in: &archiveData
+        )
+    }
+    try archiveData.write(to: archiveURL)
     return DeveloperDiskImageArchiveFixture(
         directory: directory,
         url: archiveURL
     )
+}
+
+private func makeSymbolicLinkArchive(
+    path: String,
+    target: String
+) throws -> DeveloperDiskImageArchiveFixture {
+    let directory = temporaryDirectory()
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    let archiveURL = directory.appendingPathComponent("ddi.zip")
+    let writer = ZipArchiveWriter()
+    try writer.writeFile(
+        filename: path,
+        contents: Array(target.utf8),
+        metadata: .init(
+            externalAttributes: .unix([
+                .isSymbolicLink,
+                .permissions([.ownerReadWrite]),
+            ])
+        )
+    )
+    try Data(writer.finalizeBuffer()).write(to: archiveURL)
+    return DeveloperDiskImageArchiveFixture(
+        directory: directory,
+        url: archiveURL
+    )
+}
+
+/// Produces a valid placeholder with the same byte count as a malformed path.
+private func safeArchiveFixturePath(
+    for requestedPath: String,
+    among requestedPaths: [String]
+) -> String {
+    if requestedPath.contains("/./") {
+        return requestedPath.replacingOccurrences(of: "/./", with: "/x/")
+    }
+    if requestedPath.contains("//") {
+        return requestedPath.replacingOccurrences(of: "//", with: "/x")
+    }
+    if requestedPaths.contains(where: {
+        $0.hasPrefix("\(requestedPath)/")
+    }) {
+        return "\(requestedPath.dropLast())_"
+    }
+    return requestedPath
+}
+
+/// Mutates both ZIP filename records because the writer rejects unsafe paths.
+private func replaceArchiveFixturePath(
+    _ safePath: String,
+    with requestedPath: String,
+    in archiveData: inout Data
+) throws {
+    let safeBytes = Data(safePath.utf8)
+    let requestedBytes = Data(requestedPath.utf8)
+    guard safeBytes.count == requestedBytes.count else {
+        throw CocoaError(.fileWriteInvalidFileName)
+    }
+
+    var replacementCount = 0
+    var searchStart = archiveData.startIndex
+    while searchStart < archiveData.endIndex,
+        let range = archiveData.range(
+            of: safeBytes,
+            in: searchStart ..< archiveData.endIndex
+        )
+    {
+        archiveData.replaceSubrange(range, with: requestedBytes)
+        replacementCount += 1
+        searchStart = range.upperBound
+    }
+    guard replacementCount >= 2 else {
+        throw CocoaError(.fileReadCorruptFile)
+    }
 }
 
 private func temporaryDirectory() -> URL {

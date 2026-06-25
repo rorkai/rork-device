@@ -13,10 +13,25 @@ struct TSSHTTPResponse: Sendable {
     let body: Data
 }
 
+/// Platform-neutral request passed to the Apple TSS HTTP boundary.
+struct TSSHTTPRequest: Sendable {
+    /// HTTPS endpoint that receives the signing request.
+    let url: URL
+
+    /// HTTP method used for the request.
+    let method: String
+
+    /// Request headers required by Apple TSS.
+    let headers: [String: String]
+
+    /// XML property-list request body.
+    let body: Data
+}
+
 /// Minimal HTTP boundary for Apple's TSS request.
 protocol TSSHTTPTransport: Sendable {
     /// Sends one prepared TSS request through an authenticated HTTP transport.
-    func response(for request: URLRequest) async throws -> TSSHTTPResponse
+    func response(for request: TSSHTTPRequest) async throws -> TSSHTTPResponse
 }
 
 /// Ticket boundary used by the image-mounting workflow.
@@ -31,9 +46,16 @@ protocol DeveloperDiskImageTicketRequesting: Sendable {
 }
 
 /// URLSession transport that retains the platform's default certificate checks.
+#if canImport(FoundationNetworking) || canImport(Darwin)
 private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
     /// Sends a request through a short-lived, HTTPS-only ephemeral session.
-    func response(for request: URLRequest) async throws -> TSSHTTPResponse {
+    func response(for request: TSSHTTPRequest) async throws -> TSSHTTPResponse {
+        var urlRequest = URLRequest(url: request.url)
+        urlRequest.httpMethod = request.method
+        urlRequest.httpBody = request.body
+        for (name, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60
@@ -45,7 +67,7 @@ private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
         defer {
             session.finishTasksAndInvalidate()
         }
-        let (body, response) = try await session.data(for: request)
+        let (body, response) = try await session.data(for: urlRequest)
         guard let response = response as? HTTPURLResponse else {
             throw RorkDeviceError.transport(
                 "Apple TSS did not return an HTTP response."
@@ -57,6 +79,16 @@ private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
         )
     }
 }
+#else
+/// Reports that this platform has no authenticated HTTP client implementation.
+private struct UnavailableTSSHTTPTransport: TSSHTTPTransport {
+    func response(for _: TSSHTTPRequest) async throws -> TSSHTTPResponse {
+        throw RorkDeviceError.transport(
+            "Apple TSS HTTP transport is unavailable on this platform."
+        )
+    }
+}
+#endif
 
 /// Builds the property list accepted by Apple's TSS endpoint.
 struct AppleTSSRequest {
@@ -211,8 +243,17 @@ struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
     /// HTTP transport retained for dependency injection and strict TLS tests.
     private let transport: any TSSHTTPTransport
 
-    /// Creates a ticket client with the supplied authenticated HTTP transport.
-    init(transport: any TSSHTTPTransport = URLSessionTSSHTTPTransport()) {
+    /// Creates a ticket client using the current platform's HTTP transport.
+    init() {
+        #if canImport(FoundationNetworking) || canImport(Darwin)
+        transport = URLSessionTSSHTTPTransport()
+        #else
+        transport = UnavailableTSSHTTPTransport()
+        #endif
+    }
+
+    /// Creates a ticket client with an injected HTTP transport.
+    init(transport: any TSSHTTPTransport) {
         self.transport = transport
     }
 
@@ -234,20 +275,15 @@ struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
             ecid: ecid
         ).propertyList
         let body = try PropertyListCodec.encode(propertyList)
-        var request = URLRequest(url: Self.endpoint)
-        request.httpMethod = "POST"
-        request.httpBody = body
-        request.setValue(
-            "no-cache",
-            forHTTPHeaderField: "Cache-Control"
-        )
-        request.setValue(
-            "text/xml; charset=utf-8",
-            forHTTPHeaderField: "Content-Type"
-        )
-        request.setValue(
-            "InetURL/1.0",
-            forHTTPHeaderField: "User-Agent"
+        let request = TSSHTTPRequest(
+            url: Self.endpoint,
+            method: "POST",
+            headers: [
+                "Cache-Control": "no-cache",
+                "Content-Type": "text/xml; charset=utf-8",
+                "User-Agent": "InetURL/1.0",
+            ],
+            body: body
         )
 
         let response: TSSHTTPResponse

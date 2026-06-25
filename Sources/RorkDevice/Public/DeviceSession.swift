@@ -13,6 +13,11 @@ import Foundation
 /// retain a session for a complete install workflow without managing individual
 /// service ports or protocol handshakes.
 public final class DeviceSession {
+    /// Kept outside `LockdownServiceName` because new public enum cases break
+    /// exhaustive switches in existing clients.
+    private static let personalizedDeveloperDiskImageServiceName =
+        "com.apple.mobile.mobile_image_mounter"
+
     /// Backend that resolves and opens services for this session's transport.
     private let backend: DeviceSessionBackend
 
@@ -202,7 +207,9 @@ public final class DeviceSession {
     ) async throws -> DeveloperDiskImageMountResult {
         return try await PersonalizedDeveloperDiskImageMounter(
             openConnection: {
-                try await self.startService(.mobileImageMounter)
+                try await self.startService(
+                    named: Self.personalizedDeveloperDiskImageServiceName
+                )
             },
             ticketRequester: AppleTSSClient()
         ).mount(image, ecid: ecid)
@@ -639,9 +646,6 @@ public enum LockdownServiceName: String, Sendable {
 
     /// InstallationProxy, used to browse, install, and uninstall applications.
     case installationProxy = "com.apple.mobile.installation_proxy"
-
-    /// MobileImageMounter, used to upload and mount Developer Disk Images.
-    case mobileImageMounter = "com.apple.mobile.mobile_image_mounter"
 
     /// MISAgent, used to install and remove provisioning profiles.
     case misagent = "com.apple.misagent"
