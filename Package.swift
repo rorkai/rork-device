@@ -9,27 +9,11 @@ let nativePlatforms: [Platform] = [
     .tvOS,
     .watchOS,
     .visionOS,
-    .driverKit,
     .linux,
     .windows,
     .android,
     .openbsd,
 ]
-
-var zipArchivePlatforms: [Platform] = [
-    .macOS,
-    .macCatalyst,
-    .iOS,
-    .tvOS,
-    .watchOS,
-    .visionOS,
-    .linux,
-    .windows,
-    .android,
-]
-#if compiler(>=6.3)
-zipArchivePlatforms.append(.wasi)
-#endif
 
 var products: [Product] = [
     .library(
@@ -108,7 +92,7 @@ let bigInt: Package.Dependency = .package(
 )
 let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
-    revision: "a611fb98910fc3b933b03c57b19a379af7efe7cf"
+    revision: "7c9b3255e92428cd8cdcfd817fea4d08271e4844"
 )
 
 var dependencies: [Package.Dependency] = [
@@ -186,11 +170,7 @@ var targets: [Target] = [
                 condition: .when(platforms: nativePlatforms)
             ),
             .product(name: "Crypto", package: "swift-crypto"),
-            .product(
-                name: "ZipArchive",
-                package: "swift-zip-archive",
-                condition: .when(platforms: zipArchivePlatforms)
-            ),
+            .product(name: "ZipArchive", package: "swift-zip-archive"),
         ]
     ),
     .executableTarget(
@@ -211,11 +191,7 @@ var targets: [Target] = [
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "CryptoExtras", package: "swift-crypto"),
-            .product(
-                name: "ZipArchive",
-                package: "swift-zip-archive",
-                condition: .when(platforms: zipArchivePlatforms)
-            ),
+            .product(name: "ZipArchive", package: "swift-zip-archive"),
         ],
         resources: [
             .process("Fixtures"),

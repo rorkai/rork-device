@@ -1,8 +1,6 @@
 import Crypto
 import Foundation
 import XCTest
-
-#if canImport(ZipArchive)
 import ZipArchive
 
 @testable import RorkDevice
@@ -508,4 +506,3 @@ private func temporaryDirectory() -> URL {
         isDirectory: true
     )
 }
-#endif

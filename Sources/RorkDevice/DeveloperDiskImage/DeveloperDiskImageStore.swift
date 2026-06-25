@@ -5,9 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-#if canImport(ZipArchive)
 import ZipArchive
-#endif
 
 /// Remote archive containing an iOS 17+ personalized DDI Restore directory.
 public struct DeveloperDiskImageSource: Equatable, Sendable {
@@ -152,7 +150,6 @@ public struct DeveloperDiskImageStore: Sendable {
     public func prepareRestoreDirectory(
         from source: DeveloperDiskImageSource
     ) async throws -> URL {
-#if canImport(ZipArchive)
         let finalDirectory = cacheDirectory.appendingPathComponent(
             source.expectedSHA256,
             isDirectory: true
@@ -297,11 +294,6 @@ public struct DeveloperDiskImageStore: Sendable {
             )
         }
         return finalRestoreDirectory
-#else
-        throw RorkDeviceError.invalidInput(
-            "Developer Disk Image archive extraction is unavailable on this platform."
-        )
-#endif
     }
 }
 
@@ -467,7 +459,6 @@ private func fileSize(at fileURL: URL) throws -> UInt64 {
     return UInt64(size)
 }
 
-#if canImport(ZipArchive)
 /// Extracts one authenticated archive using DDI-specific safety policies.
 private func extractArchive(
     at archiveURL: URL,
@@ -587,7 +578,6 @@ private func restoreDirectory(in extractedDirectory: URL) throws -> URL {
     }
     return candidate
 }
-#endif
 
 /// Checks the cache marker without following a symbolic-link manifest.
 private func isCompleteRestoreDirectory(_ directory: URL) -> Bool {
