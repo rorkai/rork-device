@@ -211,7 +211,11 @@ var targets: [Target] = [
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "CryptoExtras", package: "swift-crypto"),
-            .product(name: "ZipArchive", package: "swift-zip-archive"),
+            .product(
+                name: "ZipArchive",
+                package: "swift-zip-archive",
+                condition: .when(platforms: zipArchivePlatforms)
+            ),
         ],
         resources: [
             .process("Fixtures"),
