@@ -92,7 +92,7 @@ let bigInt: Package.Dependency = .package(
 )
 let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
-    revision: "7c9b3255e92428cd8cdcfd817fea4d08271e4844"
+    revision: "a08621b42e9122208399665b68cdf32ed190bec6"
 )
 
 var dependencies: [Package.Dependency] = [
