@@ -1,5 +1,5 @@
 {
-  "originHash" : "f555416efe36a52084997c3dcdfb74c46aca9ae6db6e0dff7873be73ea294c28",
+  "originHash" : "da7dbc47daab7063084554872b7130920da9bb33f6fcf639bac73424ff3676c6",
   "pins" : [
     {
       "identity" : "bigint",
@@ -114,7 +114,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-zip-archive.git",
       "state" : {
-        "revision" : "a08621b42e9122208399665b68cdf32ed190bec6"
+        "revision" : "a08621b42e9122208399665b68cdf32ed190bec6",
+        "version" : "0.8.1-rork.3"
       }
     }
   ],
