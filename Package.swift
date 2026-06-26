@@ -2,7 +2,7 @@
 
 import PackageDescription
 
-let nativePlatforms: [Platform] = [
+let hostPlatforms: [Platform] = [
     .macOS,
     .macCatalyst,
     .iOS,
@@ -146,12 +146,12 @@ var targets: [Target] = [
         dependencies: [
             .target(
                 name: "RorkDeviceLwIP",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(
                 name: "BigInt",
                 package: "BigInt",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
@@ -162,12 +162,12 @@ var targets: [Target] = [
             .product(
                 name: "X509",
                 package: "swift-certificates",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(
                 name: "CryptoExtras",
                 package: "swift-crypto",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(name: "Crypto", package: "swift-crypto"),
             .product(name: "ZipArchive", package: "swift-zip-archive"),
