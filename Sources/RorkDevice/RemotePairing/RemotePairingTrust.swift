@@ -37,19 +37,34 @@ public enum RemotePairingTrust {
     private static let untrustedTunnelServiceName =
         "com.apple.internal.dt.coredevice.untrusted.tunnelservice"
 
-    /// Delays before fresh verification attempts after enrollment starts.
+    /// Backoff for fresh verification attempts after the device stores the
+    /// identity.
     ///
     /// The first attempt is immediate. Later attempts cover the short interval
     /// in which the device has accepted the identity but has not yet published
     /// it to a newly opened remote-pairing service.
-    private static let enrollmentVerificationAttemptDelays: [Duration] = [
-        .zero,
-        .milliseconds(500),
-        .seconds(1),
-        .seconds(2),
-        .seconds(4),
-        .seconds(8),
-    ]
+    private static let verificationBackoff = Backoff.exponential(
+        initial: .milliseconds(500),
+        factor: 2,
+        maximum: .seconds(8),
+        maxAttempts: 6
+    )
+
+    /// Backoff for re-driving full enrollment after a pre-completion failure.
+    ///
+    /// On iOS 26.x the untrusted pairing stream can be reset before the device
+    /// stores the identity — sometimes before the on-device Trust prompt is even
+    /// actionable. Re-driving the full setup (rather than only re-verifying an
+    /// identity the device never accepted, which can never succeed) gives the
+    /// prompt repeated, stable opportunities to be approved while a transient
+    /// reset clears. The first attempt is immediate; the bounded window lets a
+    /// device that keeps refusing fail in finite time instead of looping forever.
+    private static let enrollmentBackoff = Backoff.exponential(
+        initial: .milliseconds(500),
+        factor: 2,
+        maximum: .seconds(5),
+        maxAttempts: 10
+    )
 
     /// Establishes device trust for an identity when it is not already known.
     ///
@@ -110,15 +125,15 @@ public enum RemotePairingTrust {
     /// Resolves the untrusted service and performs pairing over RemoteXPC.
     ///
     /// The injected connection factory keeps discovery and service lifetimes
-    /// testable without exposing transport internals in the public API. Attempt
-    /// delays include the wait before each fresh verification, so a leading
-    /// `.zero` performs the first recovery attempt immediately.
+    /// testable without exposing transport internals in the public API. The
+    /// backoff schedules bound how long enrollment is re-driven and how long the
+    /// stored identity is re-verified.
     static func establishIfNeeded(
         for identity: RemotePairingIdentity,
         discoveryPort: UInt16,
         progress: @escaping (Progress) -> Void = { _ in },
-        verificationAttemptDelays: [Duration] =
-            Self.enrollmentVerificationAttemptDelays,
+        enrollmentBackoff: Backoff = Self.enrollmentBackoff,
+        verificationBackoff: Backoff = Self.verificationBackoff,
         sleep: (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
         },
@@ -126,9 +141,10 @@ public enum RemotePairingTrust {
     ) async throws {
         try await establishWithRecovery(
             progress: progress,
-            verificationAttemptDelays: verificationAttemptDelays,
+            enrollmentBackoff: enrollmentBackoff,
+            verificationBackoff: verificationBackoff,
             sleep: sleep,
-            initialAttempt: { willBeginEnrollment in
+            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
                 try await withPairingClient(
                     for: identity,
                     discoveryPort: discoveryPort,
@@ -138,7 +154,7 @@ public enum RemotePairingTrust {
                     try await client.establishTrustIfNeeded(
                         willEstablishTrust:
                             willBeginEnrollment,
-                        didEnrollIdentity: {}
+                        didEnrollIdentity: didEnrollIdentity
                     )
                 }
             },
@@ -155,45 +171,85 @@ public enum RemotePairingTrust {
         )
     }
 
-    /// Applies non-mutating recovery after one enrollment attempt begins.
+    /// Establishes trust, re-driving setup until the device stores the identity.
     ///
-    /// Once setup starts, losing the response does not prove whether the device
-    /// stored the identity. Recovery therefore opens fresh connections and
-    /// verifies the same identity without ever submitting setup a second time.
+    /// Each attempt verifies the identity or, when the device does not recognise
+    /// it, performs manual pair setup. The recovery depends on how far an attempt
+    /// got before failing:
+    ///
+    /// - **Before enrollment begins** (the initial verify fails at the transport
+    ///   level): the failure is propagated. The caller decides whether to retry,
+    ///   matching the previous contract.
+    /// - **After enrollment begins but before the identity is stored**: the
+    ///   untrusted stream was reset before the device accepted the identity (the
+    ///   iOS 26.x failure), so verifying it could never succeed. The full setup
+    ///   is re-driven on a fresh connection, with backoff, giving the on-device
+    ///   Trust prompt another stable opportunity to be approved.
+    /// - **After the identity is stored** (`didEnrollIdentity` fired): the device
+    ///   may reset the stream as the final step of a successful pairing, so the
+    ///   identity is confirmed by re-verifying it — never by submitting setup
+    ///   again, which would request a second approval.
     static func establishWithRecovery(
         progress: @escaping (Progress) -> Void,
-        verificationAttemptDelays: [Duration],
+        enrollmentBackoff: Backoff,
+        verificationBackoff: Backoff,
         sleep: (Duration) async throws -> Void,
         initialAttempt: (
-            _ willBeginEnrollment: () -> Void
+            _ willBeginEnrollment: () -> Void,
+            _ didEnrollIdentity: () -> Void
         ) async throws -> Void,
         verificationAttempt: () async throws -> Void
     ) async throws {
         var didBeginEnrollment = false
-        var enrollmentAttemptError: Error?
+        var didEnrollIdentity = false
 
         do {
-            try await initialAttempt {
-                didBeginEnrollment = true
-                progress(.enrollingIdentity)
+            try await retry(
+                enrollmentBackoff,
+                sleep: sleep,
+                isRetryable: { error in
+                    // Re-drive the full setup only when enrollment began but the
+                    // device has not stored the identity yet (the iOS 26.x reset
+                    // before consent). A failure before enrollment begins — or
+                    // after the identity is stored — stops the re-drive loop.
+                    didBeginEnrollment
+                        && !didEnrollIdentity
+                        && isRetryableEnrollmentRecoveryError(error)
+                }
+            ) {
+                didBeginEnrollment = false
+                didEnrollIdentity = false
+                try await initialAttempt(
+                    {
+                        didBeginEnrollment = true
+                        progress(.enrollingIdentity)
+                    },
+                    {
+                        didEnrollIdentity = true
+                    }
+                )
             }
+            progress(.established)
+            return
         } catch {
-            guard didBeginEnrollment,
-                  isRetryableEnrollmentRecoveryError(error) else {
+            // The enrollment loop stopped. If the device has stored the identity,
+            // the stream may have been reset as the final step of a successful
+            // pairing; confirm by verifying on fresh connections, never by
+            // re-submitting setup (which would request a second approval). Any
+            // other failure — including a reset before enrollment began — belongs
+            // to the caller.
+            guard didEnrollIdentity else {
                 throw error
             }
-            enrollmentAttemptError = error
         }
 
-        if didBeginEnrollment {
-            try await verifyTrustAfterEnrollmentStarts(
-                attemptDelays: verificationAttemptDelays,
-                sleep: sleep,
-                verificationAttempt: verificationAttempt,
-                enrollmentAttemptError: enrollmentAttemptError
-            )
+        try await retry(
+            verificationBackoff,
+            sleep: sleep,
+            isRetryable: { isRetryableEnrollmentRecoveryError($0) }
+        ) {
+            try await verificationAttempt()
         }
-
         progress(.established)
     }
 
@@ -243,46 +299,6 @@ public enum RemotePairingTrust {
                 identity: identity
             )
         )
-    }
-
-    /// Confirms enrollment on fresh service connections without repeating setup.
-    ///
-    /// Authentication and unknown-peer responses remain retryable briefly
-    /// because they can reflect propagation delay after approval. Transport and
-    /// subsequent stream resets are retried for the same reason. Device rate
-    /// limits, capacity failures, malformed responses, and cryptographic errors
-    /// leave immediately.
-    private static func verifyTrustAfterEnrollmentStarts(
-        attemptDelays: [Duration],
-        sleep: (Duration) async throws -> Void,
-        verificationAttempt: () async throws -> Void,
-        enrollmentAttemptError: Error?
-    ) async throws {
-        guard !attemptDelays.isEmpty else {
-            if let enrollmentAttemptError {
-                throw enrollmentAttemptError
-            }
-            throw RorkDeviceError.invalidInput(
-                "Enrollment verification requires at least one attempt."
-            )
-        }
-
-        for (index, delay) in attemptDelays.enumerated() {
-            if delay != .zero {
-                try await sleep(delay)
-            }
-            do {
-                try await verificationAttempt()
-                return
-            } catch {
-                let hasNextAttempt = index + 1 < attemptDelays.count
-                guard hasNextAttempt,
-                    isRetryableEnrollmentRecoveryError(error)
-                else {
-                    throw error
-                }
-            }
-        }
     }
 
     /// Identifies failures that can occur while approved trust is propagating.

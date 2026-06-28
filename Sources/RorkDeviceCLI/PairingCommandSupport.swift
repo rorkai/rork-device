@@ -99,28 +99,12 @@ func waitForSavedPairingActivation<Value>(
         )
     }
 
-    var lastRetryableError: Error?
-    for (index, delay) in attemptDelays.enumerated() {
-        if delay > .zero {
-            try await sleep(delay)
-        }
-
-        do {
-            return try await attempt()
-        } catch {
-            guard isRetryablePairingActivationError(error) else {
-                throw error
-            }
-            lastRetryableError = error
-            guard index + 1 < attemptDelays.count else {
-                break
-            }
-            onRetry(error)
-        }
-    }
-
-    throw lastRetryableError ?? RorkDeviceError.invalidInput(
-        "Pairing activation ended without a validation result."
+    return try await retry(
+        .delays(attemptDelays),
+        sleep: sleep,
+        isRetryable: isRetryablePairingActivationError,
+        onRetry: onRetry,
+        operation: attempt
     )
 }
 
