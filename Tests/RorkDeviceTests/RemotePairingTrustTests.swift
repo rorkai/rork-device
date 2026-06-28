@@ -85,7 +85,7 @@ final class RemotePairingTrustTests: XCTestCase {
         XCTAssertTrue(pairingConnection.isClosed)
     }
 
-    func testVerifiesTheSameIdentityOnAFreshSessionAfterEnrollmentStarts()
+    func testVerifiesOnAFreshSessionAfterTheDeviceStoresTheIdentity()
         async throws
     {
         let progress = TrustProgressRecorder()
@@ -93,11 +93,16 @@ final class RemotePairingTrustTests: XCTestCase {
 
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            verificationAttemptDelays: [.zero],
+            enrollmentBackoff: .delays([.zero]),
+            verificationBackoff: .delays([.zero]),
             sleep: { _ in },
-            initialAttempt: { willBeginEnrollment in
+            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
                 attempts.recordInitialAttempt()
                 willBeginEnrollment()
+                didEnrollIdentity()
+                // The device stored the identity, then reset the stream as the
+                // final step of a successful pairing.
+                throw RorkDeviceError.transport("The enrollment stream closed.")
             },
             verificationAttempt: {
                 attempts.recordVerificationAttempt()
@@ -157,7 +162,7 @@ final class RemotePairingTrustTests: XCTestCase {
         ])
     }
 
-    func testVerifiesAfterEnrollmentStartsWhenSetupStreamResetsBeforeM6()
+    func testReDrivesEnrollmentWhenTheStreamResetsBeforeTheIdentityIsStored()
         async throws
     {
         let progress = TrustProgressRecorder()
@@ -170,29 +175,33 @@ final class RemotePairingTrustTests: XCTestCase {
 
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            verificationAttemptDelays: [
+            enrollmentBackoff: .delays([
                 .zero,
                 .milliseconds(25),
-            ],
+            ]),
+            verificationBackoff: .delays([.zero]),
             sleep: { duration in
                 await attemptDelays.record(duration)
             },
-            initialAttempt: { willBeginEnrollment in
-                attempts.recordInitialAttempt()
+            initialAttempt: { willBeginEnrollment, _ in
+                let attempt = attempts.recordInitialAttempt()
                 willBeginEnrollment()
-                throw resetError
+                // The first attempt's stream resets before the device stores the
+                // identity, so verifying it could never succeed. The re-driven
+                // second attempt completes.
+                if attempt == 1 {
+                    throw resetError
+                }
             },
             verificationAttempt: {
-                let attempt = attempts.recordVerificationAttempt()
-                if attempt == 1 {
-                    throw RorkDeviceError.remotePairing(.unknownPeer)
-                }
+                attempts.recordVerificationAttempt()
             }
         )
 
-        XCTAssertEqual(attempts.initialAttempts, 1)
-        XCTAssertEqual(attempts.verificationAttempts, 2)
+        XCTAssertEqual(attempts.initialAttempts, 2)
+        XCTAssertEqual(attempts.verificationAttempts, 0)
         XCTAssertEqual(progress.values, [
+            .enrollingIdentity,
             .enrollingIdentity,
             .established,
         ])
@@ -200,7 +209,7 @@ final class RemotePairingTrustTests: XCTestCase {
         XCTAssertEqual(recordedAttemptDelays, [.milliseconds(25)])
     }
 
-    func testRetriesTransportFailureAfterEnrollmentStartsWithoutRepeatingEnrollment()
+    func testVerifiesWithoutRepeatingEnrollmentAfterTheIdentityIsStored()
         async throws
     {
         let progress = TrustProgressRecorder()
@@ -209,16 +218,23 @@ final class RemotePairingTrustTests: XCTestCase {
 
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            verificationAttemptDelays: [
+            // A second enrollment attempt is available, but must not be used once
+            // the device has stored the identity.
+            enrollmentBackoff: .delays([
+                .zero,
+                .milliseconds(50),
+            ]),
+            verificationBackoff: .delays([
                 .zero,
                 .milliseconds(25),
-            ],
+            ]),
             sleep: { duration in
                 await attemptDelays.record(duration)
             },
-            initialAttempt: { willBeginEnrollment in
+            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
                 attempts.recordInitialAttempt()
                 willBeginEnrollment()
+                didEnrollIdentity()
                 throw RorkDeviceError.transport(
                     "The enrollment stream closed."
                 )
@@ -237,6 +253,8 @@ final class RemotePairingTrustTests: XCTestCase {
             .enrollingIdentity,
             .established,
         ])
+        // Only the verification backoff is slept; the spare enrollment attempt
+        // is never re-driven once the identity is stored.
         let recordedAttemptDelays = await attemptDelays.values
         XCTAssertEqual(recordedAttemptDelays, [.milliseconds(25)])
     }
@@ -252,9 +270,10 @@ final class RemotePairingTrustTests: XCTestCase {
         do {
             try await RemotePairingTrust.establishWithRecovery(
                 progress: { _ in },
-                verificationAttemptDelays: [.zero],
+                enrollmentBackoff: .delays([.zero, .milliseconds(25)]),
+                verificationBackoff: .delays([.zero]),
                 sleep: { _ in },
-                initialAttempt: { willBeginEnrollment in
+                initialAttempt: { willBeginEnrollment, _ in
                     attempts.recordInitialAttempt()
                     willBeginEnrollment()
                     throw protocolError
@@ -268,6 +287,75 @@ final class RemotePairingTrustTests: XCTestCase {
             XCTAssertEqual(error as? RorkDeviceError, protocolError)
         }
 
+        // A non-retryable failure is not re-driven even with attempts to spare.
+        XCTAssertEqual(attempts.initialAttempts, 1)
+        XCTAssertEqual(attempts.verificationAttempts, 0)
+    }
+
+    func testFailsAfterExhaustingEnrollmentRetriesWithoutStoringTheIdentity()
+        async throws
+    {
+        let attempts = TrustAttemptRecorder()
+        let resetError = RorkDeviceError.remoteXPCStreamReset(
+            streamIdentifier: 1,
+            errorCode: 0x08
+        )
+
+        do {
+            try await RemotePairingTrust.establishWithRecovery(
+                progress: { _ in },
+                enrollmentBackoff: .delays([.zero, .zero, .zero]),
+                verificationBackoff: .delays([.zero]),
+                sleep: { _ in },
+                initialAttempt: { willBeginEnrollment, _ in
+                    attempts.recordInitialAttempt()
+                    willBeginEnrollment()
+                    throw resetError
+                },
+                verificationAttempt: {
+                    attempts.recordVerificationAttempt()
+                }
+            )
+            XCTFail("Expected enrollment to fail after exhausting retries.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, resetError)
+        }
+
+        XCTAssertEqual(attempts.initialAttempts, 3)
+        XCTAssertEqual(attempts.verificationAttempts, 0)
+    }
+
+    func testDoesNotVerifyAfterANonRetryableFailureOnceIdentityIsStored()
+        async throws
+    {
+        let attempts = TrustAttemptRecorder()
+        let protocolError = RorkDeviceError.protocolViolation(
+            "The remote-unlock response is malformed."
+        )
+
+        do {
+            try await RemotePairingTrust.establishWithRecovery(
+                progress: { _ in },
+                enrollmentBackoff: .delays([.zero, .milliseconds(25)]),
+                verificationBackoff: .delays([.zero]),
+                sleep: { _ in },
+                initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+                    attempts.recordInitialAttempt()
+                    willBeginEnrollment()
+                    didEnrollIdentity()
+                    throw protocolError
+                },
+                verificationAttempt: {
+                    attempts.recordVerificationAttempt()
+                }
+            )
+            XCTFail("Expected the non-retryable post-enrollment failure to propagate.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, protocolError)
+        }
+
+        // A stored identity is not confirmed when the failure is non-retryable;
+        // the protocol violation must surface instead of being masked by a verify.
         XCTAssertEqual(attempts.initialAttempts, 1)
         XCTAssertEqual(attempts.verificationAttempts, 0)
     }
@@ -321,9 +409,11 @@ private final class TrustAttemptRecorder: @unchecked Sendable {
         lock.withLock { recordedVerificationAttempts }
     }
 
-    func recordInitialAttempt() {
+    @discardableResult
+    func recordInitialAttempt() -> Int {
         lock.withLock {
             recordedInitialAttempts += 1
+            return recordedInitialAttempts
         }
     }
 
