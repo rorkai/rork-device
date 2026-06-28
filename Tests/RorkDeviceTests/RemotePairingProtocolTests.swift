@@ -413,6 +413,70 @@ final class RemotePairingProtocolTests: XCTestCase {
             )
         }
     }
+
+    /// End-to-end reproduction of the iOS 26.x failure and its rescue, exercising
+    /// the real `RemotePairingProtocolClient` through `establishWithRecovery`.
+    ///
+    /// Attempt 1 resets right after the setup-start message (before M6), so the
+    /// device never stores the identity. The fix must re-drive the *full* setup on
+    /// a fresh connection — not dead-end on verification — and the second attempt
+    /// replays the same wire to completion.
+    func testReDrivesRealSetupAfterAStreamResetBeforeTheIdentityIsStored()
+        async throws
+    {
+        let fixture = try unknownIdentityPairingFixture()
+        // The setup-start message is the 5th send in the verify-reject → setup
+        // flow, so failing every receive once five messages have been sent drops
+        // the stream immediately after setup starts, before M6.
+        let resetConnection = FakeConnection(
+            inbound: fixture.inbound,
+            receiveFailureAfterSendCount: 5
+        )
+        let successConnection = FakeConnection(inbound: fixture.inbound)
+        var connections = [resetConnection, successConnection]
+        let progress = TrustProgressCollector()
+        var verificationAttempts = 0
+
+        try await RemotePairingTrust.establishWithRecovery(
+            progress: progress.record,
+            enrollmentBackoff: .delays([.zero, .zero]),
+            verificationBackoff: .delays([.zero]),
+            sleep: { _ in },
+            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+                let connection = connections.removeFirst()
+                let client = RemotePairingProtocolClient(
+                    connection: connection,
+                    identity: fixture.identity,
+                    ephemeralKey: fixture.hostAgreementKey,
+                    makeSRPClient: fixture.makeSRPClient
+                )
+                try await client.establishTrustIfNeeded(
+                    willEstablishTrust: willBeginEnrollment,
+                    didEnrollIdentity: didEnrollIdentity
+                )
+            },
+            verificationAttempt: {
+                verificationAttempts += 1
+            }
+        )
+
+        // The re-drive re-ran the real manual pair setup on a fresh connection
+        // (a second setup-start) instead of falling back to verification.
+        XCTAssertEqual(
+            progress.values,
+            [.enrollingIdentity, .enrollingIdentity, .established]
+        )
+        XCTAssertEqual(verificationAttempts, 0)
+        XCTAssertEqual(
+            try pairingEnvelope(in: resetConnection.sent[4]).kind,
+            "setupManualPairing"
+        )
+        XCTAssertEqual(
+            try pairingEnvelope(in: successConnection.sent[4]).kind,
+            "setupManualPairing"
+        )
+        XCTAssertEqual(successConnection.sent.count, 8)
+    }
 }
 
 /// Deterministic cryptographic state and transport fixtures for pair verification.
@@ -706,4 +770,157 @@ private func protocolData(hexadecimal value: String) throws -> Data {
         index = nextIndex
     }
     return Data(bytes)
+}
+
+/// Serializes progress callbacks, which the API documents as possibly arriving
+/// from different tasks.
+private final class TrustProgressCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [RemotePairingTrust.Progress] = []
+
+    var values: [RemotePairingTrust.Progress] {
+        lock.withLock { recorded }
+    }
+
+    func record(_ progress: RemotePairingTrust.Progress) {
+        lock.withLock { recorded.append(progress) }
+    }
+}
+
+/// Deterministic fixture for pairing an unknown identity end to end.
+///
+/// Fixed host keys and a fixed SRP client make the static device wire
+/// (`inbound`) a valid response to a verify rejection followed by a complete
+/// manual pair setup, so it can be replayed across reconnects in re-drive
+/// scenarios. Mirrors `testTrustEstablishmentPairsAnUnknownIdentity`.
+private struct UnknownIdentityPairingFixture {
+    let identity: RemotePairingIdentity
+    let hostAgreementKey: Curve25519.KeyAgreement.PrivateKey
+    let makeSRPClient: @Sendable () throws -> RemotePairingSRPClient
+    let inbound: Data
+}
+
+private func unknownIdentityPairingFixture() throws -> UnknownIdentityPairingFixture {
+    let signingKey = try Curve25519.Signing.PrivateKey(
+        rawRepresentation: Data((1...32).map(UInt8.init))
+    )
+    let identity = RemotePairingIdentity(
+        identifier: "test-host",
+        privateKey: signingKey,
+        identityResolvingKey: Data(repeating: 0x7a, count: 16)
+    )
+    let hostAgreementKey = try Curve25519.KeyAgreement.PrivateKey(
+        rawRepresentation: Data((33...64).map(UInt8.init))
+    )
+    let deviceAgreementKey = try Curve25519.KeyAgreement.PrivateKey(
+        rawRepresentation: Data((65...96).map(UInt8.init))
+    )
+    let sessionKey = try protocolData(
+        hexadecimal:
+            "e0071ef3951ca250799e6fc77df75a8c62a5b4bfc9424743fd699fef2ddc4780"
+            + "bd303b0188fc985d79c45aa350705c2883caca77e18710d960e9f6dfe9c44278"
+    )
+    let setupEncryptionKey = HKDF<SHA512>.deriveKey(
+        inputKeyMaterial: SymmetricKey(data: sessionKey),
+        salt: Data("Pair-Setup-Encrypt-Salt".utf8),
+        info: Data("Pair-Setup-Encrypt-Info".utf8),
+        outputByteCount: 32
+    )
+    let encryptedDeviceInfo = try seal(
+        Data([0x01]),
+        using: setupEncryptionKey,
+        nonce: Data([0, 0, 0, 0]) + Data("PS-Msg06".utf8)
+    )
+    let encryptedUnlockResponse = try seal(
+        JSONSerialization.data(withJSONObject: [
+            "response": [
+                "_1": [
+                    "createRemoteUnlockKey": [:],
+                ],
+            ],
+        ]),
+        using: mainCipher(secret: sessionKey, info: "ServerEncrypt-main"),
+        sequence: 0
+    )
+
+    var inbound = Data()
+    inbound.append(try frame(plain: [
+        "response": [
+            "_1": [
+                "handshake": [
+                    "_0": [:],
+                ],
+            ],
+        ],
+    ]))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x02])),
+        TLV8Field(
+            type: 0x03,
+            value: deviceAgreementKey.publicKey.rawRepresentation
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x07, value: Data([0x04])),
+    ])))
+    inbound.append(try frame(plain: [:]))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x02])),
+        TLV8Field(
+            type: 0x03,
+            value: try protocolData(hexadecimal: """
+                7e6059797918050391cb91311f49917a79581a54f73e39ac88268e4429af6c89
+                aa16693cef2afa53246006db729bc89423aaef8a7598608c50183a80a8bdc651
+                4576d1005125b1fcac3fcbe4ba83e24c96521b390d8e4e5c3d853995df7a69f4
+                e1cf9e39aa213a8b6da6c2f024bae6174124f5807c37d127c14880701fec3898
+                cd652559fa7aaaae76e60e30c21d4ec4d947b426e88e31dea1bf9888aefc2494
+                3c485f71fefd530620c1ba6ae76557130ef8c2fdf134ffb3838bead0dee14a65
+                bcaa2442566278b5542c9c0e7b5737f94331e6dcd6da91607ea3b71863b86d3
+                f04a73dac1d2aa3dfe29c2c273cff7a953355fb3ea59e450d8f909ae098c3926
+                58a45855367136624912eca0bf9022dcb4ee404cc77bbc99c235e020b1a07d017
+                ba94e69c82e3ff78c2474cf2fa9239697f99ea511765516987e3256a9d510418
+                6aba6f210ff99bac02e36a8018e9999b042b70a05ee1b22e92291532c34bc043
+                487486e2c855373c963fe354389ed981c6d3c072af4a8739b8908f704e45b724
+                """)
+        ),
+        TLV8Field(
+            type: 0x02,
+            value: try protocolData(
+                hexadecimal: "000102030405060708090a0b0c0d0e0f"
+            )
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x04])),
+        TLV8Field(
+            type: 0x04,
+            value: try protocolData(
+                hexadecimal:
+                    "82aea05a663dfe562e4b6d7755fb4bcff5fd6a6f94fb540c82971cf8246ac081"
+                    + "1dff3588bcdbe24d1e2dee9f265ab9ab971e62d5d08091676522a4e0900ab51a"
+            )
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x06])),
+        TLV8Field(type: 0x05, value: encryptedDeviceInfo),
+    ])))
+    inbound.append(try RemotePairingFrameCodec.encode([
+        "message": [
+            "streamEncrypted": [
+                "_0": encryptedUnlockResponse.base64EncodedString(),
+            ],
+        ],
+    ]))
+
+    return UnknownIdentityPairingFixture(
+        identity: identity,
+        hostAgreementKey: hostAgreementKey,
+        makeSRPClient: {
+            try RemotePairingSRPClient(
+                privateKey: Data((1...32).map(UInt8.init))
+            )
+        },
+        inbound: inbound
+    )
 }
