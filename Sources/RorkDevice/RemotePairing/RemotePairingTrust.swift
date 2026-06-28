@@ -232,13 +232,18 @@ public enum RemotePairingTrust {
             progress(.established)
             return
         } catch {
-            // The enrollment loop stopped. If the device has stored the identity,
-            // the stream may have been reset as the final step of a successful
-            // pairing; confirm by verifying on fresh connections, never by
-            // re-submitting setup (which would request a second approval). Any
-            // other failure — including a reset before enrollment began — belongs
-            // to the caller.
-            guard didEnrollIdentity else {
+            // The enrollment loop stopped. Only fall back to verification when the
+            // device has stored the identity *and* the failure is a recoverable
+            // disconnect — the device may reset the stream as the final step of a
+            // successful pairing, which is confirmed by verifying on fresh
+            // connections (never by re-submitting setup, which would request a
+            // second approval). Anything else — a reset before enrollment began,
+            // or a non-retryable error such as a protocol violation, a hard
+            // rejection, or cancellation — belongs to the caller.
+            guard
+                didEnrollIdentity,
+                isRetryableEnrollmentRecoveryError(error)
+            else {
                 throw error
             }
         }

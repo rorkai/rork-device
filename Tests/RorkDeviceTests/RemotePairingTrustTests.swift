@@ -324,6 +324,41 @@ final class RemotePairingTrustTests: XCTestCase {
         XCTAssertEqual(attempts.initialAttempts, 3)
         XCTAssertEqual(attempts.verificationAttempts, 0)
     }
+
+    func testDoesNotVerifyAfterANonRetryableFailureOnceIdentityIsStored()
+        async throws
+    {
+        let attempts = TrustAttemptRecorder()
+        let protocolError = RorkDeviceError.protocolViolation(
+            "The remote-unlock response is malformed."
+        )
+
+        do {
+            try await RemotePairingTrust.establishWithRecovery(
+                progress: { _ in },
+                enrollmentBackoff: .delays([.zero, .milliseconds(25)]),
+                verificationBackoff: .delays([.zero]),
+                sleep: { _ in },
+                initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+                    attempts.recordInitialAttempt()
+                    willBeginEnrollment()
+                    didEnrollIdentity()
+                    throw protocolError
+                },
+                verificationAttempt: {
+                    attempts.recordVerificationAttempt()
+                }
+            )
+            XCTFail("Expected the non-retryable post-enrollment failure to propagate.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, protocolError)
+        }
+
+        // A stored identity is not confirmed when the failure is non-retryable;
+        // the protocol violation must surface instead of being masked by a verify.
+        XCTAssertEqual(attempts.initialAttempts, 1)
+        XCTAssertEqual(attempts.verificationAttempts, 0)
+    }
 }
 
 /// Device-side ports reserved by the in-memory trust fixture.
