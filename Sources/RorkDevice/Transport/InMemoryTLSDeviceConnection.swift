@@ -327,7 +327,7 @@ private actor InMemoryTLSState {
         #if canImport(Dispatch)
         _ = try? await channel.finish(acceptAlreadyClosed: true)
         #else
-        _ = try? channel.finish(acceptAlreadyClosed: true)
+        closeEmbeddedTLSChannel(channel)
         #endif
     }
 
@@ -392,6 +392,20 @@ func activateEmbeddedTLSChannel(
     try await connection.futureResult.get()
     channel.embeddedEventLoop.run()
     try channel.throwIfErrorCaught()
+}
+
+/// Best-effort cleanup for the single-threaded embedded TLS channel.
+///
+/// `EmbeddedChannel.finish()` waits for the close future to complete. On WASI,
+/// that wait is implemented as a precondition after one manual event-loop run,
+/// so TLS handlers that defer close completion can trap the whole WASM module
+/// during otherwise successful teardown. The browser path only needs to release
+/// pending TLS cleanup work; errors are intentionally ignored because close is
+/// called after the owning byte transport is already shutting down.
+func closeEmbeddedTLSChannel(_ channel: EmbeddedChannel) {
+    channel.close(promise: nil)
+    channel.embeddedEventLoop.run()
+    _ = try? channel.throwIfErrorCaught()
 }
 
 /// Sendable snapshot of an embedded TLS handshake.

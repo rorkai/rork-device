@@ -44,6 +44,7 @@ public final class WebUSBDevice {
             try await perform("open")
         }
 
+        var setupProgress = WebUSBConnectionSetupProgress.opened
         do {
             guard
                 let selection = selectDirectUSBMuxInterface(
@@ -70,6 +71,7 @@ public final class WebUSBDevice {
                     )
                 }
             )
+            setupProgress = .claimedInterface(selection.interfaceNumber)
             try await perform(
                 "selectAlternateInterface",
                 arguments: [
@@ -95,7 +97,7 @@ public final class WebUSBDevice {
                 transport: DirectUSBMuxTransport(session: session)
             )
         } catch {
-            await closeAfterFailedConnection()
+            await cleanUpFailedConnection(at: setupProgress)
             throw error
         }
     }
@@ -264,15 +266,26 @@ public final class WebUSBDevice {
         )
     }
 
-    /// Best-effort cleanup when interface setup or mux negotiation fails.
-    private func closeAfterFailedConnection() async {
+}
+
+extension WebUSBDevice: WebUSBConnectionHandle {
+    func releaseInterface(_ interfaceNumber: UInt8) async throws {
+        _ = try await awaitJavaScriptMethod(
+            "releaseInterface",
+            on: device,
+            arguments: [interfaceNumber]
+        )
+    }
+
+    func reset() async throws {
+        _ = try await awaitJavaScriptMethod("reset", on: device)
+    }
+
+    func close() async throws {
         guard device.opened.boolean == true else {
             return
         }
-        _ = try? await awaitJavaScriptMethod(
-            "close",
-            on: device
-        )
+        _ = try await awaitJavaScriptMethod("close", on: device)
     }
 }
 
