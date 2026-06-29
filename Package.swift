@@ -87,8 +87,8 @@ let swiftArgumentParser: Package.Dependency = .package(
     .upToNextMajor(from: "1.5.0")
 )
 let bigInt: Package.Dependency = .package(
-    url: "https://github.com/attaswift/BigInt.git",
-    .upToNextMajor(from: "5.7.0")
+    url: "https://github.com/rorkai/BigInt.git",
+    exact: "5.7.0-rork.1"
 )
 let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
@@ -144,15 +144,8 @@ var targets: [Target] = [
     .target(
         name: "RorkDevice",
         dependencies: [
-            .target(
-                name: "RorkDeviceLwIP",
-                condition: .when(platforms: hostPlatforms)
-            ),
-            .product(
-                name: "BigInt",
-                package: "BigInt",
-                condition: .when(platforms: hostPlatforms)
-            ),
+            "RorkDeviceLwIP",
+            .product(name: "BigInt", package: "BigInt"),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
             .product(name: "NIOFoundationCompat", package: "swift-nio"),
