@@ -5,21 +5,13 @@ import RorkDeviceLwIP
 /// Serialized Swift adapter around the package's private lwIP C target.
 ///
 /// lwIP's callback API requires every protocol operation and timer callback to
-/// run on one execution context. All stack instances share this queue because
+/// run on one execution context. All stack instances share this lock because
 /// lwIP stores TCP protocol control blocks globally even when multiple network
-/// interfaces are active.
+/// interfaces are active. The lock is recursive because lwIP invokes Swift
+/// callbacks synchronously and a callback may close its owning stack.
 final class LwIPNetworkStack: @unchecked Sendable {
     /// Process-wide lwIP execution context.
-    private static let queue = DispatchQueue(
-        label: "dev.rork.rork-device.lwip"
-    )
-
-    /// Per-stack marker used to recognize the shared lwIP queue.
-    ///
-    /// Keeping the non-Sendable key on the stack avoids global mutable state.
-    /// Each live stack registers its own marker on the process-wide queue so
-    /// synchronous teardown can execute inline when a callback closes it.
-    private let queueKey = DispatchSpecificKey<Void>()
+    private static let executionLock = NSRecursiveLock()
 
     /// Callback holder whose stable address is passed through the C boundary.
     private let outputSink: LwIPOutputSink
@@ -27,14 +19,14 @@ final class LwIPNetworkStack: @unchecked Sendable {
     /// Protects lifecycle state and the active Swift connection states.
     private let stateLock = NSLock()
 
-    /// Swift state retained for each queue-confined C connection wrapper.
+    /// Swift state retained for each serialized C connection wrapper.
     private var connectionStates: [ObjectIdentifier: LwIPConnectionState] = [:]
 
     /// C network stack, cleared exactly once during closure.
     private var stack: OpaquePointer?
 
-    /// Timer that advances TCP retransmission and keepalive state.
-    private var timer: DispatchSourceTimer?
+    /// Task that advances TCP retransmission and keepalive state.
+    private var pollingTask: Task<Void, Never>?
 
     /// Creates an IPv6-only userspace stack.
     ///
@@ -61,11 +53,9 @@ final class LwIPNetworkStack: @unchecked Sendable {
                 "CoreDevice userspace network requires a valid host IPv6 address."
         )
         outputSink = LwIPOutputSink(output: output)
-        Self.queue.setSpecific(key: queueKey, value: ())
-
         let outputContext = Unmanaged.passUnretained(outputSink)
             .toOpaque()
-        let createdStack = performSync {
+        let createdStack = withSerializedAccess {
             localAddressBytes.withUnsafeBytes { bytes in
                 rork_lwip_stack_create(
                     bytes.bindMemory(to: UInt8.self).baseAddress,
@@ -76,18 +66,16 @@ final class LwIPNetworkStack: @unchecked Sendable {
             }
         }
         guard let createdStack else {
-            Self.queue.setSpecific(key: queueKey, value: nil)
             throw RorkDeviceError.transport(
                 "Could not create the CoreDevice userspace IPv6 stack."
             )
         }
         stack = createdStack
-        startTimer()
+        startPolling()
     }
 
     deinit {
         close()
-        Self.queue.setSpecific(key: queueKey, value: nil)
     }
 
     /// Opens one TCP connection through the userspace IPv6 interface.
@@ -109,7 +97,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
         let state = LwIPConnectionState()
         let callbackContext = Unmanaged.passUnretained(state).toOpaque()
 
-        let pointer: OpaquePointer? = performSync {
+        let pointer: OpaquePointer? = withSerializedAccess {
             guard let stack = currentStack() else {
                 return nil
             }
@@ -153,20 +141,16 @@ final class LwIPNetworkStack: @unchecked Sendable {
             packet,
             diagnosticName: "CoreDevice userspace network"
         )
-        let result: Int32 = await withCheckedContinuation { continuation in
-            Self.queue.async { [weak self] in
-                guard let stack = self?.currentStack() else {
-                    continuation.resume(returning: -11)
-                    return
-                }
-                let result = packet.withUnsafeBytes { bytes in
-                    rork_lwip_stack_input(
-                        stack,
-                        bytes.bindMemory(to: UInt8.self).baseAddress,
-                        bytes.count
-                    )
-                }
-                continuation.resume(returning: result)
+        let result: Int32 = withSerializedAccess {
+            guard let stack = currentStack() else {
+                return -11
+            }
+            return packet.withUnsafeBytes { bytes in
+                rork_lwip_stack_input(
+                    stack,
+                    bytes.bindMemory(to: UInt8.self).baseAddress,
+                    bytes.count
+                )
             }
         }
         guard result == 0 else {
@@ -183,8 +167,8 @@ final class LwIPNetworkStack: @unchecked Sendable {
     ///   closure uses the stable generic error when no underlying cause exists.
     func close(with error: Error? = nil) {
         let states: [LwIPConnectionState] = stateLock.withLock {
-            timer?.cancel()
-            timer = nil
+            pollingTask?.cancel()
+            pollingTask = nil
             let states = Array(connectionStates.values)
             connectionStates.removeAll()
             return states
@@ -196,7 +180,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
             )
         states.forEach { $0.finish(with: terminalError) }
 
-        performSync {
+        withSerializedAccess {
             stateLock.withLock {
                 guard let stack else {
                     return
@@ -212,18 +196,15 @@ final class LwIPNetworkStack: @unchecked Sendable {
         _ data: Data,
         to handle: LwIPConnectionHandle
     ) async throws -> Int {
-        let result: Int? = await withCheckedContinuation { continuation in
-            Self.queue.async {
-                let result = handle.withConnection { pointer in
-                    data.withUnsafeBytes { bytes in
-                        rork_lwip_connection_write(
-                            pointer,
-                            bytes.bindMemory(to: UInt8.self).baseAddress,
-                            bytes.count
-                        )
-                    }
+        let result: Int? = withSerializedAccess {
+            handle.withConnection { pointer in
+                data.withUnsafeBytes { bytes in
+                    rork_lwip_connection_write(
+                        pointer,
+                        bytes.bindMemory(to: UInt8.self).baseAddress,
+                        bytes.count
+                    )
                 }
-                continuation.resume(returning: result)
             }
         }
         guard let result else {
@@ -245,7 +226,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
         _ count: Int,
         on handle: LwIPConnectionHandle
     ) {
-        Self.queue.async {
+        withSerializedAccess {
             handle.withConnection { pointer in
                 rork_lwip_connection_received(pointer, count)
             }
@@ -262,7 +243,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
                 forKey: ObjectIdentifier(handle)
             )
         }
-        Self.queue.async {
+        withSerializedAccess {
             handle.destroyConnection()
             // Keep the callback target alive until C has detached and released
             // every reference that can use its unretained context pointer.
@@ -276,41 +257,50 @@ final class LwIPNetworkStack: @unchecked Sendable {
     }
 
     /// Starts periodic processing for TCP retransmission and keepalive timers.
-    private func startTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: Self.queue)
-        timer.schedule(
-            deadline: .now() + .milliseconds(100),
-            repeating: .milliseconds(100)
-        )
-        timer.setEventHandler { [weak self] in
-            guard let stack = self?.currentStack() else {
+    private func startPolling() {
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+                self?.poll()
+            }
+        }
+        stateLock.withLock {
+            pollingTask = task
+        }
+    }
+
+    /// Advances lwIP's protocol timers while the stack remains open.
+    private func poll() {
+        withSerializedAccess {
+            guard let stack = currentStack() else {
                 return
             }
             rork_lwip_stack_poll(stack)
         }
-        stateLock.withLock {
-            self.timer = timer
-        }
-        timer.resume()
     }
 
-    /// Runs a synchronous operation on lwIP's queue without reentering it.
-    private func performSync<T>(
-        _ operation: () throws -> T
-    ) rethrows -> T {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            return try operation()
+    /// Runs one operation while excluding every other lwIP operation.
+    private func withSerializedAccess<Result>(
+        _ operation: () throws -> Result
+    ) rethrows -> Result {
+        Self.executionLock.lock()
+        defer {
+            Self.executionLock.unlock()
         }
-        return try Self.queue.sync(execute: operation)
+        return try operation()
     }
 }
 
-/// Queue-confined owner for one C connection wrapper.
+/// Serialized owner for one C connection wrapper.
 private final class LwIPConnectionHandle: @unchecked Sendable {
     /// Opaque wrapper while the connection remains active.
     ///
-    /// This value is read and cleared only on the process-wide lwIP queue.
-    /// Confinement prevents queued operations from dereferencing the wrapper
+    /// This value is read and cleared only under the process-wide lwIP lock.
+    /// Serialization prevents pending operations from dereferencing the wrapper
     /// after its C storage has been released.
     private var pointer: OpaquePointer?
 
@@ -321,7 +311,7 @@ private final class LwIPConnectionHandle: @unchecked Sendable {
 
     /// Performs an operation only while the C wrapper remains alive.
     ///
-    /// - Parameter operation: Synchronous operation executed on the lwIP queue.
+    /// - Parameter operation: Operation executed under serialized lwIP access.
     /// - Returns: The operation result, or `nil` after destruction.
     func withConnection<Result>(
         _ operation: (OpaquePointer) -> Result
@@ -335,7 +325,7 @@ private final class LwIPConnectionHandle: @unchecked Sendable {
     /// Clears and releases the C wrapper exactly once.
     ///
     /// Clearing the pointer before calling the destructor ensures every later
-    /// queued operation observes the closed lifecycle state.
+    /// operation observes the closed lifecycle state.
     func destroyConnection() {
         guard let pointer else {
             return
