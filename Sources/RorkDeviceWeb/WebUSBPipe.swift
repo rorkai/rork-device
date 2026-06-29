@@ -15,6 +15,28 @@ func closeWebUSBDevice(
     _ = try? await closeDevice()
 }
 
+/// Setup milestone reached before a WebUSB connection attempt failed.
+enum WebUSBConnectionSetupProgress: Equatable {
+    /// The browser device has been opened, but no interface is claimed.
+    case opened
+
+    /// The direct-usbmux interface is claimed and must be returned to the host.
+    case claimedInterface(UInt8)
+}
+
+/// Minimal browser USB operations needed for failure cleanup.
+@MainActor
+protocol WebUSBConnectionHandle: AnyObject {
+    /// Releases a previously claimed USB interface.
+    func releaseInterface(_ interfaceNumber: UInt8) async throws
+
+    /// Resets the browser-owned USB device.
+    func reset() async throws
+
+    /// Closes the browser-owned USB device handle.
+    func close() async throws
+}
+
 /// Cleans up a failed WebUSB connection attempt with the least disruptive
 /// browser operations available for the point where setup failed.
 ///
@@ -23,24 +45,28 @@ func closeWebUSBDevice(
 /// browser connection attempt. Before the claim succeeds, closing the handle is
 /// enough and avoids resetting a device whose interface was never taken.
 @MainActor
-func closeFailedWebUSBConnection(
-    claimedInterfaceNumber: UInt8?,
-    releaseInterface: (UInt8) async throws -> Void,
-    resetDevice: () async throws -> Void,
-    closeDevice: () async throws -> Void
-) async {
-    guard let claimedInterfaceNumber else {
-        _ = try? await closeDevice()
-        return
-    }
+extension WebUSBConnectionHandle {
+    func cleanUpFailedConnection(
+        at progress: WebUSBConnectionSetupProgress
+    ) async {
+        switch progress {
+        case .opened:
+            _ = try? await close()
 
-    await closeWebUSBDevice(
-        releaseInterface: {
-            try await releaseInterface(claimedInterfaceNumber)
-        },
-        resetDevice: resetDevice,
-        closeDevice: closeDevice
-    )
+        case .claimedInterface(let interfaceNumber):
+            await closeWebUSBDevice(
+                releaseInterface: {
+                    try await self.releaseInterface(interfaceNumber)
+                },
+                resetDevice: {
+                    try await self.reset()
+                },
+                closeDevice: {
+                    try await self.close()
+                }
+            )
+        }
+    }
 }
 
 #if canImport(JavaScriptKit)

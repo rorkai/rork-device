@@ -44,7 +44,7 @@ public final class WebUSBDevice {
             try await perform("open")
         }
 
-        var claimedInterfaceNumber: UInt8?
+        var setupProgress = WebUSBConnectionSetupProgress.opened
         do {
             guard
                 let selection = selectDirectUSBMuxInterface(
@@ -71,7 +71,7 @@ public final class WebUSBDevice {
                     )
                 }
             )
-            claimedInterfaceNumber = selection.interfaceNumber
+            setupProgress = .claimedInterface(selection.interfaceNumber)
             try await perform(
                 "selectAlternateInterface",
                 arguments: [
@@ -97,9 +97,7 @@ public final class WebUSBDevice {
                 transport: DirectUSBMuxTransport(session: session)
             )
         } catch {
-            await closeAfterFailedConnection(
-                claimedInterfaceNumber: claimedInterfaceNumber
-            )
+            await cleanUpFailedConnection(at: setupProgress)
             throw error
         }
     }
@@ -268,36 +266,26 @@ public final class WebUSBDevice {
         )
     }
 
-    /// Best-effort cleanup when interface setup or mux negotiation fails.
-    private func closeAfterFailedConnection(
-        claimedInterfaceNumber: UInt8?
-    ) async {
+}
+
+extension WebUSBDevice: WebUSBConnectionHandle {
+    func releaseInterface(_ interfaceNumber: UInt8) async throws {
+        _ = try await awaitJavaScriptMethod(
+            "releaseInterface",
+            on: device,
+            arguments: [interfaceNumber]
+        )
+    }
+
+    func reset() async throws {
+        _ = try await awaitJavaScriptMethod("reset", on: device)
+    }
+
+    func close() async throws {
         guard device.opened.boolean == true else {
             return
         }
-
-        await closeFailedWebUSBConnection(
-            claimedInterfaceNumber: claimedInterfaceNumber,
-            releaseInterface: { interfaceNumber in
-                _ = try await awaitJavaScriptMethod(
-                    "releaseInterface",
-                    on: device,
-                    arguments: [interfaceNumber]
-                )
-            },
-            resetDevice: {
-                _ = try await awaitJavaScriptMethod(
-                    "reset",
-                    on: device
-                )
-            },
-            closeDevice: {
-                _ = try await awaitJavaScriptMethod(
-                    "close",
-                    on: device
-                )
-            }
-        )
+        _ = try await awaitJavaScriptMethod("close", on: device)
     }
 }
 
