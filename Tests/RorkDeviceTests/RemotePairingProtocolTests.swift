@@ -309,6 +309,10 @@ final class RemotePairingProtocolTests: XCTestCase {
             inbound: fixture.inbound,
             receiveFailureAfterSendCount: 5
         )
+        // A fresh connection on which the device now recognizes the identity.
+        let verifyConnection = FakeConnection(
+            inbound: try acceptedVerificationWire()
+        )
         let progress = TrustProgressCollector()
         var verificationAttempts = 0
 
@@ -329,17 +333,23 @@ final class RemotePairingProtocolTests: XCTestCase {
             },
             verificationAttempt: {
                 verificationAttempts += 1
+                try await RemotePairingProtocolClient(
+                    connection: verifyConnection,
+                    identity: fixture.identity
+                ).verifyTrust()
             }
         )
 
         // The real setup started (a setup-start message was sent), then the reset
-        // was rescued by a single verification rather than a second setup.
+        // was rescued by a real verification on a fresh connection — exercising
+        // the verify wire end-to-end, never a repeated setup.
         XCTAssertEqual(progress.values, [.enrollingIdentity, .established])
         XCTAssertEqual(verificationAttempts, 1)
         XCTAssertEqual(
             try pairingEnvelope(in: resetConnection.sent[4]).kind,
             "setupManualPairing"
         )
+        XCTAssertFalse(verifyConnection.sent.isEmpty)
     }
 }
 
@@ -507,6 +517,32 @@ private func rejectedVerificationScenario(
         ),
         connection
     )
+}
+
+/// Builds a pair-verification exchange that the device accepts.
+private func acceptedVerificationWire() throws -> Data {
+    let deviceAgreementKey = Curve25519.KeyAgreement.PrivateKey()
+    var inbound = Data()
+    inbound.append(try frame(plain: [
+        "response": [
+            "_1": [
+                "handshake": [
+                    "_0": [:],
+                ],
+            ],
+        ],
+    ]))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x02])),
+        TLV8Field(
+            type: 0x03,
+            value: deviceAgreementKey.publicKey.rawRepresentation
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x04])),
+    ])))
+    return inbound
 }
 
 private func frame(plain: [String: Any]) throws -> Data {
