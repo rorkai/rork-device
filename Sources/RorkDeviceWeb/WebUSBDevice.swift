@@ -44,6 +44,7 @@ public final class WebUSBDevice {
             try await perform("open")
         }
 
+        var claimedInterfaceNumber: UInt8?
         do {
             guard
                 let selection = selectDirectUSBMuxInterface(
@@ -70,6 +71,7 @@ public final class WebUSBDevice {
                     )
                 }
             )
+            claimedInterfaceNumber = selection.interfaceNumber
             try await perform(
                 "selectAlternateInterface",
                 arguments: [
@@ -95,7 +97,9 @@ public final class WebUSBDevice {
                 transport: DirectUSBMuxTransport(session: session)
             )
         } catch {
-            await closeAfterFailedConnection()
+            await closeAfterFailedConnection(
+                claimedInterfaceNumber: claimedInterfaceNumber
+            )
             throw error
         }
     }
@@ -265,13 +269,34 @@ public final class WebUSBDevice {
     }
 
     /// Best-effort cleanup when interface setup or mux negotiation fails.
-    private func closeAfterFailedConnection() async {
+    private func closeAfterFailedConnection(
+        claimedInterfaceNumber: UInt8?
+    ) async {
         guard device.opened.boolean == true else {
             return
         }
-        _ = try? await awaitJavaScriptMethod(
-            "close",
-            on: device
+
+        await closeFailedWebUSBConnection(
+            claimedInterfaceNumber: claimedInterfaceNumber,
+            releaseInterface: { interfaceNumber in
+                _ = try await awaitJavaScriptMethod(
+                    "releaseInterface",
+                    on: device,
+                    arguments: [interfaceNumber]
+                )
+            },
+            resetDevice: {
+                _ = try await awaitJavaScriptMethod(
+                    "reset",
+                    on: device
+                )
+            },
+            closeDevice: {
+                _ = try await awaitJavaScriptMethod(
+                    "close",
+                    on: device
+                )
+            }
         )
     }
 }
