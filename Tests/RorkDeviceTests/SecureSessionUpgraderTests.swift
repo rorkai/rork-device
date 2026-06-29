@@ -216,6 +216,27 @@ final class SecureSessionUpgraderTests: XCTestCase {
 
     /// Verifies that the WASM-style embedded client emits its initial TLS flight.
     func testEmbeddedTLSChannelActivationEmitsClientHello() async throws {
+        let channel = try await activatedEmbeddedTLSChannel()
+
+        guard
+            case .byteBuffer(let clientHello)? =
+                try channel.readOutbound(as: IOData.self)
+        else {
+            return XCTFail("Embedded TLS activation did not emit a ClientHello.")
+        }
+        XCTAssertGreaterThan(clientHello.readableBytes, 0)
+    }
+
+    /// Verifies that browser TLS teardown does not require `EmbeddedChannel.finish`.
+    func testEmbeddedTLSChannelCloseUsesNonFatalBestEffortTeardown() async throws {
+        let channel = try await activatedEmbeddedTLSChannel()
+
+        closeEmbeddedTLSChannel(channel)
+
+        XCTAssertFalse(channel.isActive)
+    }
+
+    private func activatedEmbeddedTLSChannel() async throws -> EmbeddedChannel {
         var configuration = TLSConfiguration.makeClientConfiguration()
         configuration.certificateVerification = .none
         let context = try NIOSSLContext(configuration: configuration)
@@ -233,14 +254,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
             channel,
             connectingTo: address
         )
-
-        guard
-            case .byteBuffer(let clientHello)? =
-                try channel.readOutbound(as: IOData.self)
-        else {
-            return XCTFail("Embedded TLS activation did not emit a ClientHello.")
-        }
-        XCTAssertGreaterThan(clientHello.readableBytes, 0)
+        return channel
     }
 
     /// Verifies that the device certificate remains pinned to the pairing record.
