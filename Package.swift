@@ -92,7 +92,7 @@ let bigInt: Package.Dependency = .package(
 )
 let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
-    "0.8.1-rork.2"..<"0.8.2"
+    exact: "0.8.1-rork.2"
 )
 
 var dependencies: [Package.Dependency] = [
@@ -144,15 +144,8 @@ var targets: [Target] = [
     .target(
         name: "RorkDevice",
         dependencies: [
-            .target(
-                name: "RorkDeviceLwIP",
-                condition: .when(platforms: hostPlatforms + [.wasi])
-            ),
-            .product(
-                name: "BigInt",
-                package: "BigInt",
-                condition: .when(platforms: hostPlatforms + [.wasi])
-            ),
+            "RorkDeviceLwIP",
+            .product(name: "BigInt", package: "BigInt"),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
             .product(name: "NIOFoundationCompat", package: "swift-nio"),
