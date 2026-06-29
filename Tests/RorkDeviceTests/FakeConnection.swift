@@ -7,14 +7,19 @@ final class FakeConnection: DeviceConnection {
 
     /// Simulates a connection loss after a protocol request has been sent.
     private let receiveFailureAfterSendCount: Int?
+    private let receiveFailure: RorkDeviceError
     private(set) var isClosed = false
 
     init(
         inbound: Data = Data(),
-        receiveFailureAfterSendCount: Int? = nil
+        receiveFailureAfterSendCount: Int? = nil,
+        receiveFailure: RorkDeviceError = .transport(
+            "Injected receive failure."
+        )
     ) {
         self.inbound = inbound
         self.receiveFailureAfterSendCount = receiveFailureAfterSendCount
+        self.receiveFailure = receiveFailure
     }
 
     func enqueue(_ data: Data) {
@@ -34,9 +39,7 @@ final class FakeConnection: DeviceConnection {
         }
         if let receiveFailureAfterSendCount,
            sent.count >= receiveFailureAfterSendCount {
-            throw RorkDeviceError.transport(
-                "Injected receive failure."
-            )
+            throw receiveFailure
         }
         guard inbound.count >= count else {
             throw RorkDeviceError.transport("Fake connection underflow.")

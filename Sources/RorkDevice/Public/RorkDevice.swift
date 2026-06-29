@@ -162,7 +162,7 @@ public final class DeviceClient {
     /// - Throws: `LockdownPairingError` for user decisions and timeout,
     ///   `RorkDeviceError.invalidInput` for unsupported routes, or underlying
     ///   transport and certificate errors.
-    #if canImport(CryptoExtras) && canImport(X509)
+    #if !os(WASI)
     public func pair(
         with device: Device,
         trustTimeout: Duration = .seconds(120),

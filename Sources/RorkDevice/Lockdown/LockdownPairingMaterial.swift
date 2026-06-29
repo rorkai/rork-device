@@ -1,4 +1,4 @@
-#if canImport(CryptoExtras) && canImport(X509)
+#if !os(WASI)
 import CryptoExtras
 import Foundation
 import X509

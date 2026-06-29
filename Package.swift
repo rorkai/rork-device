@@ -2,14 +2,13 @@
 
 import PackageDescription
 
-let nativePlatforms: [Platform] = [
+let hostPlatforms: [Platform] = [
     .macOS,
     .macCatalyst,
     .iOS,
     .tvOS,
     .watchOS,
     .visionOS,
-    .driverKit,
     .linux,
     .windows,
     .android,
@@ -91,6 +90,10 @@ let bigInt: Package.Dependency = .package(
     url: "https://github.com/attaswift/BigInt.git",
     .upToNextMajor(from: "5.7.0")
 )
+let swiftZipArchive: Package.Dependency = .package(
+    url: "https://github.com/rorkai/swift-zip-archive.git",
+    exact: "0.8.1-rork.3"
+)
 
 var dependencies: [Package.Dependency] = [
     swiftArgumentParser,
@@ -99,6 +102,7 @@ var dependencies: [Package.Dependency] = [
     swiftCertificates,
     swiftCrypto,
     bigInt,
+    swiftZipArchive,
 ]
 
 var targets: [Target] = [
@@ -142,12 +146,12 @@ var targets: [Target] = [
         dependencies: [
             .target(
                 name: "RorkDeviceLwIP",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(
                 name: "BigInt",
                 package: "BigInt",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
@@ -158,18 +162,15 @@ var targets: [Target] = [
             .product(
                 name: "X509",
                 package: "swift-certificates",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
             .product(
                 name: "CryptoExtras",
                 package: "swift-crypto",
-                condition: .when(platforms: nativePlatforms)
+                condition: .when(platforms: hostPlatforms)
             ),
-            .product(
-                name: "Crypto",
-                package: "swift-crypto",
-                condition: .when(platforms: [.wasi])
-            ),
+            .product(name: "Crypto", package: "swift-crypto"),
+            .product(name: "ZipArchive", package: "swift-zip-archive"),
         ]
     ),
     .executableTarget(
@@ -190,6 +191,7 @@ var targets: [Target] = [
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "CryptoExtras", package: "swift-crypto"),
+            .product(name: "ZipArchive", package: "swift-zip-archive"),
         ],
         resources: [
             .process("Fixtures"),

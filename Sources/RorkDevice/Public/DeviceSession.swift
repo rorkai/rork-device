@@ -13,6 +13,11 @@ import Foundation
 /// retain a session for a complete install workflow without managing individual
 /// service ports or protocol handshakes.
 public final class DeviceSession {
+    /// Kept outside `LockdownServiceName` because new public enum cases break
+    /// exhaustive switches in existing clients.
+    private static let personalizedDeveloperDiskImageServiceName =
+        "com.apple.mobile.mobile_image_mounter"
+
     /// Backend that resolves and opens services for this session's transport.
     private let backend: DeviceSessionBackend
 
@@ -100,6 +105,114 @@ public final class DeviceSession {
         try await DeveloperModeClient(
             connection: connection
         ).reveal()
+    }
+
+    /// Mounts an iOS 17+ personalized Developer Disk Image.
+    ///
+    /// `restoreDirectory` must contain `BuildManifest.plist` and the files it
+    /// references. The session queries the connected device for its hardware
+    /// identity, reuses a device-side personalization manifest when possible,
+    /// and otherwise requests a fresh ticket from Apple TSS.
+    ///
+    /// Call this through a Lockdown-backed session before opening a CoreDevice
+    /// tunnel. If `requiresTunnelRestart` is `true`, any existing tunnel must
+    /// be recreated so Remote Service Discovery advertises the mounted image's
+    /// developer services.
+    ///
+    /// - Parameter restoreDirectory: Extracted personalized DDI `Restore`
+    ///   directory.
+    /// - Returns: Mount status and personalization-ticket origin.
+    /// - Throws: An input error for an unsupported device, disabled Developer
+    ///   Mode, or invalid image; a protocol or transport error when Lockdown,
+    ///   image mounter, or Apple TSS cannot complete the operation.
+    public func mountPersonalizedDeveloperDiskImage(
+        from restoreDirectory: URL
+    ) async throws -> DeveloperDiskImageMountResult {
+        let image = try PersonalizedDeveloperDiskImage(
+            contentsOf: restoreDirectory
+        )
+        let ecid = try await developerDiskImageECID()
+        return try await mountPersonalizedDeveloperDiskImage(
+            image,
+            ecid: ecid
+        )
+    }
+
+    /// Downloads and mounts a personalized Developer Disk Image archive.
+    ///
+    /// The archive is authenticated with the source's pinned SHA-256 before
+    /// extraction. Applications remain responsible for selecting a lawful,
+    /// trustworthy archive provider.
+    ///
+    /// - Parameters:
+    ///   - source: HTTPS archive and expected digest.
+    ///   - store: Download and extraction cache.
+    /// - Returns: Mount status and personalization-ticket origin.
+    /// - Throws: An input error for an unsupported device, disabled Developer
+    ///   Mode, invalid archive, or incompatible image; a protocol or transport
+    ///   error when the archive host, Lockdown, image mounter, or Apple TSS
+    ///   cannot complete the operation.
+    public func mountPersonalizedDeveloperDiskImage(
+        from source: DeveloperDiskImageSource,
+        using store: DeveloperDiskImageStore = DeveloperDiskImageStore()
+    ) async throws -> DeveloperDiskImageMountResult {
+        let ecid = try await developerDiskImageECID()
+        let restoreDirectory = try await store.prepareRestoreDirectory(
+            from: source
+        )
+        let image = try PersonalizedDeveloperDiskImage(
+            contentsOf: restoreDirectory
+        )
+        return try await mountPersonalizedDeveloperDiskImage(
+            image,
+            ecid: ecid
+        )
+    }
+
+    /// Validates device state before network or image-mounter work begins.
+    private func developerDiskImageECID() async throws -> UInt64 {
+        let deviceInfo = try await fetchDeviceInfo()
+        guard let productVersion = deviceInfo.productVersion,
+            let majorVersion = productVersion.split(separator: ".").first
+                .flatMap({ Int($0) })
+        else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown did not report a valid ProductVersion for Developer Disk Image mounting."
+            )
+        }
+        guard majorVersion >= 17 else {
+            throw RorkDeviceError.invalidInput(
+                "Personalized Developer Disk Images require iOS 17 or newer."
+            )
+        }
+        guard try await isDeveloperModeEnabled() else {
+            throw RorkDeviceError.invalidInput(
+                "Developer Mode must be enabled before mounting a personalized Developer Disk Image."
+            )
+        }
+        guard let ecid = propertyListUInt64(
+            deviceInfo.rawValues["UniqueChipID"]
+        ) else {
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown did not report a valid UniqueChipID for Developer Disk Image personalization."
+            )
+        }
+        return ecid
+    }
+
+    /// Mounts a parsed image after device compatibility has been established.
+    private func mountPersonalizedDeveloperDiskImage(
+        _ image: PersonalizedDeveloperDiskImage,
+        ecid: UInt64
+    ) async throws -> DeveloperDiskImageMountResult {
+        return try await PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await self.startService(
+                    named: Self.personalizedDeveloperDiskImageServiceName
+                )
+            },
+            ticketRequester: AppleTSSClient()
+        ).mount(image, ecid: ecid)
     }
 
     /// Opens a modeled device service on the active session route.
