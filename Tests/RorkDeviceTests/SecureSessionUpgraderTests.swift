@@ -217,6 +217,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
     /// Verifies that the WASM-style embedded client emits its initial TLS flight.
     func testEmbeddedTLSChannelActivationEmitsClientHello() async throws {
         let channel = try await activatedEmbeddedTLSChannel()
+        defer { closeEmbeddedTLSChannel(channel) }
 
         guard
             case .byteBuffer(let clientHello)? =
