@@ -52,6 +52,17 @@ enum LockdownPairingMaterial {
     private static let certificateLifetime: TimeInterval =
         10 * 365 * 24 * 60 * 60
 
+    /// Backdates the certificate start so a device whose clock trails the host
+    /// still accepts the host certificate.
+    ///
+    /// The device validates the saved host certificate against its own clock
+    /// when it opens the trusted session. With `notValidBefore` set to the
+    /// host's current time, a device that has not re-synced its clock (for
+    /// example shortly after a reboot) treats the certificate as not yet valid
+    /// and aborts the session's TLS handshake even though pairing just saved it.
+    /// One day comfortably absorbs that skew.
+    private static let clockSkewTolerance: TimeInterval = 24 * 60 * 60
+
     /// Creates candidate pairing material for one physical device.
     ///
     /// The returned record intentionally has no escrow bag. Lockdown supplies
@@ -105,6 +116,7 @@ enum LockdownPairingMaterial {
         let rootKey = try _RSA.Signing.PrivateKey(keySize: .bits2048)
         let hostKey = try _RSA.Signing.PrivateKey(keySize: .bits2048)
         let name = DistinguishedName()
+        let notValidBefore = validFrom.addingTimeInterval(-clockSkewTolerance)
         let validUntil = validFrom.addingTimeInterval(certificateLifetime)
 
         let rootPublicKey = Certificate.PublicKey(rootKey.publicKey)
@@ -112,7 +124,7 @@ enum LockdownPairingMaterial {
             version: .v3,
             serialNumber: .init(0),
             publicKey: rootPublicKey,
-            notValidBefore: validFrom,
+            notValidBefore: notValidBefore,
             notValidAfter: validUntil,
             issuer: name,
             subject: name,
@@ -133,14 +145,14 @@ enum LockdownPairingMaterial {
         let hostCertificate = try makeLeafCertificate(
             publicKey: hostPublicKey,
             issuer: name,
-            validFrom: validFrom,
+            validFrom: notValidBefore,
             validUntil: validUntil,
             rootKey: rootKey
         )
         let deviceCertificate = try makeLeafCertificate(
             publicKey: Certificate.PublicKey(deviceKey),
             issuer: name,
-            validFrom: validFrom,
+            validFrom: notValidBefore,
             validUntil: validUntil,
             rootKey: rootKey
         )

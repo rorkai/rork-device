@@ -16,6 +16,11 @@ enum WebPairingMaterial {
     private static let certificateLifetime: TimeInterval =
         10 * 365 * 24 * 60 * 60
 
+    /// Backdates the certificate start so a device whose clock trails the host
+    /// still accepts the host certificate when it validates the trusted session,
+    /// rather than aborting the TLS handshake on a "not yet valid" certificate.
+    private static let clockSkewTolerance: TimeInterval = 24 * 60 * 60
+
     /// Creates one candidate host identity for an unpaired device.
     ///
     /// A single root signs both the host and device leaf certificates. The
@@ -44,6 +49,9 @@ enum WebPairingMaterial {
         let cryptography = try WebCryptography()
         let rootKey = try await cryptography.generateRSAKeyPair()
         let hostKey = try await cryptography.generateRSAKeyPair()
+        let notValidBefore = validFrom.addingTimeInterval(
+            -clockSkewTolerance
+        )
         let validUntil = validFrom.addingTimeInterval(
             certificateLifetime
         )
@@ -53,7 +61,7 @@ enum WebPairingMaterial {
             subjectKeyIdentifier: try await cryptography.sha1(
                 rootKey.subjectPublicKey
             ),
-            validFrom: validFrom,
+            validFrom: notValidBefore,
             validUntil: validUntil,
             role: .certificateAuthority,
             signer: { data in
@@ -68,7 +76,7 @@ enum WebPairingMaterial {
             subjectKeyIdentifier: try await cryptography.sha1(
                 hostKey.subjectPublicKey
             ),
-            validFrom: validFrom,
+            validFrom: notValidBefore,
             validUntil: validUntil,
             role: .leaf,
             signer: { data in
@@ -83,7 +91,7 @@ enum WebPairingMaterial {
             subjectKeyIdentifier: try await cryptography.sha1(
                 deviceKey.subjectPublicKey
             ),
-            validFrom: validFrom,
+            validFrom: notValidBefore,
             validUntil: validUntil,
             role: .leaf,
             signer: { data in

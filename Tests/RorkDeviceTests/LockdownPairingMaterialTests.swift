@@ -107,6 +107,33 @@ final class LockdownPairingMaterialTests: XCTestCase {
         )
     }
 
+    func testBackdatesCertificateStartForDeviceClockSkew() throws {
+        let validFrom = Date(timeIntervalSince1970: 1_700_000_000)
+        let record = try LockdownPairingMaterial.generate(
+            deviceIdentifier: "device-1",
+            systemBUID: "system-1",
+            devicePublicKey: testDevicePublicKeyPEM,
+            wiFiMACAddress: "00:11:22:33:44:55",
+            validFrom: validFrom
+        )
+
+        // A device whose clock trails the host must still accept the saved
+        // certificate when it validates the session, so every certificate's
+        // start is backdated well before the host's pairing time.
+        for data in [
+            try XCTUnwrap(record.rootCertificate),
+            try XCTUnwrap(record.hostCertificate),
+            try XCTUnwrap(record.deviceCertificate),
+        ] {
+            let parsed = try certificate(from: data)
+            XCTAssertLessThanOrEqual(
+                parsed.notValidBefore,
+                validFrom.addingTimeInterval(-3600)
+            )
+            XCTAssertGreaterThan(parsed.notValidAfter, validFrom)
+        }
+    }
+
     func testAddingEscrowBagPreservesGeneratedIdentity() throws {
         let candidate = try LockdownPairingMaterial.generate(
             deviceIdentifier: "device-1",
