@@ -292,68 +292,64 @@ final class RemotePairingProtocolTests: XCTestCase {
         }
     }
 
-    /// End-to-end reproduction of the iOS 26.x failure and its rescue, exercising
+    /// End-to-end reproduction of the iOS 26.x reset and its rescue, exercising
     /// the real `RemotePairingProtocolClient` through `establishWithRecovery`.
     ///
-    /// Attempt 1 resets right after the setup-start message (before M6), so the
-    /// device never stores the identity. The fix must re-drive the *full* setup on
-    /// a fresh connection — not dead-end on verification — and the second attempt
-    /// replays the same wire to completion.
-    func testReDrivesRealSetupAfterAStreamResetBeforeTheIdentityIsStored()
+    /// The attempt resets right after the setup-start message. Recovery confirms
+    /// the identity by verifying it on a fresh connection rather than repeating
+    /// setup, which would request a second approval.
+    func testVerifiesAfterARealSetupStreamResetInsteadOfRepeatingSetup()
         async throws
     {
         let fixture = try unknownIdentityPairingFixture()
         // The setup-start message is the 5th send in the verify-reject → setup
         // flow, so failing every receive once five messages have been sent drops
-        // the stream immediately after setup starts, before M6.
+        // the stream immediately after setup starts.
         let resetConnection = FakeConnection(
             inbound: fixture.inbound,
             receiveFailureAfterSendCount: 5
         )
-        let successConnection = FakeConnection(inbound: fixture.inbound)
-        var connections = [resetConnection, successConnection]
+        // A fresh connection on which the device now recognizes the identity.
+        let verifyConnection = FakeConnection(
+            inbound: try acceptedVerificationWire()
+        )
         let progress = TrustProgressCollector()
         var verificationAttempts = 0
 
         try await RemotePairingTrust.establishWithRecovery(
             progress: progress.record,
-            enrollmentBackoff: .delays([.zero, .zero]),
             verificationBackoff: .delays([.zero]),
             sleep: { _ in },
-            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
-                let connection = connections.removeFirst()
+            initialAttempt: { willBeginEnrollment in
                 let client = RemotePairingProtocolClient(
-                    connection: connection,
+                    connection: resetConnection,
                     identity: fixture.identity,
                     ephemeralKey: fixture.hostAgreementKey,
                     makeSRPClient: fixture.makeSRPClient
                 )
                 try await client.establishTrustIfNeeded(
-                    willEstablishTrust: willBeginEnrollment,
-                    didEnrollIdentity: didEnrollIdentity
+                    willEstablishTrust: willBeginEnrollment
                 )
             },
             verificationAttempt: {
                 verificationAttempts += 1
+                try await RemotePairingProtocolClient(
+                    connection: verifyConnection,
+                    identity: fixture.identity
+                ).verifyTrust()
             }
         )
 
-        // The re-drive re-ran the real manual pair setup on a fresh connection
-        // (a second setup-start) instead of falling back to verification.
-        XCTAssertEqual(
-            progress.values,
-            [.enrollingIdentity, .enrollingIdentity, .established]
-        )
-        XCTAssertEqual(verificationAttempts, 0)
+        // The real setup started (a setup-start message was sent), then the reset
+        // was rescued by a real verification on a fresh connection — exercising
+        // the verify wire end-to-end, never a repeated setup.
+        XCTAssertEqual(progress.values, [.enrollingIdentity, .established])
+        XCTAssertEqual(verificationAttempts, 1)
         XCTAssertEqual(
             try pairingEnvelope(in: resetConnection.sent[4]).kind,
             "setupManualPairing"
         )
-        XCTAssertEqual(
-            try pairingEnvelope(in: successConnection.sent[4]).kind,
-            "setupManualPairing"
-        )
-        XCTAssertEqual(successConnection.sent.count, 8)
+        XCTAssertFalse(verifyConnection.sent.isEmpty)
     }
 }
 
@@ -521,6 +517,32 @@ private func rejectedVerificationScenario(
         ),
         connection
     )
+}
+
+/// Builds a pair-verification exchange that the device accepts.
+private func acceptedVerificationWire() throws -> Data {
+    let deviceAgreementKey = Curve25519.KeyAgreement.PrivateKey()
+    var inbound = Data()
+    inbound.append(try frame(plain: [
+        "response": [
+            "_1": [
+                "handshake": [
+                    "_0": [:],
+                ],
+            ],
+        ],
+    ]))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x02])),
+        TLV8Field(
+            type: 0x03,
+            value: deviceAgreementKey.publicKey.rawRepresentation
+        ),
+    ])))
+    inbound.append(try pairingFrame(TLV8.encode([
+        TLV8Field(type: 0x06, value: Data([0x04])),
+    ])))
+    return inbound
 }
 
 private func frame(plain: [String: Any]) throws -> Data {

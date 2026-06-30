@@ -50,22 +50,6 @@ public enum RemotePairingTrust {
         maxAttempts: 6
     )
 
-    /// Backoff for re-driving full enrollment after a pre-completion failure.
-    ///
-    /// On iOS 26.x the untrusted pairing stream can be reset before the device
-    /// stores the identity — sometimes before the on-device Trust prompt is even
-    /// actionable. Re-driving the full setup (rather than only re-verifying an
-    /// identity the device never accepted, which can never succeed) gives the
-    /// prompt repeated, stable opportunities to be approved while a transient
-    /// reset clears. The first attempt is immediate; the bounded window lets a
-    /// device that keeps refusing fail in finite time instead of looping forever.
-    private static let enrollmentBackoff = Backoff.exponential(
-        initial: .milliseconds(500),
-        factor: 2,
-        maximum: .seconds(5),
-        maxAttempts: 10
-    )
-
     /// Establishes device trust for an identity when it is not already known.
     ///
     /// An unrecognized identity cannot use the device's trusted pairing
@@ -126,13 +110,12 @@ public enum RemotePairingTrust {
     ///
     /// The injected connection factory keeps discovery and service lifetimes
     /// testable without exposing transport internals in the public API. The
-    /// backoff schedules bound how long enrollment is re-driven and how long the
-    /// stored identity is re-verified.
+    /// verification backoff bounds how long a stored identity is re-verified
+    /// after the enrollment stream resets.
     static func establishIfNeeded(
         for identity: RemotePairingIdentity,
         discoveryPort: UInt16,
         progress: @escaping (Progress) -> Void = { _ in },
-        enrollmentBackoff: Backoff = Self.enrollmentBackoff,
         verificationBackoff: Backoff = Self.verificationBackoff,
         sleep: (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
@@ -141,10 +124,9 @@ public enum RemotePairingTrust {
     ) async throws {
         try await establishWithRecovery(
             progress: progress,
-            enrollmentBackoff: enrollmentBackoff,
             verificationBackoff: verificationBackoff,
             sleep: sleep,
-            initialAttempt: { willBeginEnrollment, didEnrollIdentity in
+            initialAttempt: { willBeginEnrollment in
                 try await withPairingClient(
                     for: identity,
                     discoveryPort: discoveryPort,
@@ -152,9 +134,7 @@ public enum RemotePairingTrust {
                     openConnection: openConnection
                 ) { client in
                     try await client.establishTrustIfNeeded(
-                        willEstablishTrust:
-                            willBeginEnrollment,
-                        didEnrollIdentity: didEnrollIdentity
+                        willEstablishTrust: willBeginEnrollment
                     )
                 }
             },
@@ -171,78 +151,39 @@ public enum RemotePairingTrust {
         )
     }
 
-    /// Establishes trust, re-driving setup until the device stores the identity.
+    /// Establishes trust, confirming a stored identity by re-verifying after a reset.
     ///
-    /// Each attempt verifies the identity or, when the device does not recognise
-    /// it, performs manual pair setup. The recovery depends on how far an attempt
-    /// got before failing:
+    /// The attempt verifies the identity or, when the device does not recognize
+    /// it, performs manual pair setup. Recovery depends on how far it reached:
     ///
     /// - **Before enrollment begins** (the initial verify fails at the transport
-    ///   level): the failure is propagated. The caller decides whether to retry,
-    ///   matching the previous contract.
-    /// - **After enrollment begins but before the identity is stored**: the
-    ///   untrusted stream was reset before the device accepted the identity (the
-    ///   iOS 26.x failure), so verifying it could never succeed. The full setup
-    ///   is re-driven on a fresh connection, with backoff, giving the on-device
-    ///   Trust prompt another stable opportunity to be approved.
-    /// - **After the identity is stored** (`didEnrollIdentity` fired): the device
-    ///   may reset the stream as the final step of a successful pairing, so the
-    ///   identity is confirmed by re-verifying it — never by submitting setup
-    ///   again, which would request a second approval.
+    ///   level): the failure is propagated for the caller to retry.
+    /// - **After enrollment begins**: the device may reset the untrusted stream
+    ///   as the final step of storing the identity, so the identity is confirmed
+    ///   by re-verifying it on fresh connections — never by repeating setup,
+    ///   which would request a second approval. Verification is retried while the
+    ///   device publishes the stored identity; a device that never stores it
+    ///   fails once the bounded window elapses.
     static func establishWithRecovery(
         progress: @escaping (Progress) -> Void,
-        enrollmentBackoff: Backoff,
         verificationBackoff: Backoff,
         sleep: (Duration) async throws -> Void,
-        initialAttempt: (
-            _ willBeginEnrollment: () -> Void,
-            _ didEnrollIdentity: () -> Void
-        ) async throws -> Void,
+        initialAttempt: (_ willBeginEnrollment: () -> Void) async throws -> Void,
         verificationAttempt: () async throws -> Void
     ) async throws {
         var didBeginEnrollment = false
-        var didEnrollIdentity = false
-
         do {
-            try await retry(
-                enrollmentBackoff,
-                sleep: sleep,
-                isRetryable: { error in
-                    // Re-drive the full setup only when enrollment began but the
-                    // device has not stored the identity yet (the iOS 26.x reset
-                    // before consent). A failure before enrollment begins — or
-                    // after the identity is stored — stops the re-drive loop.
-                    didBeginEnrollment
-                        && !didEnrollIdentity
-                        && isRetryableEnrollmentRecoveryError(error)
-                }
-            ) {
-                didBeginEnrollment = false
-                didEnrollIdentity = false
-                try await initialAttempt(
-                    {
-                        didBeginEnrollment = true
-                        progress(.enrollingIdentity)
-                    },
-                    {
-                        didEnrollIdentity = true
-                    }
-                )
+            try await initialAttempt {
+                didBeginEnrollment = true
+                progress(.enrollingIdentity)
             }
             progress(.established)
             return
         } catch {
-            // The enrollment loop stopped. Only fall back to verification when the
-            // device has stored the identity *and* the failure is a recoverable
-            // disconnect — the device may reset the stream as the final step of a
-            // successful pairing, which is confirmed by verifying on fresh
-            // connections (never by re-submitting setup, which would request a
-            // second approval). Anything else — a reset before enrollment began,
-            // or a non-retryable error such as a protocol violation, a hard
-            // rejection, or cancellation — belongs to the caller.
-            guard
-                didEnrollIdentity,
-                isRetryableEnrollmentRecoveryError(error)
+            // A failure before enrollment begins, or any non-retryable failure,
+            // belongs to the caller. Otherwise the device may have stored the
+            // identity as it reset the stream, so confirm by verifying it.
+            guard didBeginEnrollment, isRetryableEnrollmentRecoveryError(error)
             else {
                 throw error
             }
@@ -251,7 +192,7 @@ public enum RemotePairingTrust {
         try await retry(
             verificationBackoff,
             sleep: sleep,
-            isRetryable: { isRetryableEnrollmentRecoveryError($0) }
+            isRetryable: isRetryableEnrollmentRecoveryError
         ) {
             try await verificationAttempt()
         }
