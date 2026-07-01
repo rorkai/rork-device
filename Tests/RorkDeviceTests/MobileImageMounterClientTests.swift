@@ -364,6 +364,32 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    func testUnmountRejectsResponseWithoutCompletion() async throws {
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                ["Status": "Busy"],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await unmounter.unmount()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "UnmountImage response did not report completion."
+                )
+            )
+        }
+        XCTAssertTrue(connection.isClosed)
+    }
+
     func testListReturnsMountedImageSignatures() async throws {
         let firstSignature = Data([0x01, 0x02])
         let secondSignature = Data([0x03, 0x04])
