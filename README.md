@@ -372,6 +372,11 @@ rorkdevice pairing export --udid DEVICE-UDID --output pairing.plist
 rorkdevice pairing remove --udid DEVICE-UDID
 rorkdevice pairing validate --udid DEVICE-UDID
 rorkdevice developer-mode status --udid DEVICE-UDID --json
+rorkdevice image list --udid DEVICE-UDID
+rorkdevice image list --udid DEVICE-UDID --json
+rorkdevice image mount --udid DEVICE-UDID --path RestoreDirectory
+rorkdevice image auto --udid DEVICE-UDID --archive-url https://example.com/DDI.zip --sha256 HEX
+rorkdevice image unmount --udid DEVICE-UDID
 rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist --json
@@ -414,12 +419,15 @@ SUBCOMMANDS:
   list                    List devices reported by local usbmuxd.
   watch                   Watch usbmux device attach and detach events.
   info                    Print basic Lockdown device information.
-  pairing                 Validate the host pairing used by Lockdown.
+  pairing                 Manage the host pairing used by Lockdown.
   developer-mode          Prepare Developer Mode setup on an iOS device.
-  files                   Manage files through AFC or HouseArrest.
+  image                   Manage personalized Developer Disk Images.
   apps                    Manage installed apps.
+  files                   Manage files through AFC or HouseArrest.
   install                 Install an IPA.
   uninstall               Uninstall an app by bundle identifier.
+  launch                  Launch an installed app.
+  terminate               Terminate a running app.
   profiles                Manage provisioning profiles.
   remote-pairing          Manage the identity used by CoreDevice remote pairing.
   tunnel                  Open and expose CoreDevice packet tunnels.

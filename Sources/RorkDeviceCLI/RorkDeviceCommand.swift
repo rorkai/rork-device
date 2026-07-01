@@ -728,7 +728,7 @@ struct DeveloperModeReveal: AsyncParsableCommand {
 struct ImageCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "image",
-        abstract: "Mount personalized Developer Disk Images.",
+        abstract: "Manage personalized Developer Disk Images.",
         subcommands: [
             ImageMount.self,
             ImageAuto.self,
