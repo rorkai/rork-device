@@ -310,6 +310,108 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertEqual(requester.requestCount, 0)
         XCTAssertTrue(connection.isClosed)
     }
+
+    func testUnmountSendsUnmountImageCommand() async throws {
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                ["Status": "Complete"],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            }
+        )
+
+        try await unmounter.unmount()
+
+        XCTAssertTrue(connection.isClosed)
+        let request = try command(in: connection.sent[0])
+        XCTAssertEqual(request["Command"] as? String, "UnmountImage")
+        XCTAssertEqual(
+            request["MountPath"] as? String,
+            "/System/Developer"
+        )
+    }
+
+    func testUnmountSurfacesDeviceError() async throws {
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "Error": "InternalError",
+                    "DetailedError": "no image mounted at path",
+                ],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await unmounter.unmount()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .lockdown(
+                    "UnmountImage failed: InternalError: no image mounted at path"
+                )
+            )
+        }
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testListReturnsMountedImageSignatures() async throws {
+        let firstSignature = Data([0x01, 0x02])
+        let secondSignature = Data([0x03, 0x04])
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImageSignature": [firstSignature, secondSignature],
+                    "Status": "Complete",
+                ],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let lister = PersonalizedDeveloperDiskImageLister(
+            openConnection: {
+                try await connections.open()
+            }
+        )
+
+        let signatures = try await lister.mountedImageSignatures()
+
+        XCTAssertEqual(signatures, [firstSignature, secondSignature])
+        XCTAssertTrue(connection.isClosed)
+        let request = try command(in: connection.sent[0])
+        XCTAssertEqual(request["Command"] as? String, "LookupImage")
+        XCTAssertEqual(request["ImageType"] as? String, "Personalized")
+    }
+
+    func testListReturnsEmptyWhenNoImageMounted() async throws {
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let lister = PersonalizedDeveloperDiskImageLister(
+            openConnection: {
+                try await connections.open()
+            }
+        )
+
+        let signatures = try await lister.mountedImageSignatures()
+
+        XCTAssertTrue(signatures.isEmpty)
+        XCTAssertTrue(connection.isClosed)
+    }
 }
 
 private final class ImageMounterConnectionQueue {
