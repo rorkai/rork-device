@@ -913,6 +913,32 @@ final class RorkDeviceCLITests: XCTestCase {
             category(for: RorkDeviceError.secureSessionUnsupported),
             "secure-session"
         )
+        // Trust-dialog outcomes are the most user-actionable, so each maps to a
+        // distinct category instead of collapsing into "other".
+        XCTAssertEqual(
+            category(for: LockdownPairingError.deviceLocked),
+            "device-locked"
+        )
+        XCTAssertEqual(
+            category(for: LockdownPairingError.userDenied),
+            "trust-denied"
+        )
+        XCTAssertEqual(
+            category(for: LockdownPairingError.prohibited),
+            "pairing-prohibited"
+        )
+        XCTAssertEqual(
+            category(for: LockdownPairingError.userConfirmationRequired),
+            "awaiting-trust"
+        )
+        XCTAssertEqual(
+            category(for: LockdownPairingError.timedOut),
+            "trust-timeout"
+        )
+        XCTAssertEqual(
+            category(for: LockdownPairingError.rejected("unmodeled")),
+            "pairing-rejected"
+        )
     }
 
     func testTunnelStartCommandParsesGatewayConfiguration() throws {

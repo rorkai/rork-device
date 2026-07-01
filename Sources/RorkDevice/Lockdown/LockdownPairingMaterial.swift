@@ -128,7 +128,7 @@ enum LockdownPairingMaterial {
             notValidAfter: validUntil,
             issuer: name,
             subject: name,
-            signatureAlgorithm: .sha1WithRSAEncryption,
+            signatureAlgorithm: .sha256WithRSAEncryption,
             extensions: Certificate.Extensions {
                 Critical(
                     BasicConstraints.isCertificateAuthority(
@@ -191,7 +191,7 @@ enum LockdownPairingMaterial {
             notValidAfter: validUntil,
             issuer: issuer,
             subject: DistinguishedName(),
-            signatureAlgorithm: .sha1WithRSAEncryption,
+            signatureAlgorithm: .sha256WithRSAEncryption,
             extensions: Certificate.Extensions {
                 BasicConstraints.notCertificateAuthority
                 KeyUsage(

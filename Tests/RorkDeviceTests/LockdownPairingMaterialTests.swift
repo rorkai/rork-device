@@ -105,6 +105,19 @@ final class LockdownPairingMaterialTests: XCTestCase {
                 for: deviceCertificate
             )
         )
+        // Modern iOS expects SHA-256 pairing certificates; SHA-1 is retired.
+        XCTAssertEqual(
+            rootCertificate.signatureAlgorithm,
+            .sha256WithRSAEncryption
+        )
+        XCTAssertEqual(
+            hostCertificate.signatureAlgorithm,
+            .sha256WithRSAEncryption
+        )
+        XCTAssertEqual(
+            deviceCertificate.signatureAlgorithm,
+            .sha256WithRSAEncryption
+        )
     }
 
     func testBackdatesCertificateStartForDeviceClockSkew() throws {

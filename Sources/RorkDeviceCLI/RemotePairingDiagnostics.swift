@@ -356,12 +356,30 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
 
 /// Classifies a failure by the layer that rejected the attempt.
 ///
-/// `lockdown-start-session` means the device did not accept the saved pairing
-/// record — for example an unknown host — which points at stale device-side
-/// trust. `secure-session` means the record was accepted but the encrypted
-/// session could not be established. `remote-pairing` covers failures after the
-/// tunnel opens, during CoreDevice identity enrollment.
+/// Trust-dialog outcomes surface first because they are the most user-actionable
+/// (for example `device-locked` or `trust-denied`). `lockdown-start-session`
+/// means the device did not accept the saved pairing record — for example an
+/// unknown host — which points at stale device-side trust. `secure-session`
+/// means the record was accepted but the encrypted session could not be
+/// established. `remote-pairing` covers failures after the tunnel opens, during
+/// CoreDevice identity enrollment.
 private func remotePairingFailureCategory(of error: Error) -> String {
+    if let pairingError = error as? LockdownPairingError {
+        switch pairingError {
+        case .userConfirmationRequired:
+            return "awaiting-trust"
+        case .userDenied:
+            return "trust-denied"
+        case .deviceLocked:
+            return "device-locked"
+        case .prohibited:
+            return "pairing-prohibited"
+        case .timedOut:
+            return "trust-timeout"
+        case .rejected:
+            return "pairing-rejected"
+        }
+    }
     guard let deviceError = error as? RorkDeviceError else {
         return "other"
     }
