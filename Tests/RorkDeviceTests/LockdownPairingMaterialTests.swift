@@ -117,9 +117,11 @@ final class LockdownPairingMaterialTests: XCTestCase {
             validFrom: validFrom
         )
 
-        // A device whose clock trails the host must still accept the saved
-        // certificate when it validates the session, so every certificate's
-        // start is backdated well before the host's pairing time.
+        // The start is backdated so a device whose clock trails the host still
+        // accepts the saved certificate when it validates the session, while the
+        // forward validity stays a full ten years measured from the pairing time
+        // rather than from the backdated start.
+        let expectedExpiry = validFrom.addingTimeInterval(10 * 365 * 24 * 60 * 60)
         for data in [
             try XCTUnwrap(record.rootCertificate),
             try XCTUnwrap(record.hostCertificate),
@@ -130,7 +132,11 @@ final class LockdownPairingMaterialTests: XCTestCase {
                 parsed.notValidBefore,
                 validFrom.addingTimeInterval(-3600)
             )
-            XCTAssertGreaterThan(parsed.notValidAfter, validFrom)
+            XCTAssertEqual(
+                parsed.notValidAfter.timeIntervalSince1970,
+                expectedExpiry.timeIntervalSince1970,
+                accuracy: 1
+            )
         }
     }
 
