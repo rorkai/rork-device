@@ -20,7 +20,7 @@ that must accompany binary distributions are preserved under
 - [Swift Atomics 1.3.0](https://github.com/apple/swift-atomics)
 - [Swift Collections 1.6.0](https://github.com/apple/swift-collections)
 - [Swift System 1.7.2](https://github.com/apple/swift-system)
-- [Swift ZIP Archive a611fb9](https://github.com/rorkai/swift-zip-archive/commit/a611fb98910fc3b933b03c57b19a379af7efe7cf)
+- [Swift ZIP Archive 0.8.1-rork.3](https://github.com/rorkai/swift-zip-archive)
 
 The upstream attribution notices that apply to these components and their
 incorporated works are reproduced in:
