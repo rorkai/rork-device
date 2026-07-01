@@ -51,7 +51,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
         )
     }
 
-    func testNIOSecureSessionUpgraderAcceptsGeneratedSHA1PairingCertificates() async throws {
+    func testNIOSecureSessionUpgraderAcceptsGeneratedSHA256PairingCertificates() async throws {
         let devicePrivateKey = try _RSA.Signing.PrivateKey(
             keySize: .bits2048
         )
@@ -75,7 +75,7 @@ final class SecureSessionUpgraderTests: XCTestCase {
 
         XCTAssertEqual(
             hostCertificate.signatureAlgorithm,
-            .sha1WithRSAEncryption
+            .sha256WithRSAEncryption
         )
         try await assertSecureSessionRoundTrip(
             pairingRecord: pairingRecord,

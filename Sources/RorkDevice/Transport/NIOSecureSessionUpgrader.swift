@@ -10,7 +10,7 @@ public enum LockdownTLSProfile: String, CaseIterable, Sendable {
     /// Production configuration: host and root certificates with no TLS maximum.
     case standard
 
-    /// Sends only the host leaf, matching go-ios and pymobiledevice3.
+    /// Sends only the host leaf certificate rather than the full client chain.
     case hostCertificateOnly = "host-certificate-only"
 
     /// Retains the complete client chain while preventing TLS 1.3 negotiation.
