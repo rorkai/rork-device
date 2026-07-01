@@ -161,11 +161,11 @@ enum LockdownPairingMaterial {
             deviceIdentifier: deviceIdentifier,
             hostID: UUID().uuidString.uppercased(),
             systemBUID: systemBUID,
-            deviceCertificate: try pemData(for: deviceCertificate),
-            hostCertificate: try pemData(for: hostCertificate),
-            hostPrivateKey: pemData(hostKey.pemRepresentation),
-            rootCertificate: try pemData(for: rootCertificate),
-            rootPrivateKey: pemData(rootKey.pemRepresentation),
+            deviceCertificate: try certificatePEMData(for: deviceCertificate),
+            hostCertificate: try certificatePEMData(for: hostCertificate),
+            hostPrivateKey: privateKeyPEMData(for: hostKey),
+            rootCertificate: try certificatePEMData(for: rootCertificate),
+            rootPrivateKey: privateKeyPEMData(for: rootKey),
             wiFiMACAddress: wiFiMACAddress
         )
     }
@@ -208,8 +208,17 @@ enum LockdownPairingMaterial {
     ///
     /// Pairing property lists store certificates as binary plist data whose
     /// contents are ASCII PEM, not DER bytes.
-    private static func pemData(for certificate: Certificate) throws -> Data {
-        try pemData(certificate.serializeAsPEM().pemString)
+    private static func certificatePEMData(
+        for certificate: Certificate
+    ) throws -> Data {
+        try pairingPEMData(certificate.serializeAsPEM().pemString)
+    }
+
+    /// Encodes a private key in the PEM form stored with Lockdown pairing.
+    private static func privateKeyPEMData(
+        for privateKey: _RSA.Signing.PrivateKey
+    ) -> Data {
+        pairingPEMData(privateKey.pemRepresentation)
     }
 
     /// Normalizes PEM before it enters Lockdown pairing storage.
@@ -218,7 +227,7 @@ enum LockdownPairingMaterial {
     /// `Pair`, then reject the saved trust material during the next TLS
     /// session. Apply the same termination rule to every generated PEM block so
     /// future key encoding changes cannot reintroduce that mismatch.
-    private static func pemData(_ pem: String) -> Data {
+    private static func pairingPEMData(_ pem: String) -> Data {
         var pem = pem
         if !pem.hasSuffix("\n") {
             pem.append("\n")
