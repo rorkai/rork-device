@@ -169,6 +169,45 @@ public final class DeviceSession {
         )
     }
 
+    /// Unmounts the personalized Developer Disk Image, if one is mounted.
+    ///
+    /// Developer services remain available only while an image is mounted, so
+    /// this is mainly for forcing a clean re-mount; the device also clears a
+    /// mounted image on reboot. The device reports its own error when nothing is
+    /// mounted, so call `mountedPersonalizedDeveloperDiskImages()` first for a
+    /// best-effort teardown.
+    ///
+    /// - Throws: A protocol or transport error when the image mounter cannot
+    ///   complete the request.
+    public func unmountPersonalizedDeveloperDiskImage() async throws {
+        try await PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await self.startService(
+                    named: Self.personalizedDeveloperDiskImageServiceName
+                )
+            }
+        ).unmount()
+    }
+
+    /// Returns the signatures of the personalized Developer Disk Images the
+    /// device reports mounted.
+    ///
+    /// The result is empty when no personalized image is mounted, which is the
+    /// expected state after a reboot.
+    ///
+    /// - Returns: One signature per mounted personalized image.
+    /// - Throws: A protocol or transport error when the image mounter cannot
+    ///   complete the request.
+    public func mountedPersonalizedDeveloperDiskImages() async throws -> [Data] {
+        try await PersonalizedDeveloperDiskImageLister(
+            openConnection: {
+                try await self.startService(
+                    named: Self.personalizedDeveloperDiskImageServiceName
+                )
+            }
+        ).mountedImageSignatures()
+    }
+
     /// Validates device state before network or image-mounter work begins.
     private func developerDiskImageECID() async throws -> UInt64 {
         let deviceInfo = try await fetchDeviceInfo()
