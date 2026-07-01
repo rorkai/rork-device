@@ -209,7 +209,11 @@ enum LockdownPairingMaterial {
     /// Pairing property lists store certificates as binary plist data whose
     /// contents are ASCII PEM, not DER bytes.
     private static func pemData(for certificate: Certificate) throws -> Data {
-        Data(try certificate.serializeAsPEM().pemString.utf8)
+        var pem = try certificate.serializeAsPEM().pemString
+        if !pem.hasSuffix("\n") {
+            pem.append("\n")
+        }
+        return Data(pem.utf8)
     }
 
     /// Normalizes a required textual identity field before key generation.

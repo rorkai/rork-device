@@ -105,6 +105,22 @@ final class LockdownPairingMaterialTests: XCTestCase {
                 for: deviceCertificate
             )
         )
+        XCTAssertEqual(
+            try rootCertificate.extensions.basicConstraints,
+            BasicConstraints.isCertificateAuthority(maxPathLength: nil)
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(rootCertificate.extensions.keyUsage).keyCertSign
+        )
+        for certificate in [hostCertificate, deviceCertificate] {
+            XCTAssertEqual(
+                try certificate.extensions.basicConstraints,
+                BasicConstraints.notCertificateAuthority
+            )
+            let keyUsage = try XCTUnwrap(certificate.extensions.keyUsage)
+            XCTAssertTrue(keyUsage.digitalSignature)
+            XCTAssertTrue(keyUsage.keyEncipherment)
+        }
         // Modern iOS expects SHA-256 pairing certificates; SHA-1 is retired.
         XCTAssertEqual(
             rootCertificate.signatureAlgorithm,
@@ -150,6 +166,28 @@ final class LockdownPairingMaterialTests: XCTestCase {
                 expectedExpiry.timeIntervalSince1970,
                 accuracy: 1
             )
+        }
+    }
+
+    func testTerminatesGeneratedPEMForLockdownTrustSession() throws {
+        let record = try LockdownPairingMaterial.generate(
+            deviceIdentifier: "device-1",
+            systemBUID: "system-1",
+            devicePublicKey: testDevicePublicKeyPEM,
+            wiFiMACAddress: "00:11:22:33:44:55"
+        )
+
+        // Recent Apple host/device stacks accept unterminated certificate PEM
+        // in `Pair`, then reject the saved trust material during the next TLS
+        // session. Keep every generated PEM block aligned with that parser.
+        for data in [
+            try XCTUnwrap(record.rootCertificate),
+            try XCTUnwrap(record.hostCertificate),
+            try XCTUnwrap(record.deviceCertificate),
+            try XCTUnwrap(record.rootPrivateKey),
+            try XCTUnwrap(record.hostPrivateKey),
+        ] {
+            XCTAssertEqual(data.last, 0x0A)
         }
     }
 

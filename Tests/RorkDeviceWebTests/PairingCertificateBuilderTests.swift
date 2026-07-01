@@ -124,6 +124,15 @@ final class PairingCertificateBuilderTests: XCTestCase {
         )
     }
 
+    func testPEMArmorIsNewlineTerminated() {
+        let data = PairingCertificateBuilder.pem(
+            discriminator: "CERTIFICATE",
+            derBytes: Data([0x01, 0x02, 0x03])
+        )
+
+        XCTAssertEqual(data.last, 0x0A)
+    }
+
     func testRejectsUnsupportedPublicKeyPEM() {
         let pem = Data(
             """
