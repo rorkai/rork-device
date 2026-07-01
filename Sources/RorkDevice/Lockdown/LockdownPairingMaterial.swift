@@ -163,9 +163,9 @@ enum LockdownPairingMaterial {
             systemBUID: systemBUID,
             deviceCertificate: try pemData(for: deviceCertificate),
             hostCertificate: try pemData(for: hostCertificate),
-            hostPrivateKey: Data(hostKey.pemRepresentation.utf8),
+            hostPrivateKey: pemData(hostKey.pemRepresentation),
             rootCertificate: try pemData(for: rootCertificate),
-            rootPrivateKey: Data(rootKey.pemRepresentation.utf8),
+            rootPrivateKey: pemData(rootKey.pemRepresentation),
             wiFiMACAddress: wiFiMACAddress
         )
     }
@@ -209,7 +209,17 @@ enum LockdownPairingMaterial {
     /// Pairing property lists store certificates as binary plist data whose
     /// contents are ASCII PEM, not DER bytes.
     private static func pemData(for certificate: Certificate) throws -> Data {
-        var pem = try certificate.serializeAsPEM().pemString
+        try pemData(certificate.serializeAsPEM().pemString)
+    }
+
+    /// Normalizes PEM before it enters Lockdown pairing storage.
+    ///
+    /// Recent Apple host/device stacks accept unterminated certificate PEM in
+    /// `Pair`, then reject the saved trust material during the next TLS
+    /// session. Apply the same termination rule to every generated PEM block so
+    /// future key encoding changes cannot reintroduce that mismatch.
+    private static func pemData(_ pem: String) -> Data {
+        var pem = pem
         if !pem.hasSuffix("\n") {
             pem.append("\n")
         }
