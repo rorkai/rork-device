@@ -73,6 +73,10 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
             matching: udid
         )
         let pairingTrustTimeout = try lockdownTrustTimeout
+        // Snapshot the device's unauthenticated state up front so the report
+        // still carries clock, lock, and OS context when the session fails.
+        let hostTime = Date()
+        let environment = try? await client.deviceEnvironment(for: device)
 
         do {
             try await performLockdownPairing(
@@ -143,7 +147,9 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
                     deviceIdentifier: device.identifier,
                     identityIdentifier: identity.identifier,
                     didRefreshLockdownPairing:
-                        refreshLockdownPairing
+                        refreshLockdownPairing,
+                    hostTime: hostTime,
+                    environment: environment
                 ),
                 asJSON: json
             )
@@ -155,7 +161,9 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
                 deviceIdentifier: device.identifier,
                 identityIdentifier: identity.identifier,
                 didRefreshLockdownPairing:
-                    refreshLockdownPairing
+                    refreshLockdownPairing,
+                hostTime: hostTime,
+                environment: environment
             ),
             asJSON: json
         )
@@ -217,6 +225,10 @@ struct RemotePairingDiagnosticReport: Encodable, Equatable {
     let lastPhase: RemotePairingDiagnosticPhase
     let reachedPhases: [RemotePairingDiagnosticPhase]
     let errorDescription: String?
+    let failureCategory: String?
+    let hostTime: Date
+    let deviceEnvironment: ReportedDeviceEnvironment?
+    let clockSkewSeconds: Int?
 
     private enum CodingKeys: String, CodingKey {
         case rorkDeviceVersion
@@ -227,7 +239,24 @@ struct RemotePairingDiagnosticReport: Encodable, Equatable {
         case lastPhase
         case reachedPhases = "phases"
         case errorDescription = "error"
+        case failureCategory
+        case hostTime
+        case deviceEnvironment
+        case clockSkewSeconds
     }
+}
+
+/// Redacted device state captured without a trusted session.
+///
+/// A device clock far from the host (large `clockSkewSeconds`) or a set
+/// `passwordProtected` flag helps explain why the device refused the secure
+/// session. Every field is optional because the device may withhold it until it
+/// trusts the host.
+struct ReportedDeviceEnvironment: Encodable, Equatable {
+    let osVersion: String?
+    let model: String?
+    let deviceTime: Date?
+    let passwordProtected: Bool?
 }
 
 /// Captures progress from both synchronous CLI work and sendable callbacks.
@@ -239,6 +268,7 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
     private var reachedPhases: [RemotePairingDiagnosticPhase] = []
     private var currentPhase = RemotePairingDiagnosticPhase.notStarted
     private var failureDescription: String?
+    private var failureCategoryValue: String?
 
     /// Records a stage before work begins so failures retain their location.
     func record(phase: RemotePairingDiagnosticPhase) {
@@ -266,8 +296,10 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
     /// Preserves the typed library description instead of NSError bridging.
     func record(failure error: Error) {
         let description = diagnosticDescription(of: error)
+        let category = remotePairingFailureCategory(of: error)
         lock.withLock {
             failureDescription = description
+            failureCategoryValue = category
         }
     }
 
@@ -275,7 +307,9 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
     func makeReport(
         deviceIdentifier: String,
         identityIdentifier: String,
-        didRefreshLockdownPairing: Bool
+        didRefreshLockdownPairing: Bool,
+        hostTime: Date,
+        environment: DeviceEnvironment?
     ) -> RemotePairingDiagnosticReport {
         lock.withLock {
             RemotePairingDiagnosticReport(
@@ -289,7 +323,20 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
                     && currentPhase == .remotePairingEstablished,
                 lastPhase: currentPhase,
                 reachedPhases: reachedPhases,
-                errorDescription: failureDescription
+                errorDescription: failureDescription,
+                failureCategory: failureCategoryValue,
+                hostTime: hostTime,
+                deviceEnvironment: environment.map {
+                    ReportedDeviceEnvironment(
+                        osVersion: $0.productVersion,
+                        model: $0.productType,
+                        deviceTime: $0.deviceTime,
+                        passwordProtected: $0.isPasswordProtected
+                    )
+                },
+                clockSkewSeconds: environment?.deviceTime.map {
+                    Int($0.timeIntervalSince(hostTime).rounded())
+                }
             )
         }
     }
@@ -307,12 +354,38 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
     }
 }
 
+/// Classifies a failure by the layer that rejected the attempt.
+///
+/// `lockdown-start-session` means the device did not accept the saved pairing
+/// record — for example an unknown host — which points at stale device-side
+/// trust. `secure-session` means the record was accepted but the encrypted
+/// session could not be established. `remote-pairing` covers failures after the
+/// tunnel opens, during CoreDevice identity enrollment.
+private func remotePairingFailureCategory(of error: Error) -> String {
+    guard let deviceError = error as? RorkDeviceError else {
+        return "other"
+    }
+    switch deviceError {
+    case .transport:
+        return "transport"
+    case .lockdown:
+        return "lockdown-start-session"
+    case .secureSession, .secureSessionUnsupported:
+        return "secure-session"
+    case .remoteXPCStreamReset, .remotePairing:
+        return "remote-pairing"
+    default:
+        return "other"
+    }
+}
+
 /// Encodes deterministic JSON for support collection and regression fixtures.
 func remotePairingDiagnosticJSON(
     _ report: RemotePairingDiagnosticReport
 ) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
     return try encoder.encode(report)
 }
 
@@ -329,6 +402,20 @@ func remotePairingDiagnosticText(
         "- last phase: \(report.lastPhase.rawValue)",
         "- result: \(report.succeeded ? "passed" : "failed")",
     ]
+    if let environment = report.deviceEnvironment {
+        lines.append(
+            "- device: \(environment.model ?? "unknown") on iOS \(environment.osVersion ?? "unknown")"
+        )
+        if let passwordProtected = environment.passwordProtected {
+            lines.append("- device locked: \(passwordProtected ? "yes" : "no")")
+        }
+    }
+    if let skew = report.clockSkewSeconds {
+        lines.append("- device clock skew: \(skew)s")
+    }
+    if let category = report.failureCategory {
+        lines.append("- failure category: \(category)")
+    }
     if let error = report.errorDescription {
         lines.append("- error: \(error)")
     }

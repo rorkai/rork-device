@@ -800,7 +800,9 @@ final class RorkDeviceCLITests: XCTestCase {
         let report = recorder.makeReport(
             deviceIdentifier: "device-1",
             identityIdentifier: "identity-1",
-            didRefreshLockdownPairing: false
+            didRefreshLockdownPairing: false,
+            hostTime: Date(),
+            environment: nil
         )
 
         XCTAssertFalse(didPair)
@@ -826,7 +828,14 @@ final class RorkDeviceCLITests: XCTestCase {
         let report = recorder.makeReport(
             deviceIdentifier: "device-1",
             identityIdentifier: "identity-1",
-            didRefreshLockdownPairing: true
+            didRefreshLockdownPairing: true,
+            hostTime: Date(timeIntervalSince1970: 1_700_000_000),
+            environment: DeviceEnvironment(
+                productVersion: "26.5.1",
+                productType: "iPhone18,1",
+                deviceTime: Date(timeIntervalSince1970: 1_699_913_600),
+                isPasswordProtected: true
+            )
         )
         let data = try remotePairingDiagnosticJSON(report)
         let object = try XCTUnwrap(
@@ -852,8 +861,58 @@ final class RorkDeviceCLITests: XCTestCase {
             object["error"] as? String,
             report.errorDescription
         )
+        // The stream reset happened during CoreDevice enrollment, after the
+        // Lockdown session, so it is categorized as a remote-pairing failure.
+        XCTAssertEqual(report.failureCategory, "remote-pairing")
+        XCTAssertEqual(object["failureCategory"] as? String, "remote-pairing")
+        // The device state captured without a session accompanies the failure:
+        // a one-day-behind device clock and the reported lock state.
+        XCTAssertEqual(report.clockSkewSeconds, -86_400)
+        XCTAssertEqual(object["clockSkewSeconds"] as? Int, -86_400)
+        let environment = try XCTUnwrap(
+            object["deviceEnvironment"] as? [String: Any]
+        )
+        XCTAssertEqual(environment["osVersion"] as? String, "26.5.1")
+        XCTAssertEqual(environment["model"] as? String, "iPhone18,1")
+        XCTAssertEqual(environment["passwordProtected"] as? Bool, true)
         XCTAssertNil(object["privateKey"])
         XCTAssertNil(object["pairingRecord"])
+    }
+
+    func testRemotePairingFailureCategoryReflectsTheRejectingLayer() {
+        func category(for error: Error) -> String? {
+            let recorder = RemotePairingDiagnosticRecorder()
+            recorder.record(failure: error)
+            return recorder.makeReport(
+                deviceIdentifier: "device-1",
+                identityIdentifier: "identity-1",
+                didRefreshLockdownPairing: false,
+                hostTime: Date(),
+                environment: nil
+            ).failureCategory
+        }
+
+        // A rejected saved record surfaces as a Lockdown StartSession failure,
+        // while a failed encrypted upgrade surfaces as a secure-session failure;
+        // the two point at different causes, so they must not collapse together.
+        XCTAssertEqual(
+            category(for: RorkDeviceError.transport("connection dropped")),
+            "transport"
+        )
+        XCTAssertEqual(
+            category(
+                for: RorkDeviceError.lockdown("StartSession failed: InvalidHostID")
+            ),
+            "lockdown-start-session"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.secureSession("TLS handshake failed")),
+            "secure-session"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.secureSessionUnsupported),
+            "secure-session"
+        )
     }
 
     func testTunnelStartCommandParsesGatewayConfiguration() throws {

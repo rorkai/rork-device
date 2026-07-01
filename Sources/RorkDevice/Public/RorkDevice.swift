@@ -7,7 +7,7 @@ import Foundation
 /// workflows.
 public enum RorkDevice {
     /// Package version reported by APIs and command-line diagnostics.
-    public static let version = "0.9.13"
+    public static let version = "0.9.14"
 }
 
 /// Returns whether usbmux identifies a discovered device record as a USB route.
@@ -312,6 +312,35 @@ public final class DeviceClient {
             return try await connect(to: host, port: port, using: pairingRecord, label: label)
         }
     }
+
+    /// Reads a best-effort unauthenticated snapshot of a discovered device.
+    ///
+    /// Unlike `connect(to:using:label:)`, this opens no trusted session, so it
+    /// still returns whatever identity, clock, and lock state the device exposes
+    /// when a session cannot be established.
+    ///
+    /// - Parameter device: Device returned from `discoverDevices()`.
+    /// - Returns: The values the device exposes without host trust.
+    public func deviceEnvironment(
+        for device: Device
+    ) async throws -> DeviceEnvironment {
+        switch device.connection {
+        case .usbmux(let deviceID):
+            return try await deviceEnvironment(
+                over: USBMuxDeviceTransport(
+                    deviceID: deviceID,
+                    usbmuxClient: usbmuxClient
+                )
+            )
+        case .direct(let host, let port):
+            return try await deviceEnvironment(
+                over: DirectLockdownTransport(
+                    host: host,
+                    lockdownPort: port
+                )
+            )
+        }
+    }
     #endif
 
     /// Opens an authenticated Lockdown session through a caller-supplied transport.
@@ -417,6 +446,48 @@ public final class DeviceClient {
             deviceIdentifier: deviceIdentifier,
             devicePublicKey: devicePublicKey,
             wiFiMACAddress: wiFiMACAddress
+        )
+    }
+
+    /// Reads a best-effort unauthenticated snapshot of Lockdown device state.
+    ///
+    /// A single `GetValue` without a session returns whatever the device exposes
+    /// to an untrusted host. Because it never opens a trusted session, it still
+    /// works when the session itself is the thing failing — the case worth
+    /// diagnosing — and any value the device withholds until trust exists is
+    /// reported as `nil` rather than raised as an error.
+    ///
+    /// - Parameter transport: Route capable of opening Lockdown on port 62078.
+    /// - Returns: The identity, clock, and lock state the device exposes.
+    public func deviceEnvironment(
+        over transport: any DeviceTransport,
+        readTimeout: Duration = .seconds(10)
+    ) async throws -> DeviceEnvironment {
+        let connection = try await transport.connect(to: 62078)
+        defer {
+            connection.close()
+        }
+        // A wedged device could accept the connection yet never answer the read.
+        // Closing the connection fails a stalled read — which the protocol allows
+        // from another task and makes idempotent — so a watchdog bounds the wait
+        // instead of hanging the caller. The read completing first cancels it.
+        nonisolated(unsafe) let readable = connection
+        let watchdog = Task {
+            try? await Task.sleep(for: readTimeout)
+            readable.close()
+        }
+        defer {
+            watchdog.cancel()
+        }
+        let values =
+            (try? await LockdownClient(connection: connection).deviceValues())
+            ?? [:]
+        return DeviceEnvironment(
+            productVersion: values["ProductVersion"] as? String,
+            productType: values["ProductType"] as? String,
+            deviceTime: (values["TimeIntervalSince1970"] as? NSNumber)
+                .map { Date(timeIntervalSince1970: $0.doubleValue) },
+            isPasswordProtected: values["PasswordProtected"] as? Bool
         )
     }
 
@@ -700,6 +771,40 @@ public struct DevicePairingInformation: Equatable, Sendable {
 
     /// Wi-Fi hardware address retained in the pairing record.
     public let wiFiMACAddress: String
+}
+
+/// Best-effort snapshot of unauthenticated Lockdown state, used to explain why
+/// a trusted session cannot open.
+///
+/// Every field is optional: a device may withhold a value until a trusted
+/// session exists, so a missing value is itself diagnostic rather than an
+/// error, and reading the snapshot never fails on that account.
+public struct DeviceEnvironment: Equatable, Sendable {
+    /// iOS/iPadOS version, when the device exposes it without host trust.
+    public let productVersion: String?
+
+    /// Hardware model identifier such as `iPhone18,1`, when exposed.
+    public let productType: String?
+
+    /// Device wall-clock time, when exposed. A large gap from the host clock
+    /// points at certificate time-validity failures during the secure session.
+    public let deviceTime: Date?
+
+    /// Whether the device reports itself passcode-locked, when exposed.
+    public let isPasswordProtected: Bool?
+
+    /// Creates a snapshot from already-read Lockdown values.
+    public init(
+        productVersion: String?,
+        productType: String?,
+        deviceTime: Date?,
+        isPasswordProtected: Bool?
+    ) {
+        self.productVersion = productVersion
+        self.productType = productType
+        self.deviceTime = deviceTime
+        self.isPasswordProtected = isPasswordProtected
+    }
 }
 
 #if canImport(NIOPosix) && !os(WASI)
