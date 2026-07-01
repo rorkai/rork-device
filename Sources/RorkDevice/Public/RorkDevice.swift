@@ -460,11 +460,24 @@ public final class DeviceClient {
     /// - Parameter transport: Route capable of opening Lockdown on port 62078.
     /// - Returns: The identity, clock, and lock state the device exposes.
     public func deviceEnvironment(
-        over transport: any DeviceTransport
+        over transport: any DeviceTransport,
+        readTimeout: Duration = .seconds(10)
     ) async throws -> DeviceEnvironment {
         let connection = try await transport.connect(to: 62078)
         defer {
             connection.close()
+        }
+        // A wedged device could accept the connection yet never answer the read.
+        // Closing the connection fails a stalled read — which the protocol allows
+        // from another task and makes idempotent — so a watchdog bounds the wait
+        // instead of hanging the caller. The read completing first cancels it.
+        nonisolated(unsafe) let readable = connection
+        let watchdog = Task {
+            try? await Task.sleep(for: readTimeout)
+            readable.close()
+        }
+        defer {
+            watchdog.cancel()
         }
         let values =
             (try? await LockdownClient(connection: connection).deviceValues())

@@ -879,6 +879,42 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertNil(object["pairingRecord"])
     }
 
+    func testRemotePairingFailureCategoryReflectsTheRejectingLayer() {
+        func category(for error: Error) -> String? {
+            let recorder = RemotePairingDiagnosticRecorder()
+            recorder.record(failure: error)
+            return recorder.makeReport(
+                deviceIdentifier: "device-1",
+                identityIdentifier: "identity-1",
+                didRefreshLockdownPairing: false,
+                hostTime: Date(),
+                environment: nil
+            ).failureCategory
+        }
+
+        // A rejected saved record surfaces as a Lockdown StartSession failure,
+        // while a failed encrypted upgrade surfaces as a secure-session failure;
+        // the two point at different causes, so they must not collapse together.
+        XCTAssertEqual(
+            category(for: RorkDeviceError.transport("connection dropped")),
+            "transport"
+        )
+        XCTAssertEqual(
+            category(
+                for: RorkDeviceError.lockdown("StartSession failed: InvalidHostID")
+            ),
+            "lockdown-start-session"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.secureSession("TLS handshake failed")),
+            "secure-session"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.secureSessionUnsupported),
+            "secure-session"
+        )
+    }
+
     func testTunnelStartCommandParsesGatewayConfiguration() throws {
         let command = try TunnelStartCommand.parse([
             "--udid", "device-1",
