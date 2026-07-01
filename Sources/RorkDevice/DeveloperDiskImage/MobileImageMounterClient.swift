@@ -12,6 +12,9 @@ private struct MobileImageMounterClient {
     /// Image type Apple uses for personalized developer services.
     private static let personalizedImageType = "DeveloperDiskImage"
 
+    /// Mount point of the personalized Developer Disk Image cryptex.
+    private static let personalizedMountPath = "/System/Developer"
+
     /// Active `com.apple.mobile.mobile_image_mounter` byte stream.
     private let connection: DeviceConnection
 
@@ -22,29 +25,7 @@ private struct MobileImageMounterClient {
 
     /// Reports whether any personalized Developer Disk Image is mounted.
     func isPersonalizedImageMounted() async throws -> Bool {
-        try await send([
-            "Command": "LookupImage",
-            "ImageType": "Personalized",
-        ])
-        let response = try await receive(command: "LookupImage")
-
-        if let isPresent = response.bool("ImagePresent") {
-            return isPresent
-        }
-        if let signature = response["ImageSignature"] as? Data {
-            return !signature.isEmpty
-        }
-        if let signatures = response["ImageSignature"] as? [Data] {
-            return signatures.contains { !$0.isEmpty }
-        }
-        if let signatures = response["ImageSignature"] as? [Any] {
-            return signatures.contains {
-                ($0 as? Data)?.isEmpty == false
-            }
-        }
-        throw RorkDeviceError.protocolViolation(
-            "LookupImage response did not report whether a personalized image is mounted."
-        )
+        try await lookUpPersonalizedImages().isPresent
     }
 
     /// Reads the hardware values needed to select a matching build identity.
@@ -216,6 +197,91 @@ private struct MobileImageMounterClient {
         }
     }
 
+    /// Unmounts the personalized Developer Disk Image cryptex, if one is mounted.
+    ///
+    /// The device surfaces its own error when nothing is mounted at the path, so
+    /// callers that only want a best-effort teardown should check
+    /// `isPersonalizedImageMounted()` first.
+    func unmount() async throws {
+        try await send([
+            "Command": "UnmountImage",
+            "MountPath": Self.personalizedMountPath,
+        ])
+        let response = try await receive(command: "UnmountImage")
+        guard response.string("Status") == "Complete" else {
+            throw RorkDeviceError.protocolViolation(
+                "UnmountImage response did not report completion."
+            )
+        }
+    }
+
+    /// Returns the signatures of the personalized images the device reports
+    /// mounted, or an empty array when none are mounted.
+    func mountedImageSignatures() async throws -> [Data] {
+        try await lookUpPersonalizedImages().signatures
+    }
+
+    /// Parsed `LookupImage` result for the personalized image type.
+    private struct PersonalizedImageLookup {
+        /// Whether the device reports a personalized image mounted.
+        let isPresent: Bool
+
+        /// Signatures the device reports for mounted personalized images.
+        let signatures: [Data]
+    }
+
+    /// Runs one `LookupImage` query and decodes the shared response shape.
+    ///
+    /// The device has conveyed mount state through `ImagePresent` and through
+    /// `ImageSignature` across iOS versions, so both readers share this decode
+    /// to stay aligned when the response shape changes.
+    private func lookUpPersonalizedImages() async throws
+        -> PersonalizedImageLookup
+    {
+        try await send([
+            "Command": "LookupImage",
+            "ImageType": "Personalized",
+        ])
+        let response = try await receive(command: "LookupImage")
+        let signatures = Self.imageSignatures(in: response)
+        if let isPresent = response.bool("ImagePresent") {
+            return PersonalizedImageLookup(
+                isPresent: isPresent,
+                signatures: signatures
+            )
+        }
+        guard response["ImageSignature"] != nil else {
+            throw RorkDeviceError.protocolViolation(
+                "LookupImage response did not report whether a personalized image is mounted."
+            )
+        }
+        return PersonalizedImageLookup(
+            isPresent: !signatures.isEmpty,
+            signatures: signatures
+        )
+    }
+
+    /// Extracts every non-empty image signature from a `LookupImage` response.
+    ///
+    /// The mounter has returned the signature as a lone value or an array across
+    /// iOS versions, so each shape is normalized to a list.
+    private static func imageSignatures(
+        in response: [String: Any]
+    ) -> [Data] {
+        if let signature = response["ImageSignature"] as? Data {
+            return signature.isEmpty ? [] : [signature]
+        }
+        if let signatures = response["ImageSignature"] as? [Data] {
+            return signatures.filter { !$0.isEmpty }
+        }
+        if let signatures = response["ImageSignature"] as? [Any] {
+            return signatures
+                .compactMap { $0 as? Data }
+                .filter { !$0.isEmpty }
+        }
+        return []
+    }
+
     /// Ends the image-mounter session after a successful mount.
     func hangUp() async throws {
         try await send(["Command": "Hangup"])
@@ -347,5 +413,49 @@ struct PersonalizedDeveloperDiskImageMounter {
         )
         try await client.hangUp()
         return .mounted(ticketSource: ticketSource)
+    }
+}
+
+/// Unmounts the personalized Developer Disk Image over one mounter connection.
+struct PersonalizedDeveloperDiskImageUnmounter {
+    /// Opens a fresh image-mounter service connection.
+    private let openConnection: () async throws -> DeviceConnection
+
+    /// Creates an unmounter with a replaceable connection boundary.
+    init(openConnection: @escaping () async throws -> DeviceConnection) {
+        self.openConnection = openConnection
+    }
+
+    /// Opens the image-mounter service and unmounts the personalized image.
+    func unmount() async throws {
+        let connection = try await openConnection()
+        defer {
+            connection.close()
+        }
+        try await MobileImageMounterClient(
+            connection: connection
+        ).unmount()
+    }
+}
+
+/// Reports the personalized Developer Disk Images the device has mounted.
+struct PersonalizedDeveloperDiskImageLister {
+    /// Opens a fresh image-mounter service connection.
+    private let openConnection: () async throws -> DeviceConnection
+
+    /// Creates a lister with a replaceable connection boundary.
+    init(openConnection: @escaping () async throws -> DeviceConnection) {
+        self.openConnection = openConnection
+    }
+
+    /// Opens the image-mounter service and returns mounted image signatures.
+    func mountedImageSignatures() async throws -> [Data] {
+        let connection = try await openConnection()
+        defer {
+            connection.close()
+        }
+        return try await MobileImageMounterClient(
+            connection: connection
+        ).mountedImageSignatures()
     }
 }

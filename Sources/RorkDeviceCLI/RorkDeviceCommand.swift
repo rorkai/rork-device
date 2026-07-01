@@ -728,10 +728,12 @@ struct DeveloperModeReveal: AsyncParsableCommand {
 struct ImageCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "image",
-        abstract: "Mount personalized Developer Disk Images.",
+        abstract: "Manage personalized Developer Disk Images.",
         subcommands: [
             ImageMount.self,
             ImageAuto.self,
+            ImageUnmount.self,
+            ImageList.self,
         ]
     )
 }
@@ -851,6 +853,115 @@ struct ImageAuto: AsyncParsableCommand {
             )
         )
     }
+}
+
+/// Unmounts the personalized Developer Disk Image over the Lockdown route.
+struct ImageUnmount: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "unmount",
+        abstract: "Unmount the personalized Developer Disk Image."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
+    func validate() throws {
+        try connection.requireLockdownRoute(for: "image unmount")
+    }
+
+    func run() async throws {
+        let session = try await connection.session()
+        try await session.unmountPersonalizedDeveloperDiskImage()
+        try writeDeveloperDiskImageUnmountResult(asJSON: json)
+    }
+}
+
+/// Lists the personalized Developer Disk Images the device reports mounted.
+struct ImageList: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List mounted personalized Developer Disk Images."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
+    func validate() throws {
+        try connection.requireLockdownRoute(for: "image list")
+    }
+
+    func run() async throws {
+        let session = try await connection.session()
+        let signatures = try await session
+            .mountedPersonalizedDeveloperDiskImages()
+        try writeDeveloperDiskImageListResult(signatures, asJSON: json)
+    }
+}
+
+/// Writes image-unmount output without mixing human text into JSON mode.
+private func writeDeveloperDiskImageUnmountResult(asJSON: Bool) throws {
+    if asJSON {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try FileHandle.standardOutput.write(
+            contentsOf: encoder.encode(
+                DeveloperDiskImageUnmountOutput(unmounted: true)
+            )
+        )
+        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        return
+    }
+    print("Unmounted the personalized Developer Disk Image.")
+}
+
+/// Writes the mounted-image list without mixing human text into JSON mode.
+private func writeDeveloperDiskImageListResult(
+    _ signatures: [Data],
+    asJSON: Bool
+) throws {
+    let hexSignatures = signatures.map { signature in
+        signature.map { String(format: "%02x", $0) }.joined()
+    }
+    if asJSON {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try FileHandle.standardOutput.write(
+            contentsOf: encoder.encode(
+                DeveloperDiskImageListOutput(
+                    count: signatures.count,
+                    signatures: hexSignatures
+                )
+            )
+        )
+        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        return
+    }
+    guard !signatures.isEmpty else {
+        print("No personalized Developer Disk Image is mounted.")
+        return
+    }
+    let header = signatures.count == 1
+        ? "1 personalized Developer Disk Image is mounted:"
+        : "\(signatures.count) personalized Developer Disk Images are mounted:"
+    print(header)
+    for hex in hexSignatures {
+        print("- \(hex)")
+    }
+}
+
+/// Stable JSON shape emitted by `image unmount`.
+private struct DeveloperDiskImageUnmountOutput: Encodable {
+    let unmounted: Bool
+}
+
+/// Stable JSON shape emitted by `image list`.
+private struct DeveloperDiskImageListOutput: Encodable {
+    let count: Int
+    let signatures: [String]
 }
 
 /// Encodes the stable machine-readable image-mount result.
