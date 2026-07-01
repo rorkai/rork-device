@@ -800,7 +800,9 @@ final class RorkDeviceCLITests: XCTestCase {
         let report = recorder.makeReport(
             deviceIdentifier: "device-1",
             identityIdentifier: "identity-1",
-            didRefreshLockdownPairing: false
+            didRefreshLockdownPairing: false,
+            hostTime: Date(),
+            environment: nil
         )
 
         XCTAssertFalse(didPair)
@@ -826,7 +828,14 @@ final class RorkDeviceCLITests: XCTestCase {
         let report = recorder.makeReport(
             deviceIdentifier: "device-1",
             identityIdentifier: "identity-1",
-            didRefreshLockdownPairing: true
+            didRefreshLockdownPairing: true,
+            hostTime: Date(timeIntervalSince1970: 1_700_000_000),
+            environment: DeviceEnvironment(
+                productVersion: "26.5.1",
+                productType: "iPhone18,1",
+                deviceTime: Date(timeIntervalSince1970: 1_699_913_600),
+                isPasswordProtected: true
+            )
         )
         let data = try remotePairingDiagnosticJSON(report)
         let object = try XCTUnwrap(
@@ -852,6 +861,20 @@ final class RorkDeviceCLITests: XCTestCase {
             object["error"] as? String,
             report.errorDescription
         )
+        // The stream reset happened during CoreDevice enrollment, after the
+        // Lockdown session, so it is categorized as a remote-pairing failure.
+        XCTAssertEqual(report.failureCategory, "remote-pairing")
+        XCTAssertEqual(object["failureCategory"] as? String, "remote-pairing")
+        // The device state captured without a session accompanies the failure:
+        // a one-day-behind device clock and the reported lock state.
+        XCTAssertEqual(report.clockSkewSeconds, -86_400)
+        XCTAssertEqual(object["clockSkewSeconds"] as? Int, -86_400)
+        let environment = try XCTUnwrap(
+            object["deviceEnvironment"] as? [String: Any]
+        )
+        XCTAssertEqual(environment["osVersion"] as? String, "26.5.1")
+        XCTAssertEqual(environment["model"] as? String, "iPhone18,1")
+        XCTAssertEqual(environment["passwordProtected"] as? Bool, true)
         XCTAssertNil(object["privateKey"])
         XCTAssertNil(object["pairingRecord"])
     }
