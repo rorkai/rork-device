@@ -78,14 +78,16 @@
 ///
 /// TCP and IPv6 counters use 32-bit storage so long transfers do not wrap,
 /// and MIB2 counters add the retransmission visibility that the base protocol
-/// stats lack. Link-layer counters and the statistics display stay disabled;
-/// RorkDevice reads counters programmatically and reports them through its
-/// own logging surfaces.
+/// stats lack. Counter groups that the statistics API never exposes stay
+/// disabled, as does the statistics display; RorkDevice reads counters
+/// programmatically and reports them through its own logging surfaces.
 #define LWIP_STATS 1
 #define LWIP_STATS_LARGE 1
 #define LWIP_STATS_DISPLAY 0
 #define MIB2_STATS 1
 #define LINK_STATS 0
+#define ND6_STATS 0
+#define ICMP6_STATS 0
 #define LWIP_DEBUG 0
 
 #endif
