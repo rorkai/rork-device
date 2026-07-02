@@ -84,6 +84,49 @@ final class RemotePairingProtocolTests: XCTestCase {
         XCTAssertTrue(didEnrollBeforeInterruption)
     }
 
+    func testTrustEstablishmentAbortsPairVerifyWhenTheDeviceRejectsWithoutAPublicKey()
+        async throws
+    {
+        // A device with no stored pairing rejects pair verification at the very
+        // first response: an error code and no public key, never a verify M2
+        // followed by a later rejection. Reproduces the reset-device wire.
+        var inbound = Data()
+        inbound.append(try frame(plain: [
+            "response": ["_1": ["handshake": ["_0": [:]]]],
+        ]))
+        inbound.append(try pairingFrame(TLV8.encode([
+            TLV8Field(type: 0x07, value: Data([0x04])),
+            TLV8Field(type: 0x06, value: Data([0x02])),
+        ])))
+        let connection = FakeConnection(inbound: inbound)
+        let client = RemotePairingProtocolClient(
+            connection: connection,
+            identity: RemotePairingIdentity(
+                identifier: "test-host",
+                privateKey: Curve25519.Signing.PrivateKey(),
+                identityResolvingKey: Data(repeating: 0x7a, count: 16)
+            )
+        )
+
+        // Setup starts after the abort and then underflows the fixture, so the
+        // call throws; the send ordering is what this test pins down.
+        await XCTAssertThrowsErrorAsync({
+            try await client.establishTrustIfNeeded(willEstablishTrust: {})
+        }) { _ in }
+
+        // The device must be told pair verification is abandoned before manual
+        // pair setup begins, otherwise it resets the setup stream.
+        let failedIndex = try XCTUnwrap(
+            connection.sent.firstIndex { isPairVerifyFailed(in: $0) },
+            "Expected a pairVerifyFailed event before manual pair setup."
+        )
+        let setupIndex = try XCTUnwrap(
+            connection.sent.firstIndex { manualPairSetupStarts(in: $0) },
+            "Expected manual pair setup to start after the rejection."
+        )
+        XCTAssertLessThan(failedIndex, setupIndex)
+    }
+
     func testTrustEstablishmentStartsPairSetupAfterAuthenticationRejection() async throws {
         let scenario = try rejectedVerificationScenario(errorCode: 0x02)
 
@@ -567,6 +610,31 @@ private func pairingFrame(_ pairingData: Data) throws -> Data {
             ],
         ],
     ])
+}
+
+private func eventPayload(in frame: Data) -> [String: Any]? {
+    guard let object = try? decodeFrame(frame),
+        let message = object["message"] as? [String: Any],
+        let plain = message["plain"] as? [String: Any],
+        let payload = plain["_0"] as? [String: Any],
+        let event = payload["event"] as? [String: Any]
+    else {
+        return nil
+    }
+    return event["_0"] as? [String: Any]
+}
+
+private func isPairVerifyFailed(in frame: Data) -> Bool {
+    eventPayload(in: frame)?["pairVerifyFailed"] != nil
+}
+
+private func manualPairSetupStarts(in frame: Data) -> Bool {
+    guard let pairingData = eventPayload(in: frame)?["pairingData"] as? [String: Any],
+        let payload = pairingData["_0"] as? [String: Any]
+    else {
+        return false
+    }
+    return payload["kind"] as? String == "setupManualPairing"
 }
 
 private func sequenceNumber(in frame: Data) throws -> Int {
