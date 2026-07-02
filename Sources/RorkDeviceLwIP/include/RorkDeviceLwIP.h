@@ -135,6 +135,50 @@ int rork_lwip_stack_input(
 /// - Parameter stack: Any active stack used as a lifecycle guard.
 void rork_lwip_stack_poll(rork_lwip_stack_t *stack);
 
+/// Snapshot of process-wide lwIP TCP and IPv6 protocol counters.
+///
+/// lwIP stores statistics globally, so the values cover every active stack in
+/// the process. Counters increase monotonically for the process lifetime.
+typedef struct rork_lwip_stack_stats {
+    /// TCP segments transmitted, including retransmissions.
+    uint32_t tcp_segments_sent;
+
+    /// TCP segments received.
+    uint32_t tcp_segments_received;
+
+    /// TCP segments retransmitted after loss or timeout.
+    uint32_t tcp_segments_retransmitted;
+
+    /// TCP segments discarded by protocol processing.
+    uint32_t tcp_drops;
+
+    /// TCP failures: checksum, length, memory, routing, protocol, and
+    /// option errors, plus errors without a more specific counter.
+    uint32_t tcp_errors;
+
+    /// IPv6 packets transmitted by the interface layer.
+    uint32_t ip6_packets_sent;
+
+    /// IPv6 packets received by the interface layer.
+    uint32_t ip6_packets_received;
+
+    /// IPv6 packets discarded by protocol processing.
+    uint32_t ip6_drops;
+} rork_lwip_stack_stats_t;
+
+/// Copies the current process-wide protocol counters into `stats`.
+///
+/// A `NULL` stack or output pointer is a no-op. The call must run on the same
+/// serialized execution context as every other lwIP operation.
+///
+/// - Parameters:
+///   - stack: Any active stack used as a lifecycle guard.
+///   - stats: Output storage receiving the counter snapshot.
+void rork_lwip_stack_stats_read(
+    rork_lwip_stack_t *stack,
+    rork_lwip_stack_stats_t *stats
+);
+
 /// Begins a TCP connection through a specific stack's IPv6 interface.
 ///
 /// The returned wrapper owns the pending TCP control block and must eventually

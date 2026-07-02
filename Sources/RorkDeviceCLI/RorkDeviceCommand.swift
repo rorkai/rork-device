@@ -1128,6 +1128,13 @@ struct TunnelStartCommand: AsyncParsableCommand {
     )
     var maximumTransmissionUnit: UInt16 = 1_280
 
+    @Option(
+        name: .customLong("stats-interval"),
+        help:
+            "Seconds between tunnel data-plane statistics lines on stderr. Zero disables statistics."
+    )
+    var statsInterval: UInt32 = 0
+
     /// Rejects tunnel settings that cannot form a valid IPv6 link.
     func validate() throws {
         try connection.validate()
@@ -1167,7 +1174,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 maximumTransmissionUnit
         )
         writeTunnelProgress(
-            "Negotiated CoreDevice tunnel to \(tunnel.configuration.deviceAddress):\(tunnel.configuration.serviceDiscoveryPort)."
+            "Negotiated CoreDevice tunnel to \(tunnel.configuration.deviceAddress):\(tunnel.configuration.serviceDiscoveryPort) with MTU \(tunnel.configuration.maximumTransmissionUnit)."
         )
 
         let network: CoreDeviceUserspaceNetwork
@@ -1210,6 +1217,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
             gateway: gateway
         )
 
+        let statsReporter = startTunnelStatisticsReporter(
+            network: network,
+            interval: statsInterval
+        )
+        defer {
+            statsReporter?.cancel()
+        }
+
         try await withTaskCancellationHandler {
             try await gateway.waitUntilClosed()
         } onCancel: {
@@ -1218,8 +1233,52 @@ struct TunnelStartCommand: AsyncParsableCommand {
     }
 }
 
+/// Periodically writes tunnel data-plane statistics to stderr.
+///
+/// Returns `nil` when the interval is zero, keeping statistics opt-in.
+private func startTunnelStatisticsReporter(
+    network: CoreDeviceUserspaceNetwork,
+    interval: UInt32
+) -> Task<Void, Never>? {
+    guard interval > 0 else {
+        return nil
+    }
+    return Task {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: .seconds(interval))
+            } catch {
+                return
+            }
+            writeTunnelProgress(
+                tunnelStatisticsLine(network.statistics())
+            )
+        }
+    }
+}
+
+/// Formats one machine-parseable statistics line for tunnel diagnostics.
+func tunnelStatisticsLine(
+    _ statistics: CoreDeviceUserspaceNetworkStatistics
+) -> String {
+    "Tunnel stats: "
+        + "packetsOut=\(statistics.packetsSent) "
+        + "bytesOut=\(statistics.bytesSent) "
+        + "packetsIn=\(statistics.packetsReceived) "
+        + "bytesIn=\(statistics.bytesReceived) "
+        + "connections=\(statistics.activeConnections) "
+        + "tcpTx=\(statistics.tcpSegmentsSent) "
+        + "tcpRx=\(statistics.tcpSegmentsReceived) "
+        + "tcpRexmit=\(statistics.tcpSegmentsRetransmitted) "
+        + "tcpDrops=\(statistics.tcpDrops) "
+        + "tcpErrors=\(statistics.tcpErrors) "
+        + "ip6Out=\(statistics.ip6PacketsSent) "
+        + "ip6In=\(statistics.ip6PacketsReceived) "
+        + "ip6Drops=\(statistics.ip6Drops)."
+}
+
 /// Machine-readable event emitted once a tunnel can accept local clients.
-private struct TunnelReadyEvent: Encodable {
+struct TunnelReadyEvent: Encodable {
     let event = "ready"
     let address: String
     let rsdPort: UInt16
@@ -1228,6 +1287,7 @@ private struct TunnelReadyEvent: Encodable {
     let userspaceTunHost: String
     let userspaceTunPort: UInt16
     let identityPath: String
+    let mtu: UInt16
 }
 
 /// Writes one newline-delimited ready event without stdout buffering.
@@ -1243,7 +1303,8 @@ private func writeTunnelReadyEvent(
         udid: deviceIdentifier,
         userspaceTunHost: gateway.host,
         userspaceTunPort: gateway.port,
-        identityPath: identityPath
+        identityPath: identityPath,
+        mtu: network.configuration.maximumTransmissionUnit
     )
     var data = try JSONEncoder().encode(event)
     data.append(0x0a)

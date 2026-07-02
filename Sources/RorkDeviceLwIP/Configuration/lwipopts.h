@@ -74,11 +74,20 @@
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_KEEPALIVE 1
 
-/// Excludes diagnostic counters and debug logging from the shipped library.
+/// Keeps protocol counters available for tunnel data-plane diagnostics.
 ///
-/// RorkDevice reports transport failures through its Swift error and logging
-/// surfaces instead of exposing lwIP's internal diagnostics.
-#define LWIP_STATS 0
+/// TCP and IPv6 counters use 32-bit storage so long transfers do not wrap,
+/// and MIB2 counters add the retransmission visibility that the base protocol
+/// stats lack. Counter groups that the statistics API never exposes stay
+/// disabled, as does the statistics display; RorkDevice reads counters
+/// programmatically and reports them through its own logging surfaces.
+#define LWIP_STATS 1
+#define LWIP_STATS_LARGE 1
+#define LWIP_STATS_DISPLAY 0
+#define MIB2_STATS 1
+#define LINK_STATS 0
+#define ND6_STATS 0
+#define ICMP6_STATS 0
 #define LWIP_DEBUG 0
 
 #endif

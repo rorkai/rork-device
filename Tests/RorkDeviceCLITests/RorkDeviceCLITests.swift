@@ -96,6 +96,73 @@ final class RorkDeviceCLITests: XCTestCase {
         )
     }
 
+    func testTunnelStartParsesStatsInterval() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--stats-interval", "30",
+        ])
+
+        XCTAssertEqual(command.statsInterval, 30)
+    }
+
+    func testTunnelStartDisablesStatsByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertEqual(command.statsInterval, 0)
+    }
+
+    func testTunnelStatisticsLineListsAllCounters() {
+        let line = tunnelStatisticsLine(
+            CoreDeviceUserspaceNetworkStatistics(
+                packetsSent: 12,
+                packetsReceived: 34,
+                bytesSent: 5_678,
+                bytesReceived: 9_012,
+                activeConnections: 3,
+                tcpSegmentsSent: 100,
+                tcpSegmentsReceived: 200,
+                tcpSegmentsRetransmitted: 2,
+                tcpDrops: 1,
+                tcpErrors: 4,
+                ip6PacketsSent: 110,
+                ip6PacketsReceived: 210,
+                ip6Drops: 5
+            )
+        )
+
+        XCTAssertEqual(
+            line,
+            "Tunnel stats: packetsOut=12 bytesOut=5678 packetsIn=34 bytesIn=9012 "
+                + "connections=3 tcpTx=100 tcpRx=200 tcpRexmit=2 tcpDrops=1 "
+                + "tcpErrors=4 ip6Out=110 ip6In=210 ip6Drops=5."
+        )
+    }
+
+    func testTunnelReadyEventIncludesNegotiatedMTU() throws {
+        let event = TunnelReadyEvent(
+            address: "fd00::1",
+            rsdPort: 58_783,
+            udid: "00008150-TEST",
+            userspaceTunHost: "127.0.0.1",
+            userspaceTunPort: 50_918,
+            identityPath: "/tmp/identity.plist",
+            mtu: 1_280
+        )
+
+        let data = try JSONEncoder().encode(event)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        )
+
+        XCTAssertEqual(output["event"] as? String, "ready")
+        XCTAssertEqual(output["mtu"] as? Int, 1_280)
+        XCTAssertEqual(output["rsdPort"] as? Int, 58_783)
+        XCTAssertEqual(output["userspaceTun"] as? Bool, true)
+    }
+
     func testInstallCommandParsesArguments() throws {
         let command = try Install.parse([
             "--pairing-record", "pairing.plist",
