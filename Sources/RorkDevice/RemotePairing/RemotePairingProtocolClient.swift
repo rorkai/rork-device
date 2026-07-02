@@ -166,27 +166,18 @@ final class RemotePairingProtocolClient {
         )
 
         let deviceResponse = try TLV8.decode(try await receivePairingData())
-        let devicePublicKeyData: Data
-        do {
+        let devicePublicKeyData = try await abandoningVerificationOnFailure {
             try validatePairVerificationResponse(
                 deviceResponse,
                 expectedState: 0x02
             )
-            devicePublicKeyData = deviceResponse.value(for: 0x03)
+            let devicePublicKeyData = deviceResponse.value(for: 0x03)
             guard devicePublicKeyData.count == 32 else {
                 throw RorkDeviceError.protocolViolation(
                     "Remote pairing device public key must contain 32 bytes."
                 )
             }
-        } catch {
-            // Abandon pair verification cleanly before the caller falls back to
-            // manual pair setup. A device with no stored pairing rejects
-            // verification at this first response with an error and no public
-            // key; without this signal the device keeps the verify session open
-            // and resets the subsequent pair-setup request, so enrollment never
-            // completes on a freshly reset device.
-            try? await sendPairVerificationFailed()
-            throw error
+            return devicePublicKeyData
         }
 
         let devicePublicKey: Curve25519.KeyAgreement.PublicKey
@@ -246,14 +237,11 @@ final class RemotePairingProtocolClient {
         )
 
         let verificationResponse = try TLV8.decode(try await receivePairingData())
-        do {
+        try await abandoningVerificationOnFailure {
             try validatePairVerificationResponse(
                 verificationResponse,
                 expectedState: 0x04
             )
-        } catch {
-            try? await sendPairVerificationFailed()
-            throw error
         }
 
         return VerifiedRemotePairingKeys(
@@ -535,7 +523,32 @@ final class RemotePairingProtocolClient {
         )
     }
 
-    /// Notifies the device that its final verification response was rejected.
+    /// Runs a pair-verification step, telling the device to abandon verification
+    /// if the step fails.
+    ///
+    /// Every point at which the host stops pair verification must send
+    /// `pairVerifyFailed`, including the first device response. A device with no
+    /// stored pairing rejects verification immediately with an error and no
+    /// public key; without this signal the device keeps the verification session
+    /// open and resets the following pair-setup request, so manual enrollment
+    /// never completes on a freshly reset device.
+    ///
+    /// - Parameter step: Pair-verification work that throws when the device
+    ///   rejects the exchange or returns malformed material.
+    /// - Returns: The value produced by `step`.
+    /// - Throws: Rethrows the failure from `step` after signaling the device.
+    private func abandoningVerificationOnFailure<Result>(
+        _ step: () throws -> Result
+    ) async throws -> Result {
+        do {
+            return try step()
+        } catch {
+            try? await sendPairVerificationFailed()
+            throw error
+        }
+    }
+
+    /// Notifies the device that a pair-verification exchange was abandoned.
     private func sendPairVerificationFailed() async throws {
         try await sendPlain([
             "event": [
