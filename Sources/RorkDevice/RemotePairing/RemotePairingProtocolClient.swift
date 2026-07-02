@@ -166,7 +166,7 @@ final class RemotePairingProtocolClient {
         )
 
         let deviceResponse = try TLV8.decode(try await receivePairingData())
-        let devicePublicKeyData = try await abandoningVerificationOnFailure {
+        let devicePublicKeyData = try await withVerificationFailureReported {
             try validatePairVerificationResponse(
                 deviceResponse,
                 expectedState: 0x02
@@ -237,7 +237,7 @@ final class RemotePairingProtocolClient {
         )
 
         let verificationResponse = try TLV8.decode(try await receivePairingData())
-        try await abandoningVerificationOnFailure {
+        try await withVerificationFailureReported {
             try validatePairVerificationResponse(
                 verificationResponse,
                 expectedState: 0x04
@@ -523,8 +523,8 @@ final class RemotePairingProtocolClient {
         )
     }
 
-    /// Runs a pair-verification step, telling the device to abandon verification
-    /// if the step fails.
+    /// Runs a pair-verification step, reporting `pairVerifyFailed` to the device
+    /// when the step fails.
     ///
     /// Every point at which the host stops pair verification must send
     /// `pairVerifyFailed`, including the first device response. A device with no
@@ -537,7 +537,7 @@ final class RemotePairingProtocolClient {
     ///   rejects the exchange or returns malformed material.
     /// - Returns: The value produced by `step`.
     /// - Throws: Rethrows the failure from `step` after signaling the device.
-    private func abandoningVerificationOnFailure<Result>(
+    private func withVerificationFailureReported<Result>(
         _ step: () throws -> Result
     ) async throws -> Result {
         do {
