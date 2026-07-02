@@ -166,15 +166,27 @@ final class RemotePairingProtocolClient {
         )
 
         let deviceResponse = try TLV8.decode(try await receivePairingData())
-        try validatePairVerificationResponse(
-            deviceResponse,
-            expectedState: 0x02
-        )
-        let devicePublicKeyData = deviceResponse.value(for: 0x03)
-        guard devicePublicKeyData.count == 32 else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote pairing device public key must contain 32 bytes."
+        let devicePublicKeyData: Data
+        do {
+            try validatePairVerificationResponse(
+                deviceResponse,
+                expectedState: 0x02
             )
+            devicePublicKeyData = deviceResponse.value(for: 0x03)
+            guard devicePublicKeyData.count == 32 else {
+                throw RorkDeviceError.protocolViolation(
+                    "Remote pairing device public key must contain 32 bytes."
+                )
+            }
+        } catch {
+            // Abandon pair verification cleanly before the caller falls back to
+            // manual pair setup. A device with no stored pairing rejects
+            // verification at this first response with an error and no public
+            // key; without this signal the device keeps the verify session open
+            // and resets the subsequent pair-setup request, so enrollment never
+            // completes on a freshly reset device.
+            try? await sendPairVerificationFailed()
+            throw error
         }
 
         let devicePublicKey: Curve25519.KeyAgreement.PublicKey
