@@ -40,6 +40,9 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     /// Whether the network has already released its tunnel and stack.
     private var isClosed = false
 
+    /// Packet and byte counters maintained by the two packet pumps.
+    private let packetCounters = CoreDeviceUserspacePacketCounters()
+
     /// Completion observed by owners that must follow packet-pump lifetime.
     private let termination = CoreDeviceUserspaceNetworkTermination()
 
@@ -100,20 +103,23 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
             outbound.continuation.yield(packet)
         }
 
-        outboundTask = Task { [weak self, tunnel, stream = outbound.stream] in
+        outboundTask = Task {
+            [weak self, tunnel, stream = outbound.stream, packetCounters] in
             do {
                 for await packet in stream {
                     try Task.checkCancellation()
                     try await tunnel.sendPacket(packet)
+                    packetCounters.recordSent(byteCount: packet.count)
                 }
             } catch {
                 self?.close(with: error)
             }
         }
-        inboundTask = Task { [weak self, tunnel, stack] in
+        inboundTask = Task { [weak self, tunnel, stack, packetCounters] in
             do {
                 while !Task.isCancelled {
                     let packet = try await tunnel.receivePacket()
+                    packetCounters.recordReceived(byteCount: packet.count)
                     try await stack.receivePacket(packet)
                 }
             } catch {
@@ -137,6 +143,34 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
             to: configuration.deviceAddress,
             port: port,
             timeout: connectionTimeout
+        )
+    }
+
+    /// Returns a point-in-time snapshot of network data-plane activity.
+    ///
+    /// Packet and byte counters cover this network only and survive closure.
+    /// Protocol counters come from the shared TCP/IPv6 backend, cover every
+    /// active network in the process, and read as zero after closure.
+    public func statistics() -> CoreDeviceUserspaceNetworkStatistics {
+        let counters = packetCounters.snapshot()
+        let protocolStatistics = stack.readProtocolStatistics()
+        return CoreDeviceUserspaceNetworkStatistics(
+            packetsSent: counters.packetsSent,
+            packetsReceived: counters.packetsReceived,
+            bytesSent: counters.bytesSent,
+            bytesReceived: counters.bytesReceived,
+            activeConnections: stack.activeConnectionCount,
+            tcpSegmentsSent: protocolStatistics.tcpSegmentsSent,
+            tcpSegmentsReceived:
+                protocolStatistics.tcpSegmentsReceived,
+            tcpSegmentsRetransmitted:
+                protocolStatistics.tcpSegmentsRetransmitted,
+            tcpDrops: protocolStatistics.tcpDrops,
+            tcpErrors: protocolStatistics.tcpErrors,
+            ip6PacketsSent: protocolStatistics.ip6PacketsSent,
+            ip6PacketsReceived:
+                protocolStatistics.ip6PacketsReceived,
+            ip6Drops: protocolStatistics.ip6Drops
         )
     }
 
@@ -177,6 +211,130 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
         stack.close(with: error)
         tunnel.close()
         termination.finish(with: error)
+    }
+}
+
+/// Point-in-time snapshot of userspace-network data-plane activity.
+///
+/// Packet and byte counters describe traffic pumped between one network's
+/// tunnel and its TCP backend. The TCP and IPv6 protocol counters are
+/// process-wide because the backend stores statistics globally; they increase
+/// monotonically and cover every active network.
+public struct CoreDeviceUserspaceNetworkStatistics: Equatable, Sendable {
+    /// Complete IPv6 packets forwarded to the device.
+    public let packetsSent: UInt64
+
+    /// Complete IPv6 packets received from the device.
+    public let packetsReceived: UInt64
+
+    /// Total bytes in packets forwarded to the device.
+    public let bytesSent: UInt64
+
+    /// Total bytes in packets received from the device.
+    public let bytesReceived: UInt64
+
+    /// TCP connections currently open through this network.
+    public let activeConnections: Int
+
+    /// TCP segments transmitted, including retransmissions.
+    public let tcpSegmentsSent: UInt32
+
+    /// TCP segments received.
+    public let tcpSegmentsReceived: UInt32
+
+    /// TCP segments retransmitted after loss or timeout.
+    public let tcpSegmentsRetransmitted: UInt32
+
+    /// TCP segments discarded by protocol processing.
+    public let tcpDrops: UInt32
+
+    /// TCP checksum, length, memory, routing, protocol, and option failures.
+    public let tcpErrors: UInt32
+
+    /// IPv6 packets transmitted by the backend interface layer.
+    public let ip6PacketsSent: UInt32
+
+    /// IPv6 packets received by the backend interface layer.
+    public let ip6PacketsReceived: UInt32
+
+    /// IPv6 packets discarded by protocol processing.
+    public let ip6Drops: UInt32
+
+    /// Creates a snapshot from independently gathered counters.
+    public init(
+        packetsSent: UInt64,
+        packetsReceived: UInt64,
+        bytesSent: UInt64,
+        bytesReceived: UInt64,
+        activeConnections: Int,
+        tcpSegmentsSent: UInt32,
+        tcpSegmentsReceived: UInt32,
+        tcpSegmentsRetransmitted: UInt32,
+        tcpDrops: UInt32,
+        tcpErrors: UInt32,
+        ip6PacketsSent: UInt32,
+        ip6PacketsReceived: UInt32,
+        ip6Drops: UInt32
+    ) {
+        self.packetsSent = packetsSent
+        self.packetsReceived = packetsReceived
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
+        self.activeConnections = activeConnections
+        self.tcpSegmentsSent = tcpSegmentsSent
+        self.tcpSegmentsReceived = tcpSegmentsReceived
+        self.tcpSegmentsRetransmitted = tcpSegmentsRetransmitted
+        self.tcpDrops = tcpDrops
+        self.tcpErrors = tcpErrors
+        self.ip6PacketsSent = ip6PacketsSent
+        self.ip6PacketsReceived = ip6PacketsReceived
+        self.ip6Drops = ip6Drops
+    }
+}
+
+/// Thread-safe packet and byte counters shared by the two packet pumps.
+private final class CoreDeviceUserspacePacketCounters: @unchecked Sendable {
+    /// Protects every counter because the pumps run on independent tasks.
+    private let lock = NSLock()
+
+    /// Packets forwarded to the device.
+    private var packetsSent: UInt64 = 0
+
+    /// Packets received from the device.
+    private var packetsReceived: UInt64 = 0
+
+    /// Bytes forwarded to the device.
+    private var bytesSent: UInt64 = 0
+
+    /// Bytes received from the device.
+    private var bytesReceived: UInt64 = 0
+
+    /// Records one packet forwarded to the device.
+    func recordSent(byteCount: Int) {
+        lock.withLock {
+            packetsSent &+= 1
+            bytesSent &+= UInt64(byteCount)
+        }
+    }
+
+    /// Records one packet received from the device.
+    func recordReceived(byteCount: Int) {
+        lock.withLock {
+            packetsReceived &+= 1
+            bytesReceived &+= UInt64(byteCount)
+        }
+    }
+
+    /// Returns a consistent snapshot of all four counters.
+    func snapshot() -> (
+        packetsSent: UInt64,
+        packetsReceived: UInt64,
+        bytesSent: UInt64,
+        bytesReceived: UInt64
+    ) {
+        lock.withLock {
+            (packetsSent, packetsReceived, bytesSent, bytesReceived)
+        }
     }
 }
 

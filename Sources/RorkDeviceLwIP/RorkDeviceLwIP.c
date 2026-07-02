@@ -15,6 +15,7 @@
 #include "lwip/mem.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/stats.h"
 #include "lwip/tcp.h"
 #include "lwip/timeouts.h"
 
@@ -450,6 +451,30 @@ void rork_lwip_stack_poll(rork_lwip_stack_t *stack) {
     if (stack != NULL) {
         sys_check_timeouts();
     }
+}
+
+void rork_lwip_stack_stats_read(
+    rork_lwip_stack_t *stack,
+    rork_lwip_stack_stats_t *stats
+) {
+    if (stack == NULL || stats == NULL) {
+        return;
+    }
+
+    stats->tcp_segments_sent = lwip_stats.tcp.xmit;
+    stats->tcp_segments_received = lwip_stats.tcp.recv;
+    stats->tcp_segments_retransmitted = lwip_stats.mib2.tcpretranssegs;
+    stats->tcp_drops = lwip_stats.tcp.drop;
+    stats->tcp_errors = (uint32_t)lwip_stats.tcp.chkerr
+        + lwip_stats.tcp.lenerr
+        + lwip_stats.tcp.memerr
+        + lwip_stats.tcp.rterr
+        + lwip_stats.tcp.proterr
+        + lwip_stats.tcp.opterr
+        + lwip_stats.tcp.err;
+    stats->ip6_packets_sent = lwip_stats.ip6.xmit;
+    stats->ip6_packets_received = lwip_stats.ip6.recv;
+    stats->ip6_drops = lwip_stats.ip6.drop;
 }
 
 rork_lwip_connection_t *rork_lwip_connection_create(

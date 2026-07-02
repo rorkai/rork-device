@@ -135,6 +135,37 @@ final class LwIPNetworkStack: @unchecked Sendable {
         }
     }
 
+    /// Number of TCP connections currently owned by this stack.
+    var activeConnectionCount: Int {
+        stateLock.withLock { connectionStates.count }
+    }
+
+    /// Reads the process-wide lwIP protocol counters.
+    ///
+    /// lwIP stores statistics globally, so the snapshot covers every active
+    /// stack in the process. After this stack closes, the snapshot is zeroed
+    /// because the counters can no longer be read under a live lifecycle guard.
+    func readProtocolStatistics() -> LwIPProtocolStatistics {
+        withSerializedAccess {
+            guard let stack = currentStack() else {
+                return LwIPProtocolStatistics()
+            }
+            var statistics = rork_lwip_stack_stats_t()
+            rork_lwip_stack_stats_read(stack, &statistics)
+            return LwIPProtocolStatistics(
+                tcpSegmentsSent: statistics.tcp_segments_sent,
+                tcpSegmentsReceived: statistics.tcp_segments_received,
+                tcpSegmentsRetransmitted:
+                    statistics.tcp_segments_retransmitted,
+                tcpDrops: statistics.tcp_drops,
+                tcpErrors: statistics.tcp_errors,
+                ip6PacketsSent: statistics.ip6_packets_sent,
+                ip6PacketsReceived: statistics.ip6_packets_received,
+                ip6Drops: statistics.ip6_drops
+            )
+        }
+    }
+
     /// Delivers one packet received from the CoreDevice tunnel.
     func receivePacket(_ packet: Data) async throws {
         try CDTunnelProtocol.validatePacket(
@@ -293,6 +324,36 @@ final class LwIPNetworkStack: @unchecked Sendable {
         }
         return try operation()
     }
+}
+
+/// Snapshot of process-wide lwIP TCP and IPv6 protocol counters.
+///
+/// Counters increase monotonically for the process lifetime and cover every
+/// active stack because lwIP stores statistics globally.
+struct LwIPProtocolStatistics: Equatable, Sendable {
+    /// TCP segments transmitted, including retransmissions.
+    var tcpSegmentsSent: UInt32 = 0
+
+    /// TCP segments received.
+    var tcpSegmentsReceived: UInt32 = 0
+
+    /// TCP segments retransmitted after loss or timeout.
+    var tcpSegmentsRetransmitted: UInt32 = 0
+
+    /// TCP segments discarded by protocol processing.
+    var tcpDrops: UInt32 = 0
+
+    /// TCP checksum, length, memory, routing, protocol, and option failures.
+    var tcpErrors: UInt32 = 0
+
+    /// IPv6 packets transmitted by the interface layer.
+    var ip6PacketsSent: UInt32 = 0
+
+    /// IPv6 packets received by the interface layer.
+    var ip6PacketsReceived: UInt32 = 0
+
+    /// IPv6 packets discarded by protocol processing.
+    var ip6Drops: UInt32 = 0
 }
 
 /// Serialized owner for one C connection wrapper.

@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.17"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.18"),
 ]
 ```
 
@@ -400,6 +400,7 @@ rorkdevice uninstall com.example.app --pairing-record pairing.plist
 rorkdevice remote-pairing diagnose --udid DEVICE-UDID --identity selfIdentity.plist --json
 rorkdevice remote-pairing trust --identity selfIdentity.plist --device-address fd01:172:3c68::1 --discovery-port 54130 --gateway-port 60106
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist
+rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --stats-interval 30
 ```
 
 Direct/tunnel Lockdown endpoints can be selected explicitly:
