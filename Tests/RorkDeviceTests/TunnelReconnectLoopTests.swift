@@ -118,6 +118,40 @@ final class TunnelReconnectLoopTests: XCTestCase {
         ])
     }
 
+    func testRetriesPastTheSchedulesAttemptBudget() async throws {
+        // Three-attempt budget: the immediate attempt, then 1s and 2s waits.
+        let exhaustibleBackoff = Backoff.delays([
+            .zero,
+            .seconds(1),
+            .seconds(2),
+        ])
+        let recorder = ReconnectRecorder(cycles: [
+            .failToEstablish("outage 1"),
+            .failToEstablish("outage 2"),
+            .failToEstablish("outage 3"),
+            .failToEstablish("outage 4"),
+            .serveThenClose,
+        ])
+
+        try await TunnelReconnectLoop.run(
+            backoff: exhaustibleBackoff,
+            waitBeforeAttempt: recorder.wait,
+            emit: recorder.emit,
+            establishAndServe: recorder.establishAndServe
+        )
+
+        // The loop outlives the schedule's attempt budget: attempts past the
+        // end keep retrying at the schedule's final delay instead of giving
+        // up, because only process supervision may decide to stop trying.
+        XCTAssertEqual(recorder.cycleCount, 5)
+        XCTAssertEqual(recorder.waits, [
+            .seconds(1),
+            .seconds(2),
+            .seconds(2),
+            .seconds(2),
+        ])
+    }
+
     func testCancellationStopsTheLoopWithoutLifecycleEvents() async {
         let recorder = ReconnectRecorder(cycles: [.throwCancellation])
 

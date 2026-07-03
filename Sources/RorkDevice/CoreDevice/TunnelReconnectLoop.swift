@@ -47,7 +47,11 @@ public enum TunnelReconnectLoop {
     ///
     /// - Parameters:
     ///   - backoff: Delay schedule for attempts after a failure. The attempt
-    ///     position resets each time a cycle reports readiness.
+    ///     position resets each time a cycle reports readiness. Only the
+    ///     schedule's delays are consulted — its `maxAttempts` budget is
+    ///     deliberately not enforced, because giving up is a supervision
+    ///     decision that belongs to the process host, not this loop. Attempts
+    ///     past the schedule's end wait its final delay.
     ///   - waitBeforeAttempt: Waits the scheduled delay before a retry.
     ///     Production short-circuits the wait when the device reattaches;
     ///     a thrown error (such as cancellation) stops the loop.
