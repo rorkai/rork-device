@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.19"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.20"),
 ]
 ```
 
@@ -283,6 +283,25 @@ rorkdevice tunnel start \
   --identity remote-pairing.plist
 ```
 
+With `--reconnect`, tunnel loss no longer ends the process. The command
+re-establishes the tunnel with exponential backoff (1s doubling to a 60s
+ceiling, restarting after every healthy tunnel), retries immediately when the
+device reattaches over usbmux, and reports each transition as a
+newline-delimited JSON event on stdout:
+
+| Event               | Meaning                                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `ready`             | The tunnel accepts local clients. Repeated after every re-establishment with fresh parameters. |
+| `waiting-for-trust` | Enrollment is waiting for the device's Trust approval; supervisors should extend their timeout. |
+| `tunnel-lost`       | A ready tunnel died. `reason` carries the terminal error.                                      |
+| `re-establishing`   | The next attempt is scheduled. Carries `attempt`, `delayMs`, and the latest failure `reason`.  |
+
+Re-established tunnels reuse the previous local gateway port when it is still
+available, and always publish new device address and RSD port values, so
+consumers must adopt each `ready` event's parameters. The process still exits
+on startup conditions that cannot heal, such as an unreadable identity file or
+invalid flags.
+
 ## Direct Remote-Pairing Tunnel
 
 For applications that already have a direct remote-pairing control endpoint,
@@ -401,6 +420,7 @@ rorkdevice remote-pairing diagnose --udid DEVICE-UDID --identity selfIdentity.pl
 rorkdevice remote-pairing trust --identity selfIdentity.plist --device-address fd01:172:3c68::1 --discovery-port 54130 --gateway-port 60106
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --stats-interval 30
+rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --reconnect
 ```
 
 Direct/tunnel Lockdown endpoints can be selected explicitly:

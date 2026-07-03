@@ -188,6 +188,30 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         ownedNetwork?.close()
     }
 
+    /// Failure to start a gateway because its requested port is already bound.
+    ///
+    /// Callers that re-request a previous ephemeral port across restarts catch
+    /// this to fall back to a fresh port. Other start failures — an invalid
+    /// host, exhausted descriptors — are not fixed by changing ports and keep
+    /// their original error type.
+    public struct PortUnavailableError: Error, CustomStringConvertible,
+        LocalizedError
+    {
+        /// Host whose port could not be bound.
+        public let host: String
+
+        /// Requested port that is already in use.
+        public let port: UInt16
+
+        public var description: String {
+            "Local gateway port \(port) on \(host) is already in use."
+        }
+
+        public var errorDescription: String? {
+            description
+        }
+    }
+
     /// Starts a gateway with injectable transport behavior for tests.
     ///
     /// `waitUntilNetworkCloses` models the owned packet network's terminal
@@ -230,7 +254,9 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             NIOAsyncChannel<
                 NIOAsyncChannel<ByteBuffer, ByteBuffer>,
                 Never
-            > = try await ServerBootstrap(
+            >
+        do {
+            server = try await ServerBootstrap(
                 group: NIOTransportRuntime.eventLoopGroup
             )
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
@@ -242,6 +268,9 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     )
                 }
             }
+        } catch let error as IOError where error.errnoCode == EADDRINUSE {
+            throw PortUnavailableError(host: host, port: port)
+        }
 
         guard let boundPort = server.channel.localAddress?.port,
             let gatewayPort = UInt16(exactly: boundPort)

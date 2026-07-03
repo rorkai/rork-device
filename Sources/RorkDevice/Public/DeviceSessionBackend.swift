@@ -24,6 +24,9 @@ protocol DeviceSessionBackend {
     /// not exchange `RSDCheckin` property lists before their own protocol
     /// begins.
     func startRemoteService(named serviceName: String) async throws -> DeviceConnection
+
+    /// Releases the backend's persistent control connections, if any.
+    func close()
 }
 
 extension DeviceSessionBackend {
@@ -47,6 +50,9 @@ extension DeviceSessionBackend {
             "Remote service \(serviceName) requires a Remote Service Discovery session."
         )
     }
+
+    /// Backends without persistent control connections have nothing to close.
+    func close() {}
 }
 
 /// Starts services through an authenticated Lockdown session.
@@ -122,6 +128,11 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
             }
         }
         return connection
+    }
+
+    /// Closes the Lockdown control connection held by this backend.
+    func close() {
+        lockdown.close()
     }
 }
 

@@ -571,6 +571,23 @@ final class DeviceClientIntegrationTests: XCTestCase {
 
         XCTAssertTrue(serviceConnection.isClosed)
     }
+
+    func testClosingASessionClosesItsLockdownControlConnection() throws {
+        let lockdownConnection = FakeConnection()
+        let backend = LockdownDeviceSessionBackend(
+            transport: StaticDeviceTransport(
+                connection: FakeConnection()
+            ),
+            lockdown: LockdownClient(connection: lockdownConnection),
+            pairingRecord: try testPairingRecord(),
+            secureSessionUpgrader: RecordingSecureSessionUpgrader()
+        )
+        let session = DeviceSession(backend: backend)
+
+        session.close()
+
+        XCTAssertTrue(lockdownConnection.isClosed)
+    }
 }
 
 private final class RecordingSecureSessionUpgrader: SecureSessionUpgrader {

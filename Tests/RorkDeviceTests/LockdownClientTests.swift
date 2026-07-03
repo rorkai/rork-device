@@ -24,6 +24,15 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertEqual(request["SystemBUID"] as? String, "system-1")
     }
 
+    func testCloseClosesTheControlConnection() {
+        let connection = FakeConnection()
+        let client = LockdownClient(connection: connection, label: "tests")
+
+        client.close()
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
     func testValueSendsLockdownRequestAndReturnsValue() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Result": "Success",

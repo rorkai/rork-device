@@ -50,6 +50,37 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         XCTAssertEqual(sentData, Data("hello".utf8))
     }
 
+    func testBindingAnOccupiedPortThrowsPortUnavailable() async throws {
+        let first = try await CoreDeviceUserspaceGateway.start(
+            deviceAddress: "fd00::1",
+            host: "127.0.0.1",
+            port: 0
+        ) { _ in
+            GatewayTestConnection(response: Data())
+        }
+        defer {
+            first.close()
+        }
+
+        do {
+            let second = try await CoreDeviceUserspaceGateway.start(
+                deviceAddress: "fd00::1",
+                host: "127.0.0.1",
+                port: first.port
+            ) { _ in
+                GatewayTestConnection(response: Data())
+            }
+            second.close()
+            XCTFail("Expected binding an occupied port to fail")
+        } catch let error as CoreDeviceUserspaceGateway.PortUnavailableError {
+            XCTAssertEqual(error.port, first.port)
+            XCTAssertEqual(
+                String(describing: error),
+                "Local gateway port \(first.port) on 127.0.0.1 is already in use."
+            )
+        }
+    }
+
     func testRejectsPreambleForAnotherDeviceAddress() async throws {
         let requestedPorts = RequestedPortRecorder()
         let gateway = try await CoreDeviceUserspaceGateway.start(

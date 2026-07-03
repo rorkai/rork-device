@@ -140,6 +140,88 @@ final class RorkDeviceCLITests: XCTestCase {
         )
     }
 
+    func testTunnelStartParsesReconnectFlag() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--reconnect",
+        ])
+
+        XCTAssertTrue(command.reconnect)
+    }
+
+    func testTunnelStartExitsOnTunnelLossByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertFalse(command.reconnect)
+    }
+
+    func testTunnelLostEventEncodesReasonAndDevice() throws {
+        let output = try encodedJSONObject(
+            TunnelLifecycleEventLine(
+                event: .tunnelLost(reason: "Transport error: link died."),
+                udid: "00008150-TEST"
+            )
+        )
+
+        XCTAssertEqual(output["event"] as? String, "tunnel-lost")
+        XCTAssertEqual(output["reason"] as? String, "Transport error: link died.")
+        XCTAssertEqual(output["udid"] as? String, "00008150-TEST")
+    }
+
+    func testReEstablishingEventEncodesAttemptDelayAndReason() throws {
+        let output = try encodedJSONObject(
+            TunnelLifecycleEventLine(
+                event: .reestablishing(
+                    attempt: 3,
+                    delay: .milliseconds(4_000),
+                    reason: "Transport error: no device."
+                ),
+                udid: "00008150-TEST"
+            )
+        )
+
+        XCTAssertEqual(output["event"] as? String, "re-establishing")
+        XCTAssertEqual(output["attempt"] as? Int, 3)
+        XCTAssertEqual(output["delayMs"] as? Int, 4_000)
+        XCTAssertEqual(output["reason"] as? String, "Transport error: no device.")
+    }
+
+    func testWaitingForTrustEventEncodesDevice() throws {
+        let output = try encodedJSONObject(
+            TunnelWaitingForTrustEvent(udid: "00008150-TEST")
+        )
+
+        XCTAssertEqual(output["event"] as? String, "waiting-for-trust")
+        XCTAssertEqual(output["udid"] as? String, "00008150-TEST")
+    }
+
+    func testTunnelLifecycleEventsOmitAnUnknownDevice() throws {
+        let output = try encodedJSONObject(
+            TunnelLifecycleEventLine(
+                event: .reestablishing(
+                    attempt: 1,
+                    delay: .seconds(1),
+                    reason: "Transport error: no device."
+                ),
+                udid: nil
+            )
+        )
+
+        XCTAssertNil(output["udid"])
+    }
+
+    /// Encodes a value and decodes it back into a JSON dictionary.
+    private func encodedJSONObject(
+        _ value: some Encodable
+    ) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+    }
+
     func testTunnelReadyEventIncludesNegotiatedMTU() throws {
         let event = TunnelReadyEvent(
             address: "fd00::1",
