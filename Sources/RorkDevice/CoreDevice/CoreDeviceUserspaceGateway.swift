@@ -188,6 +188,19 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         ownedNetwork?.close()
     }
 
+    /// Reports whether a gateway start failure means the port is taken.
+    ///
+    /// Callers that carry a preferred port across gateway restarts use this to
+    /// distinguish "someone else bound the port" — recoverable by selecting a
+    /// fresh ephemeral port — from failures that a different port cannot fix,
+    /// such as an invalid host or exhausted descriptors.
+    public static func isPortUnavailableError(_ error: Error) -> Bool {
+        guard let ioError = error as? IOError else {
+            return false
+        }
+        return ioError.errnoCode == EADDRINUSE
+    }
+
     /// Starts a gateway with injectable transport behavior for tests.
     ///
     /// `waitUntilNetworkCloses` models the owned packet network's terminal

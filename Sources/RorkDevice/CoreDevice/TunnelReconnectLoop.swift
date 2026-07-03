@@ -71,6 +71,12 @@ public enum TunnelReconnectLoop {
                 }
                 return
             } catch {
+                // Cancellation is a deliberate shutdown, not a tunnel
+                // failure: propagate it without a lifecycle event so the
+                // stdout stream never announces a retry that cannot happen.
+                if error is CancellationError {
+                    throw error
+                }
                 reason = String(describing: error)
                 if becameReady.isSet {
                     attempt = 0

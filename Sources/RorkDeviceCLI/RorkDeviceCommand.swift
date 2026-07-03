@@ -1388,7 +1388,9 @@ struct TunnelStartCommand: AsyncParsableCommand {
     }
 
     /// Binds the gateway, falling back to an ephemeral port when a previous
-    /// cycle's port is no longer available and the caller never demanded one.
+    /// cycle's port has been taken in the meantime and the caller never
+    /// demanded a specific one. Any other bind failure is propagated: a fresh
+    /// port cannot fix an invalid host or exhausted descriptors.
     private func startGateway(
         network: CoreDeviceUserspaceNetwork,
         requestedPort: UInt16
@@ -1399,7 +1401,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 host: gatewayHost,
                 port: requestedPort
             )
-        } catch where gatewayPort == 0 && requestedPort != 0 {
+        } catch where gatewayPort == 0 && requestedPort != 0
+            && CoreDeviceUserspaceGateway.isPortUnavailableError(error) {
             writeTunnelProgress(
                 "Local port \(requestedPort) is no longer available; selecting a new ephemeral port."
             )

@@ -118,6 +118,41 @@ final class TunnelReconnectLoopTests: XCTestCase {
         ])
     }
 
+    func testCancellationStopsTheLoopWithoutLifecycleEvents() async {
+        let recorder = ReconnectRecorder(cycles: [.throwCancellation])
+
+        do {
+            try await TunnelReconnectLoop.run(
+                backoff: backoff,
+                waitBeforeAttempt: recorder.wait,
+                emit: recorder.emit,
+                establishAndServe: recorder.establishAndServe
+            )
+            XCTFail("Expected cancellation to propagate")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(recorder.events, [])
+        XCTAssertEqual(recorder.waits, [])
+    }
+
+    func testCancellationOfAReadyCycleEmitsNoLossEvent() async {
+        let recorder = ReconnectRecorder(cycles: [.serveThenThrowCancellation])
+
+        do {
+            try await TunnelReconnectLoop.run(
+                backoff: backoff,
+                waitBeforeAttempt: recorder.wait,
+                emit: recorder.emit,
+                establishAndServe: recorder.establishAndServe
+            )
+            XCTFail("Expected cancellation to propagate")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(recorder.events, [])
+    }
+
     func testWaitFailuresStopTheLoop() async {
         let recorder = ReconnectRecorder(
             cycles: [.failToEstablish("no device")],
@@ -222,6 +257,8 @@ private final class ReconnectRecorder: @unchecked Sendable {
         case failToEstablish(String)
         case serveThenLose(String)
         case serveThenClose
+        case throwCancellation
+        case serveThenThrowCancellation
     }
 
     private let cycles: [Cycle]
@@ -257,6 +294,11 @@ private final class ReconnectRecorder: @unchecked Sendable {
             throw ReconnectTestFailure(message: message)
         case .serveThenClose:
             onReady()
+        case .throwCancellation:
+            throw CancellationError()
+        case .serveThenThrowCancellation:
+            onReady()
+            throw CancellationError()
         }
     }
 }
