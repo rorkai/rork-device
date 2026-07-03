@@ -1389,20 +1389,24 @@ struct TunnelStartCommand: AsyncParsableCommand {
 
     /// Binds the gateway, falling back to an ephemeral port when a previous
     /// cycle's port has been taken in the meantime and the caller never
-    /// demanded a specific one. Any other bind failure is propagated: a fresh
-    /// port cannot fix an invalid host or exhausted descriptors.
+    /// demanded a specific one.
     private func startGateway(
         network: CoreDeviceUserspaceNetwork,
         requestedPort: UInt16
     ) async throws -> CoreDeviceUserspaceGateway {
+        // Only a port borrowed from an earlier cycle may fall back: a fixed
+        // `--gateway-port` must fail loudly, and an ephemeral request has
+        // nothing to fall back from.
+        let borrowedEphemeralPort = gatewayPort == 0 && requestedPort != 0
         do {
             return try await CoreDeviceUserspaceGateway.start(
                 network: network,
                 host: gatewayHost,
                 port: requestedPort
             )
-        } catch where gatewayPort == 0 && requestedPort != 0
-            && CoreDeviceUserspaceGateway.isPortUnavailableError(error) {
+        } catch is CoreDeviceUserspaceGateway.PortUnavailableError
+            where borrowedEphemeralPort
+        {
             writeTunnelProgress(
                 "Local port \(requestedPort) is no longer available; selecting a new ephemeral port."
             )
@@ -1534,7 +1538,7 @@ struct TunnelLifecycleEventLine: Encodable {
         case .tunnelLost(let reason):
             try container.encode("tunnel-lost", forKey: .event)
             try container.encode(reason, forKey: .reason)
-        case .reEstablishing(let attempt, let delay, let reason):
+        case .reestablishing(let attempt, let delay, let reason):
             try container.encode("re-establishing", forKey: .event)
             try container.encode(attempt, forKey: .attempt)
             try container.encode(

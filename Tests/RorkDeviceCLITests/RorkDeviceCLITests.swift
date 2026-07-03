@@ -173,7 +173,7 @@ final class RorkDeviceCLITests: XCTestCase {
     func testReEstablishingEventEncodesAttemptDelayAndReason() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
-                event: .reEstablishing(
+                event: .reestablishing(
                     attempt: 3,
                     delay: .milliseconds(4_000),
                     reason: "Transport error: no device."
@@ -200,7 +200,7 @@ final class RorkDeviceCLITests: XCTestCase {
     func testTunnelLifecycleEventsOmitAnUnknownDevice() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
-                event: .reEstablishing(
+                event: .reestablishing(
                     attempt: 1,
                     delay: .seconds(1),
                     reason: "Transport error: no device."

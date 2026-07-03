@@ -25,7 +25,7 @@ public enum TunnelReconnectLoop {
         ///
         /// `reason` carries the most recent failure so consumers can surface
         /// the true root cause while the loop is still converging.
-        case reEstablishing(attempt: Int, delay: Duration, reason: String)
+        case reestablishing(attempt: Int, delay: Duration, reason: String)
     }
 
     /// How a reattach wait ended.
@@ -86,7 +86,7 @@ public enum TunnelReconnectLoop {
 
             attempt += 1
             let delay = backoff.delay(beforeAttempt: attempt)
-            emit(.reEstablishing(attempt: attempt, delay: delay, reason: reason))
+            emit(.reestablishing(attempt: attempt, delay: delay, reason: reason))
             try await waitBeforeAttempt(delay)
         }
     }

@@ -43,8 +43,8 @@ final class TunnelReconnectLoopTests: XCTestCase {
         )
 
         XCTAssertEqual(recorder.events, [
-            .reEstablishing(attempt: 1, delay: .seconds(1), reason: "usbmux is empty"),
-            .reEstablishing(attempt: 2, delay: .seconds(2), reason: "still empty"),
+            .reestablishing(attempt: 1, delay: .seconds(1), reason: "usbmux is empty"),
+            .reestablishing(attempt: 2, delay: .seconds(2), reason: "still empty"),
         ])
         XCTAssertEqual(recorder.waits, [.seconds(1), .seconds(2)])
         XCTAssertEqual(recorder.cycleCount, 3)
@@ -65,7 +65,7 @@ final class TunnelReconnectLoopTests: XCTestCase {
 
         XCTAssertEqual(recorder.events, [
             .tunnelLost(reason: "device unplugged"),
-            .reEstablishing(attempt: 1, delay: .seconds(1), reason: "device unplugged"),
+            .reestablishing(attempt: 1, delay: .seconds(1), reason: "device unplugged"),
         ])
     }
 
@@ -83,7 +83,7 @@ final class TunnelReconnectLoopTests: XCTestCase {
         )
 
         XCTAssertEqual(recorder.events, [
-            .reEstablishing(attempt: 1, delay: .seconds(1), reason: "no device"),
+            .reestablishing(attempt: 1, delay: .seconds(1), reason: "no device"),
         ])
     }
 
@@ -110,11 +110,11 @@ final class TunnelReconnectLoopTests: XCTestCase {
             .seconds(2),
         ])
         XCTAssertEqual(recorder.events, [
-            .reEstablishing(attempt: 1, delay: .seconds(1), reason: "first outage a"),
-            .reEstablishing(attempt: 2, delay: .seconds(2), reason: "first outage b"),
+            .reestablishing(attempt: 1, delay: .seconds(1), reason: "first outage a"),
+            .reestablishing(attempt: 2, delay: .seconds(2), reason: "first outage b"),
             .tunnelLost(reason: "healthy tunnel died"),
-            .reEstablishing(attempt: 1, delay: .seconds(1), reason: "healthy tunnel died"),
-            .reEstablishing(attempt: 2, delay: .seconds(2), reason: "second outage a"),
+            .reestablishing(attempt: 1, delay: .seconds(1), reason: "healthy tunnel died"),
+            .reestablishing(attempt: 2, delay: .seconds(2), reason: "second outage a"),
         ])
     }
 
