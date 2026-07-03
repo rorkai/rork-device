@@ -1135,6 +1135,12 @@ struct TunnelStartCommand: AsyncParsableCommand {
     )
     var statsInterval: UInt32 = 0
 
+    @Flag(
+        help:
+            "Keep running when the tunnel drops: re-establish it with backoff and report lifecycle events on stdout."
+    )
+    var reconnect = false
+
     /// Rejects tunnel settings that cannot form a valid IPv6 link.
     func validate() throws {
         try connection.validate()
@@ -1149,7 +1155,25 @@ struct TunnelStartCommand: AsyncParsableCommand {
         }
     }
 
+    /// Delay schedule between reconnect attempts.
+    ///
+    /// The schedule restarts after every healthy tunnel, so it paces one
+    /// outage rather than the process lifetime. The 60-second ceiling keeps a
+    /// device that repeatedly fails enrollment from being re-prompted more
+    /// than once a minute — the pre-F9 restart loop re-drove enrollment every
+    /// ~20 seconds and hammered devices mid-approval.
+    private static let reconnectBackoff = Backoff.exponential(
+        initial: .seconds(1),
+        factor: 2,
+        maximum: .seconds(60),
+        maxAttempts: Int.max
+    )
+
     /// Opens the packet tunnel, establishes trust, and serves until terminated.
+    ///
+    /// With `--reconnect`, tunnel loss re-enters establishment with backoff
+    /// instead of ending the process, and lifecycle events are reported on
+    /// stdout between `ready` lines.
     func run() async throws {
         let identityURL = URL(fileURLWithPath: identityPath)
             .standardizedFileURL
@@ -1163,12 +1187,140 @@ struct TunnelStartCommand: AsyncParsableCommand {
         writeTunnelProgress(
             "Loaded remote-pairing identity \(identity.identifier)."
         )
-        let connected = try await connection.connectedSession(
+        if reconnect {
+            try await runReconnectLoop(
+                identity: identity,
+                identityURL: identityURL
+            )
+            return
+        }
+
+        let cycle = try await establishTunnelCycle(
+            identity: identity,
+            identityURL: identityURL,
+            pinnedDeviceIdentifier: nil,
+            requestedGatewayPort: gatewayPort,
+            emitLifecycleEvents: false
+        )
+        try await serve(cycle)
+    }
+
+    /// Serves one established tunnel until it closes, then releases it.
+    private func serve(_ cycle: TunnelCycle) async throws {
+        defer {
+            cycle.gateway.close()
+            cycle.session.close()
+        }
+        let statsReporter = startTunnelStatisticsReporter(
+            network: cycle.network,
+            interval: statsInterval
+        )
+        defer {
+            statsReporter?.cancel()
+        }
+
+        let gateway = cycle.gateway
+        try await withTaskCancellationHandler {
+            try await gateway.waitUntilClosed()
+        } onCancel: {
+            gateway.close()
+        }
+    }
+
+    /// Keeps one device's tunnel alive across drops, reporting transitions.
+    private func runReconnectLoop(
+        identity: RemotePairingIdentity,
+        identityURL: URL
+    ) async throws {
+        // Pins the loop to one physical device and one local port after the
+        // first healthy cycle, so reconnection can neither hop devices on a
+        // multi-device host nor move the gateway endpoint under clients.
+        let pinned = PinnedTunnelTarget(
+            deviceIdentifier: connection.udid,
+            gatewayPort: gatewayPort
+        )
+        try await TunnelReconnectLoop.run(
+            backoff: Self.reconnectBackoff,
+            waitBeforeAttempt: { delay in
+                let outcome = try await TunnelReconnectLoop.waitForReattach(
+                    of: pinned.deviceIdentifier,
+                    upTo: delay,
+                    deviceEvents: {
+                        DeviceClient().deviceEvents()
+                    }
+                )
+                if outcome == .reattached {
+                    writeTunnelProgress(
+                        "Device attached; retrying without waiting out the backoff delay."
+                    )
+                }
+            },
+            emit: { event in
+                writeTunnelLifecycleEvent(
+                    event,
+                    deviceIdentifier: pinned.deviceIdentifier
+                )
+            },
+            establishAndServe: { onReady in
+                let cycle = try await establishTunnelCycle(
+                    identity: identity,
+                    identityURL: identityURL,
+                    pinnedDeviceIdentifier: pinned.deviceIdentifier,
+                    requestedGatewayPort: pinned.gatewayPort,
+                    emitLifecycleEvents: true
+                )
+                pinned.pin(
+                    deviceIdentifier: cycle.deviceIdentifier,
+                    gatewayPort: cycle.gateway.port
+                )
+                onReady()
+                try await serve(cycle)
+            }
+        )
+    }
+
+    /// Establishes one complete tunnel: session, packet network, gateway,
+    /// remote-pairing trust, and the `ready` stdout event.
+    ///
+    /// Everything created for the cycle is released when any later step fails,
+    /// so a retrying caller cannot accumulate half-built tunnels.
+    private func establishTunnelCycle(
+        identity: RemotePairingIdentity,
+        identityURL: URL,
+        pinnedDeviceIdentifier: String?,
+        requestedGatewayPort: UInt16,
+        emitLifecycleEvents: Bool
+    ) async throws -> TunnelCycle {
+        var options = connection
+        options.udid = pinnedDeviceIdentifier ?? connection.udid
+        let connected = try await options.connectedSession(
             label: "rorkdevice-tunnel"
         )
         writeTunnelProgress(
             "Opened Lockdown session for \(connected.deviceIdentifier)."
         )
+        do {
+            return try await establishTunnelCycle(
+                for: connected,
+                identity: identity,
+                identityURL: identityURL,
+                requestedGatewayPort: requestedGatewayPort,
+                emitLifecycleEvents: emitLifecycleEvents
+            )
+        } catch {
+            connected.session.close()
+            throw error
+        }
+    }
+
+    /// Continues cycle establishment once a Lockdown session exists.
+    private func establishTunnelCycle(
+        for connected: (session: DeviceSession, deviceIdentifier: String),
+        identity: RemotePairingIdentity,
+        identityURL: URL,
+        requestedGatewayPort: UInt16,
+        emitLifecycleEvents: Bool
+    ) async throws -> TunnelCycle {
         let tunnel = try await connected.session.openCoreDeviceTunnel(
             requestedMaximumTransmissionUnit:
                 maximumTransmissionUnit
@@ -1187,48 +1339,113 @@ struct TunnelStartCommand: AsyncParsableCommand {
 
         let gateway: CoreDeviceUserspaceGateway
         do {
-            gateway = try await CoreDeviceUserspaceGateway.start(
+            gateway = try await startGateway(
                 network: network,
-                host: gatewayHost,
-                port: gatewayPort
+                requestedPort: requestedGatewayPort
             )
         } catch {
             network.close()
             throw error
         }
-        defer {
-            gateway.close()
-        }
         writeTunnelProgress(
             "Listening on \(gateway.host):\(gateway.port)."
         )
 
-        try await RemotePairingTrust.establishIfNeeded(
-            for: identity,
-            using: network,
-            discoveryPort:
-                network.configuration.serviceDiscoveryPort,
-            progress: writeRemotePairingProgress
-        )
-        try writeTunnelReadyEvent(
+        do {
+            try await RemotePairingTrust.establishIfNeeded(
+                for: identity,
+                using: network,
+                discoveryPort:
+                    network.configuration.serviceDiscoveryPort,
+                progress: { progress in
+                    writeRemotePairingProgress(progress)
+                    if emitLifecycleEvents, progress == .enrollingIdentity {
+                        writeTunnelStdoutLine(
+                            TunnelWaitingForTrustEvent(
+                                udid: connected.deviceIdentifier
+                            )
+                        )
+                    }
+                }
+            )
+            try writeTunnelReadyEvent(
+                deviceIdentifier: connected.deviceIdentifier,
+                identityPath: identityURL.path,
+                network: network,
+                gateway: gateway
+            )
+        } catch {
+            gateway.close()
+            throw error
+        }
+
+        return TunnelCycle(
             deviceIdentifier: connected.deviceIdentifier,
-            identityPath: identityURL.path,
+            session: connected.session,
             network: network,
             gateway: gateway
         )
+    }
 
-        let statsReporter = startTunnelStatisticsReporter(
-            network: network,
-            interval: statsInterval
-        )
-        defer {
-            statsReporter?.cancel()
+    /// Binds the gateway, falling back to an ephemeral port when a previous
+    /// cycle's port is no longer available and the caller never demanded one.
+    private func startGateway(
+        network: CoreDeviceUserspaceNetwork,
+        requestedPort: UInt16
+    ) async throws -> CoreDeviceUserspaceGateway {
+        do {
+            return try await CoreDeviceUserspaceGateway.start(
+                network: network,
+                host: gatewayHost,
+                port: requestedPort
+            )
+        } catch where gatewayPort == 0 && requestedPort != 0 {
+            writeTunnelProgress(
+                "Local port \(requestedPort) is no longer available; selecting a new ephemeral port."
+            )
+            return try await CoreDeviceUserspaceGateway.start(
+                network: network,
+                host: gatewayHost,
+                port: 0
+            )
         }
+    }
+}
 
-        try await withTaskCancellationHandler {
-            try await gateway.waitUntilClosed()
-        } onCancel: {
-            gateway.close()
+/// One fully established tunnel and the resources serving it.
+private struct TunnelCycle {
+    let deviceIdentifier: String
+    let session: DeviceSession
+    let network: CoreDeviceUserspaceNetwork
+    let gateway: CoreDeviceUserspaceGateway
+}
+
+/// Device and local-port choice that reconnection must keep honoring.
+///
+/// Plain lock box: the reconnect loop's closures run sequentially but are
+/// escaping, so shared mutable state needs an explicitly synchronized home.
+private final class PinnedTunnelTarget: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _deviceIdentifier: String?
+    private var _gatewayPort: UInt16
+
+    init(deviceIdentifier: String?, gatewayPort: UInt16) {
+        _deviceIdentifier = deviceIdentifier
+        _gatewayPort = gatewayPort
+    }
+
+    var deviceIdentifier: String? {
+        lock.withLock { _deviceIdentifier }
+    }
+
+    var gatewayPort: UInt16 {
+        lock.withLock { _gatewayPort }
+    }
+
+    func pin(deviceIdentifier: String, gatewayPort: UInt16) {
+        lock.withLock {
+            _deviceIdentifier = deviceIdentifier
+            _gatewayPort = gatewayPort
         }
     }
 }
@@ -1290,6 +1507,69 @@ struct TunnelReadyEvent: Encodable {
     let mtu: UInt16
 }
 
+/// Reconnect-mode stdout line for a tunnel lifecycle transition.
+///
+/// `tunnel-lost` reports why a ready tunnel died; `re-establishing` announces
+/// the next attempt with its schedule position and the latest failure. The
+/// device is omitted while no cycle has identified one yet.
+struct TunnelLifecycleEventLine: Encodable {
+    let event: TunnelReconnectLoop.Event
+    let udid: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+        case udid
+        case reason
+        case attempt
+        case delayMs
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(udid, forKey: .udid)
+        switch event {
+        case .tunnelLost(let reason):
+            try container.encode("tunnel-lost", forKey: .event)
+            try container.encode(reason, forKey: .reason)
+        case .reEstablishing(let attempt, let delay, let reason):
+            try container.encode("re-establishing", forKey: .event)
+            try container.encode(attempt, forKey: .attempt)
+            try container.encode(
+                wholeMilliseconds(of: delay),
+                forKey: .delayMs
+            )
+            try container.encode(reason, forKey: .reason)
+        }
+    }
+}
+
+/// Reconnect-mode stdout line telling hosts an approval prompt is pending.
+///
+/// Emitted when enrollment starts waiting on the device's Trust dialog, so
+/// supervisors extend their patience instead of restarting the tunnel in the
+/// middle of the user's approval window.
+struct TunnelWaitingForTrustEvent: Encodable {
+    let event = "waiting-for-trust"
+    let udid: String?
+}
+
+/// Converts a duration to whole milliseconds for JSON transport.
+private func wholeMilliseconds(of duration: Duration) -> Int {
+    let components = duration.components
+    return Int(components.seconds) * 1_000
+        + Int(components.attoseconds / 1_000_000_000_000_000)
+}
+
+/// Writes one reconnect lifecycle transition to machine-readable stdout.
+private func writeTunnelLifecycleEvent(
+    _ event: TunnelReconnectLoop.Event,
+    deviceIdentifier: String?
+) {
+    writeTunnelStdoutLine(
+        TunnelLifecycleEventLine(event: event, udid: deviceIdentifier)
+    )
+}
+
 /// Writes one newline-delimited ready event without stdout buffering.
 private func writeTunnelReadyEvent(
     deviceIdentifier: String,
@@ -1309,6 +1589,19 @@ private func writeTunnelReadyEvent(
     var data = try JSONEncoder().encode(event)
     data.append(0x0a)
     try FileHandle.standardOutput.write(contentsOf: data)
+}
+
+/// Best-effort NDJSON writer for reconnect-mode lifecycle lines.
+///
+/// Unlike the initial `ready` line, lifecycle transitions are advisory: a
+/// host that stopped reading stdout must not be able to kill the tunnel with
+/// a write failure, so encoding or pipe errors are swallowed.
+private func writeTunnelStdoutLine(_ line: some Encodable) {
+    guard var data = try? JSONEncoder().encode(line) else {
+        return
+    }
+    data.append(0x0a)
+    try? FileHandle.standardOutput.write(contentsOf: data)
 }
 
 /// Writes human-readable tunnel progress separately from machine-readable stdout.
