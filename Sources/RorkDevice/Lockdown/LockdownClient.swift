@@ -27,6 +27,15 @@ public final class LockdownClient {
         self.label = label
     }
 
+    /// Closes the underlying Lockdown control connection.
+    ///
+    /// Long-lived hosts, such as the tunnel reconnect loop, call this between
+    /// establishment cycles so abandoned control connections do not accumulate
+    /// while the device stays attached. The client must not be used afterward.
+    public func close() {
+        connection.close()
+    }
+
     /// Starts a Lockdown session using an existing pairing record.
     ///
     /// This sends `HostID` and `SystemBUID` from the record. If the response

@@ -42,6 +42,17 @@ public final class DeviceSession {
         self.backend = backend
     }
 
+    /// Releases the session's persistent control connections.
+    ///
+    /// Service connections returned by the session are owned by their callers
+    /// and stay open. Short-lived processes can rely on process exit instead;
+    /// long-lived hosts such as the tunnel reconnect loop must close each
+    /// session they abandon so control connections do not accumulate. The
+    /// session must not be used after closing.
+    public func close() {
+        backend.close()
+    }
+
     /// Returns the identity information available for the connected device.
     ///
     /// Lockdown sessions return common values from the device's default value

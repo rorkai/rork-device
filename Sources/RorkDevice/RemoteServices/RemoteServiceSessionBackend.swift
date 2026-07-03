@@ -126,6 +126,14 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
         }
     }
 
+    /// Closes the retained discovery session that keeps service ports valid.
+    ///
+    /// Backends created without a retained session borrow their discovery
+    /// lifetime from the caller and close nothing.
+    func close() {
+        retainedDiscoverySession?.close()
+    }
+
     /// Opens an advertised endpoint and adds service context to transport errors.
     private func connect(
         to serviceName: String,
