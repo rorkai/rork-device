@@ -1234,9 +1234,12 @@ struct TunnelStartCommand: AsyncParsableCommand {
         }
         do {
             try await serving.value
-        } catch is CancellationError {
+        } catch where serving.isCancelled {
             // The supervisor is gone and the tunnel wound down in time; exit
-            // cleanly so nothing records this as a crash.
+            // cleanly so nothing records this as a crash. Cancellation is
+            // matched through `isCancelled` rather than error type because a
+            // cancelled establishment step can surface as a transport error
+            // from the connection teardown instead of `CancellationError`.
         }
     }
 
