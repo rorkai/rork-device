@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.20"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.21"),
 ]
 ```
 
@@ -302,6 +302,13 @@ consumers must adopt each `ready` event's parameters. The process still exits
 on startup conditions that cannot heal, such as an unreadable identity file or
 invalid flags.
 
+Supervisors that spawn the tunnel as a child process should also pass
+`--exit-when-stdin-closes` and keep a pipe attached to the agent's standard
+input. When the supervisor dies — cleanly or by crashing — the pipe reaches
+end-of-file and the agent stops itself (winding down in an orderly way, with a
+bounded five-second fallback), so a reconnecting agent can never outlive the
+process responsible for it.
+
 ## Direct Remote-Pairing Tunnel
 
 For applications that already have a direct remote-pairing control endpoint,
@@ -421,6 +428,7 @@ rorkdevice remote-pairing trust --identity selfIdentity.plist --device-address f
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --stats-interval 30
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --reconnect
+rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --reconnect --exit-when-stdin-closes
 ```
 
 Direct/tunnel Lockdown endpoints can be selected explicitly:

@@ -157,6 +157,23 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertFalse(command.reconnect)
     }
 
+    func testTunnelStartParsesExitWhenStdinCloses() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--exit-when-stdin-closes",
+        ])
+
+        XCTAssertTrue(command.exitWhenStdinCloses)
+    }
+
+    func testTunnelStartIgnoresStdinByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertFalse(command.exitWhenStdinCloses)
+    }
+
     func testTunnelLostEventEncodesReasonAndDevice() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
