@@ -427,10 +427,14 @@ int rork_lwip_stack_input(
         return ERR_ARG;
     }
 
+    // PBUF_RAM allocates exactly `length` bytes in one contiguous buffer.
+    // Pool buffers would either waste a full jumbo-sized block on every
+    // 60-byte ACK or chain ten buffers per jumbo packet; with malloc-backed
+    // memory (MEM_LIBC_MALLOC) the pool grants nothing in exchange.
     struct pbuf *buffer = pbuf_alloc(
         PBUF_RAW,
         (u16_t)length,
-        PBUF_POOL
+        PBUF_RAM
     );
     if (buffer == NULL) {
         return ERR_MEM;
@@ -560,7 +564,10 @@ ptrdiff_t rork_lwip_connection_write(
         return 0;
     }
 
-    u16_t available = tcp_sndbuf(connection->pcb);
+    // With RFC 7323 window scaling enabled the send buffer is a 32-bit
+    // quantity; a u16 here truncated a full one-megabyte buffer to zero and
+    // stalled every bulk send before it started.
+    tcpwnd_size_t available = tcp_sndbuf(connection->pcb);
     if (available == 0) {
         return 0;
     }

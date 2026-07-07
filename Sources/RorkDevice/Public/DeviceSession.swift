@@ -316,7 +316,7 @@ public final class DeviceSession {
     /// - Returns: Negotiated packet tunnel to the connected device.
     /// - Throws: Lockdown, transport, or CDTunnel protocol errors.
     public func openCoreDeviceTunnel(
-        requestedMaximumTransmissionUnit: UInt16 = 1_280
+        requestedMaximumTransmissionUnit: UInt16 = 4_000
     ) async throws -> CoreDeviceTunnel {
         let connection = try await startService(.coreDeviceProxy)
         return try await CoreDeviceTunnel.open(

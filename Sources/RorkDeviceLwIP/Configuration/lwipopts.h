@@ -43,6 +43,12 @@
 #define LWIP_IPV6_MLD 0
 #define LWIP_IPV6_DHCP6 0
 #define LWIP_ND6_QUEUEING 0
+/// Uses one MTU field for IPv6 instead of a router-advertisement-updated copy.
+///
+/// No router advertisements exist inside the point-to-point tunnel, and the
+/// separate `mtu6` field would read zero — disabling the effective-MSS clamp
+/// that keeps jumbo segments off devices that granted a smaller MTU.
+#define LWIP_ND6_ALLOW_RA_UPDATES 0
 
 /// Delegates dynamic storage to the host C allocator with 64-bit alignment.
 ///
@@ -61,15 +67,30 @@
 #define PBUF_POOL_SIZE 256
 #define PBUF_POOL_BUFSIZE 1600
 
-/// Tunes TCP for an IPv6 minimum-MTU userspace path.
+/// Tunes TCP for the jumbo-MTU userspace path CoreDevice grants on modern iOS.
 ///
-/// A 1220-byte MSS reserves the 60 bytes required by the IPv6 and TCP headers
-/// inside a 1280-byte packet. Larger send and receive windows reduce stalls
-/// during application transfer without changing the on-wire packet limit.
-#define TCP_MSS 1220
-#define TCP_WND 65535
-#define TCP_SND_BUF 49152
-#define TCP_SND_QUEUELEN 256
+/// A 15,940-byte MSS reserves the 60 bytes required by the IPv6 and TCP
+/// headers inside a 16,000-byte packet — the MTU requested in the CDTunnel
+/// handshake. Devices that grant less shrink both the sent and the advertised
+/// segment size at runtime: `TCP_CALCULATE_EFF_SEND_MSS` clamps them to the
+/// interface MTU carried by the granted tunnel configuration.
+///
+/// RFC 7323 window scaling lets the one-megabyte windows below survive the
+/// TCP header's 16-bit window field (65,535 << 4). Large windows keep an IPA
+/// staging transfer from stalling on window exhaustion at tunnel latencies;
+/// dynamic memory is malloc-backed (`MEM_LIBC_MALLOC`), so the values bound
+/// per-connection usage instead of reserving static pools.
+#define TCP_MSS 15940
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 4
+#define TCP_WND 1048560
+#define TCP_SND_BUF 1048576
+#define TCP_SND_QUEUELEN 512
+/// Send-low-water-mark for the sockets select() API, which this build
+/// compiles out (`LWIP_SOCKET 0`). Defined only to satisfy lwIP's sanity
+/// check, which requires it to sit 4 MSS below the u16 ceiling — the default
+/// derives from TCP_SND_BUF and overflows with jumbo segments.
+#define TCP_SNDLOWAT (0xffff - (4 * TCP_MSS) - 1)
 #define TCP_QUEUE_OOSEQ 1
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_KEEPALIVE 1
