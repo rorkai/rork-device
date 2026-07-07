@@ -1141,6 +1141,13 @@ struct TunnelStartCommand: AsyncParsableCommand {
     )
     var reconnect = false
 
+    @Flag(
+        name: .customLong("exit-when-stdin-closes"),
+        help:
+            "Exit when standard input reaches end-of-file, so a supervising process that dies cannot orphan this tunnel."
+    )
+    var exitWhenStdinCloses = false
+
     /// Rejects tunnel settings that cannot form a valid IPv6 link.
     func validate() throws {
         try connection.validate()
@@ -1173,7 +1180,10 @@ struct TunnelStartCommand: AsyncParsableCommand {
     ///
     /// With `--reconnect`, tunnel loss re-enters establishment with backoff
     /// instead of ending the process, and lifecycle events are reported on
-    /// stdout between `ready` lines.
+    /// stdout between `ready` lines. With `--exit-when-stdin-closes`, the
+    /// process also stops cleanly once standard input reaches end-of-file,
+    /// which is how a supervisor's crash reaches an agent that would otherwise
+    /// keep reconnecting forever.
     func run() async throws {
         let identityURL = URL(fileURLWithPath: identityPath)
             .standardizedFileURL
@@ -1187,6 +1197,57 @@ struct TunnelStartCommand: AsyncParsableCommand {
         writeTunnelProgress(
             "Loaded remote-pairing identity \(identity.identifier)."
         )
+        guard exitWhenStdinCloses else {
+            try await serveUntilStopped(
+                identity: identity,
+                identityURL: identityURL
+            )
+            return
+        }
+
+        let serving = Task {
+            try await serveUntilStopped(
+                identity: identity,
+                identityURL: identityURL
+            )
+        }
+        let supervision = Task {
+            await EndOfFileWatch.waitUntilEndOfFile(of: .standardInput)
+            writeTunnelProgress(
+                "Standard input closed; stopping because the supervising process is gone."
+            )
+            serving.cancel()
+            // Establishment steps that do not observe cancellation promptly
+            // must not keep an unsupervised process alive; bound the wind-down.
+            // A cancelled grace timer means the tunnel wound down first, so
+            // the orderly path owns the exit.
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            writeTunnelProgress("Shutdown grace elapsed; exiting now.")
+            Foundation.exit(0)
+        }
+        defer {
+            supervision.cancel()
+        }
+        do {
+            try await serving.value
+        } catch where serving.isCancelled {
+            // The supervisor is gone and the tunnel wound down in time; exit
+            // cleanly so nothing records this as a crash. Cancellation is
+            // matched through `isCancelled` rather than error type because a
+            // cancelled establishment step can surface as a transport error
+            // from the connection teardown instead of `CancellationError`.
+        }
+    }
+
+    /// Serves tunnels in the selected mode until stopped or failed.
+    private func serveUntilStopped(
+        identity: RemotePairingIdentity,
+        identityURL: URL
+    ) async throws {
         if reconnect {
             try await runReconnectLoop(
                 identity: identity,
