@@ -18,7 +18,7 @@ public enum TunnelAgentIPC {
         public let operation: String
 
         /// The complete request line, retained so handlers can decode
-        /// operation-specific fields with their own types.
+        /// operation-specific fields with their own `Decodable` types.
         public let body: Data
     }
 
@@ -34,25 +34,46 @@ public enum TunnelAgentIPC {
 
     /// Produces the reply payload for one request.
     ///
-    /// The returned dictionary is merged into the `op-result` envelope; the
-    /// `id`, `event`, and `ok` fields are owned by the dispatcher. Throwing
-    /// produces an `ok: false` result carrying the error's description.
-    public typealias Handler = @Sendable (Request) async throws -> [String: Any]
+    /// The payload's fields are merged into the top level of the `op-result`
+    /// reply; return nil when the result carries no fields beyond the
+    /// envelope. The `id`, `event`, and `ok` fields are owned by the
+    /// dispatcher. Throwing produces an `ok: false` result carrying the
+    /// error's description.
+    public typealias Handler = @Sendable (Request) async throws -> (any Encodable & Sendable)?
+
+    /// The wire shape of a request envelope.
+    private struct RequestEnvelope: Decodable {
+        let id: String
+        let op: String
+    }
+
+    /// Salvages a correlation id from a line that failed envelope decoding.
+    private struct RequestIdProbe: Decodable {
+        let id: String?
+    }
+
+    /// The payload for the `capabilities` operation.
+    private struct CapabilitiesPayload: Encodable {
+        let capabilities: [String]
+    }
 
     /// Decodes one input line into a request or a correlatable failure.
     public static func decodeRequest(from line: String) -> DecodeOutcome {
         let data = Data(line.utf8)
-        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        let decoder = JSONDecoder()
+        if let envelope = try? decoder.decode(RequestEnvelope.self, from: data),
+           !envelope.id.isEmpty, !envelope.op.isEmpty {
+            return .request(
+                Request(id: envelope.id, operation: envelope.op, body: data)
+            )
+        }
+        guard let probe = try? decoder.decode(RequestIdProbe.self, from: data) else {
             return .malformed(reason: "The request line is not a JSON object.", id: nil)
         }
-        let id = object["id"] as? String
-        guard let id, !id.isEmpty else {
+        guard let id = probe.id, !id.isEmpty else {
             return .malformed(reason: "The request has no string id.", id: nil)
         }
-        guard let operation = object["op"] as? String, !operation.isEmpty else {
-            return .malformed(reason: "The request has no op field.", id: id)
-        }
-        return .request(Request(id: id, operation: operation, body: data))
+        return .malformed(reason: "The request has no op field.", id: id)
     }
 
     /// The operations every serving agent supports before any device work.
@@ -61,8 +82,8 @@ public enum TunnelAgentIPC {
     /// supervisor may route through the pipe.
     public static func baseHandlers(capabilities: [String]) -> [String: Handler] {
         [
-            "ping": { _ in [:] },
-            "capabilities": { _ in ["capabilities": capabilities] },
+            "ping": { _ in nil },
+            "capabilities": { _ in CapabilitiesPayload(capabilities: capabilities) },
         ]
     }
 
@@ -105,54 +126,39 @@ public enum TunnelAgentIPC {
     ) {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
-            writer.write(envelope(event: "op-error", id: id, fields: ["error": reason]))
+            writer.write(Reply(event: "op-error", id: id, ok: nil, error: reason, payload: nil))
         case .request(let request):
             guard let handler = handlers[request.operation] else {
                 writer.write(
-                    envelope(
+                    Reply(
                         event: "op-result",
                         id: request.id,
-                        fields: [
-                            "ok": false,
-                            "error": "Unknown operation \(request.operation).",
-                        ]
+                        ok: false,
+                        error: "Unknown operation \(request.operation).",
+                        payload: nil
                     )
                 )
                 return
             }
             group.addTask {
                 do {
-                    var fields = try await handler(request)
-                    fields["ok"] = true
-                    writer.write(envelope(event: "op-result", id: request.id, fields: fields))
+                    let payload = try await handler(request)
+                    writer.write(
+                        Reply(event: "op-result", id: request.id, ok: true, error: nil, payload: payload)
+                    )
                 } catch {
                     writer.write(
-                        envelope(
+                        Reply(
                             event: "op-result",
                             id: request.id,
-                            fields: [
-                                "ok": false,
-                                "error": String(describing: error),
-                            ]
+                            ok: false,
+                            error: String(describing: error),
+                            payload: nil
                         )
                     )
                 }
             }
         }
-    }
-
-    /// Builds one reply object with the shared envelope fields.
-    private static func envelope(
-        event: String,
-        id: String?,
-        fields: [String: Any]
-    ) -> [String: Any] {
-        var object = fields
-        object["event"] = event
-        if let id {
-            object["id"] = id
-        }
-        return object
     }
 
     /// Streams the file handle's bytes as they arrive, ending at end-of-file.
@@ -174,6 +180,34 @@ public enum TunnelAgentIPC {
     }
 }
 
+/// One reply line: the shared envelope plus a flattened operation payload.
+///
+/// The payload encodes into the same keyed container as the envelope, so its
+/// fields appear at the top level of the reply object rather than nested.
+private struct Reply: Encodable {
+    let event: String
+    let id: String?
+    let ok: Bool?
+    let error: String?
+    let payload: (any Encodable & Sendable)?
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+        case id
+        case ok
+        case error
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(event, forKey: .event)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encodeIfPresent(ok, forKey: .ok)
+        try container.encodeIfPresent(error, forKey: .error)
+        try payload?.encode(to: encoder)
+    }
+}
+
 /// Serializes reply lines so concurrent handlers cannot interleave output.
 private final class ReplyWriter: @unchecked Sendable {
     private let lock = NSLock()
@@ -183,8 +217,8 @@ private final class ReplyWriter: @unchecked Sendable {
         self.send = send
     }
 
-    func write(_ object: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+    func write(_ reply: Reply) {
+        guard let data = try? JSONEncoder().encode(reply) else {
             return
         }
         lock.withLock {
