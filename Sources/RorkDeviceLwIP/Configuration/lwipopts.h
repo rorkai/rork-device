@@ -42,11 +42,12 @@
 ///
 /// CoreDevice provides fixed point-to-point addresses and complete packets.
 /// Fragmentation, reassembly, multicast discovery, DHCP, and neighbor queueing
-/// would add state that the tunnel neither requires nor advertises. Router
-/// advertisements do not exist inside the tunnel either, so the separate
-/// RA-updated `mtu6` field would read zero — `LWIP_ND6_ALLOW_RA_UPDATES 0`
-/// keeps the interface MTU authoritative, which is what clamps the effective
-/// MSS on devices that granted a smaller tunnel MTU.
+/// would add state that the tunnel neither requires nor advertises.
+///
+/// There are no router advertisements inside the tunnel. With RA updates
+/// enabled, lwIP would track the IPv6 MTU in a separate field that nothing
+/// ever sets, and the effective-MSS clamp would read it as zero. Keeping RA
+/// updates off makes the interface MTU the single source of truth.
 #define LWIP_IPV6_AUTOCONFIG 0
 #define LWIP_IPV6_SEND_ROUTER_SOLICIT 0
 #define LWIP_IPV6_DUP_DETECT_ATTEMPTS 0
@@ -64,24 +65,19 @@
 /// Delegates dynamic storage to the host C allocator with 64-bit alignment.
 ///
 /// This avoids a fixed global lwIP heap while preserving alignment required by
-/// Swift-supported 64-bit Apple and Linux targets. Because storage is
-/// malloc-backed, the TCP window and buffer limits below bound *demand-driven*
-/// per-connection usage; nothing is reserved up front and idle connections
-/// cost almost nothing.
+/// Swift-supported 64-bit Apple and Linux targets. Buffers are allocated on
+/// demand and freed when drained, so the TCP limits below are ceilings rather
+/// than reservations.
 #define MEM_LIBC_MALLOC 1
 #define MEMP_MEM_MALLOC 1
 #define MEM_ALIGNMENT 8
 
 /// Sizes protocol-control and packet pools for concurrent device services.
 ///
-/// `MEMP_NUM_TCP_PCB` is the process-wide concurrency cap and therefore also
-/// the memory ceiling multiplier: 64 connections that all simultaneously fill
-/// a one-megabyte send queue and a one-megabyte receive window would bound at
-/// roughly 128 MB. That worst case requires every connection to stall with
-/// full buffers at once; in practice a tunnel process carries a handful of
-/// service streams with one bulk transfer in flight, keeping usage in the
-/// tens of megabytes at peak — an accepted host-side budget (these helpers
-/// run on the Mac, not the device).
+/// The PCB cap is also the memory ceiling. If all 64 connections filled their
+/// megabyte buffers in both directions at once, the process would use about
+/// 128 MB of host memory. Real tunnel processes run a few streams with one
+/// bulk transfer in flight.
 #define MEMP_NUM_TCP_PCB 64
 #define MEMP_NUM_TCP_SEG 512
 #define PBUF_POOL_SIZE 256
@@ -91,28 +87,30 @@
 // MARK: TCP throughput profile
 // ============================================================================
 
-/// Tunes TCP for the multi-kilobyte MTU CoreDevice grants on modern iOS.
+/// Tunes TCP for the multi-kilobyte MTU that CoreDevice grants on modern iOS.
 ///
-/// A 15,940-byte MSS reserves the 60 bytes required by the IPv6 and TCP
-/// headers inside the largest tunnel MTU worth requesting (16,000). Devices
-/// that grant less shrink both the sent and the advertised segment size at
-/// runtime: `TCP_CALCULATE_EFF_SEND_MSS` clamps them to the interface MTU
-/// carried by the granted tunnel configuration.
+/// The MSS reserves 60 bytes of IPv6 and TCP headers inside a 16,000-byte
+/// packet, the largest tunnel MTU worth requesting. When a device grants a
+/// smaller MTU, lwIP shrinks both the sent and the advertised segment size to
+/// fit it. That clamp is `TCP_CALCULATE_EFF_SEND_MSS`, which is on by default.
 ///
-/// RFC 7323 window scaling lets the one-megabyte windows below survive the
-/// TCP header's 16-bit window field (65,535 << 4). Large windows keep an IPA
-/// staging transfer from stalling on window exhaustion at tunnel latencies.
-/// `TCP_SNDLOWAT` exists only to satisfy lwIP's sanity check: it feeds the
-/// sockets select() API, which this build compiles out, and its default
-/// derives from `TCP_SND_BUF`, overflowing u16 with jumbo segments.
+/// The window and send-buffer values are one megabyte so that a large app
+/// transfer does not stall waiting for window updates. A 16-bit TCP header
+/// field cannot carry such a window, which is what RFC 7323 window scaling
+/// solves. `TCP_WND` is 65,535 shifted by the scale of 4.
+///
+/// `TCP_SNDLOWAT` only feeds the sockets select() API, which this build
+/// compiles out. It is defined because lwIP's sanity check requires a value
+/// four segments below the u16 ceiling, and the default derived from
+/// `TCP_SND_BUF` overflows with jumbo segments.
 #define TCP_MSS 15940
-#define LWIP_WND_SCALE 1
-#define TCP_RCV_SCALE 4
 #define TCP_WND 1048560
 #define TCP_SND_BUF 1048576
 #define TCP_SND_QUEUELEN 512
 #define TCP_SNDLOWAT (0xffff - (4 * TCP_MSS) - 1)
+#define TCP_RCV_SCALE 4
 #define TCP_QUEUE_OOSEQ 1
+#define LWIP_WND_SCALE 1
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_KEEPALIVE 1
 

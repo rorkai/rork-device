@@ -303,11 +303,12 @@ on startup conditions that cannot heal, such as an unreadable identity file or
 invalid flags.
 
 `tunnel start` requests a 4,000-byte tunnel MTU by default and adopts
-whatever the device grants, with RFC 7323 window scaling and one-megabyte TCP
-windows behind it — about a 45% reduction in large-transfer wall time over the
-previous 1,280-byte configuration. Devices grant requests above ~8,000 but
-silently drop the resulting frames, so prefer the default; `--mtu` accepts any
-value down to the IPv6 minimum of 1,280 as a rollback lever.
+whatever the device grants. Together with RFC 7323 window scaling and
+one-megabyte TCP windows, this cuts large-transfer wall time by roughly 45%
+compared to the previous 1,280-byte configuration. Do not request more:
+devices grant values above 8,000 and then silently drop the resulting frames.
+`--mtu` accepts any value down to the IPv6 minimum of 1,280 and serves as the
+rollback lever.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard

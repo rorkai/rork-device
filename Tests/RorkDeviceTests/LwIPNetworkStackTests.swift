@@ -138,8 +138,8 @@ final class LwIPNetworkStackTests: XCTestCase {
         }
 
         // A 16,000-byte MTU leaves 15,940 bytes after the IPv6 and TCP
-        // headers; the receive-window scale option is what lets the window
-        // grow past 64 KB on long transfers.
+        // headers. The window-scale option must be offered too, because
+        // without it the receive window cannot grow past 64 KB.
         XCTAssertEqual(tcpOptionValue(in: syn, kind: 2), 15_940)
         XCTAssertNotNil(tcpOptionValue(in: syn, kind: 3))
         _ = await connectionTask.value
@@ -178,9 +178,9 @@ final class LwIPNetworkStackTests: XCTestCase {
     }
 
     func testBulkSendMovesDataWithTheScaledSendBuffer() async throws {
-        // Regression: with RFC 7323 window scaling the send buffer is a
-        // 32-bit quantity; truncating it to 16 bits made a full one-megabyte
-        // buffer read as zero capacity, so bulk sends stalled forever.
+        // Window scaling makes the send buffer a 32-bit quantity. The C
+        // shim used to read it into a u16, which turned a full one-megabyte
+        // buffer into zero capacity and stalled every bulk send.
         let packets = LwIPPacketRecorder()
         let stack = try LwIPNetworkStack(
             localAddress: "fd00::2",
@@ -218,10 +218,9 @@ final class LwIPNetworkStackTests: XCTestCase {
             connection.close()
         }
 
-        // 200 KB exceeds any 16-bit interpretation of the send buffer. With
-        // the truncation bug a full scaled buffer read as zero capacity, so
-        // the send never accepted a byte; the bounded race keeps a regression
-        // from hanging the suite.
+        // 200 KB does not fit in any 16-bit reading of the send buffer, so
+        // this send hangs when the truncation bug is present. The race with
+        // the timer keeps a regression from hanging the whole suite.
         let payload = Data(repeating: 0xAB, count: 200_000)
         let outcome = await withThrowingTaskGroup(
             of: Bool.self
@@ -402,8 +401,9 @@ private func tcpPayload(in packet: Data) -> Data {
 
 /// Reads one TCP option's value from a segment, or nil when absent.
 ///
-/// Returns the 16-bit value for MSS (kind 2), the shift count for window
-/// scale (kind 3), and zero for valueless options that are present.
+/// The MSS option (kind 2) yields its 16-bit value. The window-scale option
+/// (kind 3) yields the shift count. Options without a value yield zero when
+/// present.
 private func tcpOptionValue(in packet: Data, kind: UInt8) -> Int? {
     let headerLength = Int(packet[52] >> 4) * 4
     let options = Data(packet.dropFirst(60).prefix(headerLength - 20))

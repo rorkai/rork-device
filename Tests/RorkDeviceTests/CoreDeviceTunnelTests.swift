@@ -42,10 +42,10 @@ final class CoreDeviceTunnelTests: XCTestCase {
     }
 
     func testRequestsALargerMTUByDefaultAndAdoptsTheGrantedValue() async throws {
-        // 4000 is the measured safe default: devices grant any requested MTU
-        // up to 16000, but silently drop packets past ~8000, so the request
-        // stays well below that cliff. A 1280 grant from an older iOS must
-        // win over the larger request.
+        // Devices grant any requested MTU up to 16000 and then silently
+        // drop packets larger than roughly 8000, so the default request
+        // stays at a measured-safe 4000. A device that grants less, like a
+        // 1280 from an older iOS, must win over the request.
         let connection = try coreDeviceConnection()
         let session = DeviceSession(
             backend: CoreDeviceTunnelSessionBackend(connection: connection)
