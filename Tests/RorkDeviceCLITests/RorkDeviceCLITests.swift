@@ -174,6 +174,73 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertFalse(command.reconnect)
     }
 
+    func testTunnelStartParsesServe() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--reconnect",
+            "--serve",
+        ])
+
+        XCTAssertTrue(command.serve)
+    }
+
+    func testTunnelStartDoesNotServeByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertFalse(command.serve)
+    }
+
+    func testServeRequiresReconnect() {
+        XCTAssertThrowsError(
+            try TunnelStartCommand.parse([
+                "--identity", "identity.plist",
+                "--serve",
+            ])
+        )
+    }
+
+    func testTunnelReadyEventListsCapabilitiesWhenServing() throws {
+        let event = TunnelReadyEvent(
+            address: "fd00::1",
+            rsdPort: 58_783,
+            udid: "00008150-TEST",
+            userspaceTunHost: "127.0.0.1",
+            userspaceTunPort: 50_918,
+            identityPath: "/tmp/identity.plist",
+            mtu: 4_000,
+            capabilities: ["ping", "capabilities"]
+        )
+
+        let data = try JSONEncoder().encode(event)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(output["capabilities"] as? [String], ["ping", "capabilities"])
+    }
+
+    func testTunnelReadyEventOmitsCapabilitiesWhenNotServing() throws {
+        let event = TunnelReadyEvent(
+            address: "fd00::1",
+            rsdPort: 58_783,
+            udid: "00008150-TEST",
+            userspaceTunHost: "127.0.0.1",
+            userspaceTunPort: 50_918,
+            identityPath: "/tmp/identity.plist",
+            mtu: 4_000,
+            capabilities: nil
+        )
+
+        let data = try JSONEncoder().encode(event)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertNil(output["capabilities"])
+    }
+
     func testTunnelStartParsesExitWhenStdinCloses() throws {
         let command = try TunnelStartCommand.parse([
             "--identity", "identity.plist",
@@ -264,7 +331,8 @@ final class RorkDeviceCLITests: XCTestCase {
             userspaceTunHost: "127.0.0.1",
             userspaceTunPort: 50_918,
             identityPath: "/tmp/identity.plist",
-            mtu: 1_280
+            mtu: 1_280,
+            capabilities: nil
         )
 
         let data = try JSONEncoder().encode(event)

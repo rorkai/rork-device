@@ -1148,10 +1148,19 @@ struct TunnelStartCommand: AsyncParsableCommand {
     )
     var exitWhenStdinCloses = false
 
+    @Flag(
+        help:
+            "Serve operation requests over standard input and reply on standard output. Implies exiting when standard input closes."
+    )
+    var serve = false
+
     /// Rejects tunnel settings that cannot form a valid IPv6 link.
     func validate() throws {
         try connection.validate()
         try connection.requireLockdownRoute(for: "tunnel start")
+        guard !serve || reconnect else {
+            throw ValidationError("--serve requires --reconnect.")
+        }
         guard !gatewayHost.trimmingCharacters(
             in: .whitespacesAndNewlines
         ).isEmpty else {
@@ -1197,6 +1206,22 @@ struct TunnelStartCommand: AsyncParsableCommand {
         writeTunnelProgress(
             "Loaded remote-pairing identity \(identity.identifier)."
         )
+        if serve {
+            // Serving owns standard input: requests while the pipe is open,
+            // shutdown when it reaches end-of-file. The read loop replacing
+            // the plain end-of-file watch keeps the parent-death contract.
+            try await runSupervised(identity: identity, identityURL: identityURL) {
+                await TunnelAgentIPC.serve(
+                    input: .standardInput,
+                    handlers: TunnelAgentIPC.baseHandlers(
+                        capabilities: TunnelStartCommand.serveCapabilities
+                    ),
+                    send: writeAgentReplyLine
+                )
+            }
+            return
+        }
+
         guard exitWhenStdinCloses else {
             try await serveUntilStopped(
                 identity: identity,
@@ -1205,6 +1230,25 @@ struct TunnelStartCommand: AsyncParsableCommand {
             return
         }
 
+        try await runSupervised(identity: identity, identityURL: identityURL) {
+            await EndOfFileWatch.waitUntilEndOfFile(of: .standardInput)
+        }
+    }
+
+    /// Operations the serving loop can answer before any device work.
+    static let serveCapabilities = ["ping", "capabilities"]
+
+    /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
+    ///
+    /// The wind-down is bounded: establishment steps that do not observe
+    /// cancellation promptly must not keep an unsupervised process alive. A
+    /// cancelled grace timer means the tunnel wound down first, so the
+    /// orderly path owns the exit.
+    private func runSupervised(
+        identity: RemotePairingIdentity,
+        identityURL: URL,
+        untilParentGone: @escaping @Sendable () async -> Void
+    ) async throws {
         let serving = Task {
             try await serveUntilStopped(
                 identity: identity,
@@ -1212,15 +1256,11 @@ struct TunnelStartCommand: AsyncParsableCommand {
             )
         }
         let supervision = Task {
-            await EndOfFileWatch.waitUntilEndOfFile(of: .standardInput)
+            await untilParentGone()
             writeTunnelProgress(
                 "Standard input closed; stopping because the supervising process is gone."
             )
             serving.cancel()
-            // Establishment steps that do not observe cancellation promptly
-            // must not keep an unsupervised process alive; bound the wind-down.
-            // A cancelled grace timer means the tunnel wound down first, so
-            // the orderly path owns the exit.
             do {
                 try await Task.sleep(for: .seconds(5))
             } catch {
@@ -1433,7 +1473,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 deviceIdentifier: connected.deviceIdentifier,
                 identityPath: identityURL.path,
                 network: network,
-                gateway: gateway
+                gateway: gateway,
+                capabilities: serve ? TunnelStartCommand.serveCapabilities : nil
             )
         } catch {
             gateway.close()
@@ -1573,6 +1614,11 @@ struct TunnelReadyEvent: Encodable {
     let userspaceTunPort: UInt16
     let identityPath: String
     let mtu: UInt16
+
+    /// Operations the agent's serving loop accepts on standard input, or nil
+    /// outside serving mode. Supervisors route an operation through the pipe
+    /// only when it is listed here.
+    let capabilities: [String]?
 }
 
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
@@ -1643,7 +1689,8 @@ private func writeTunnelReadyEvent(
     deviceIdentifier: String,
     identityPath: String,
     network: CoreDeviceUserspaceNetwork,
-    gateway: CoreDeviceUserspaceGateway
+    gateway: CoreDeviceUserspaceGateway,
+    capabilities: [String]?
 ) throws {
     let event = TunnelReadyEvent(
         address: network.configuration.deviceAddress,
@@ -1652,11 +1699,19 @@ private func writeTunnelReadyEvent(
         userspaceTunHost: gateway.host,
         userspaceTunPort: gateway.port,
         identityPath: identityPath,
-        mtu: network.configuration.maximumTransmissionUnit
+        mtu: network.configuration.maximumTransmissionUnit,
+        capabilities: capabilities
     )
     var data = try JSONEncoder().encode(event)
     data.append(0x0a)
     try FileHandle.standardOutput.write(contentsOf: data)
+}
+
+/// Writes one serving-loop reply line to machine-readable standard output.
+private func writeAgentReplyLine(_ line: Data) {
+    var data = line
+    data.append(0x0a)
+    try? FileHandle.standardOutput.write(contentsOf: data)
 }
 
 /// Best-effort NDJSON writer for reconnect-mode lifecycle lines.

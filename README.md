@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.23"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.24"),
 ]
 ```
 
@@ -309,6 +309,23 @@ compared to the previous 1,280-byte configuration. Do not request more:
 devices grant values above 8,000 and then silently drop the resulting frames.
 `--mtu` accepts any value down to the IPv6 minimum of 1,280 and serves as the
 rollback lever.
+
+With `--serve` (requires `--reconnect`), the process also accepts operation
+requests as newline-delimited JSON on standard input and replies on standard
+output. Each request carries a caller-chosen `id` that every reply repeats:
+
+```text
+-> {"id":"1","op":"ping"}
+<- {"id":"1","event":"op-result","ok":true}
+-> {"id":"2","op":"capabilities"}
+<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities"]}
+```
+
+Unknown operations answer with `"ok":false` and malformed lines answer with an
+`op-error` event; neither ends the process. The `ready` event lists the
+accepted operations in a `capabilities` field so supervisors can route
+accordingly. In serving mode, end-of-file on standard input still stops the
+process, so the parent-death contract below holds without the separate flag.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard
