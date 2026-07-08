@@ -194,6 +194,23 @@ final class AFCClientTests: XCTestCase {
         XCTAssertEqual(connection.sent[1].count, data.count + 48)
     }
 
+    func testFileReadsRequestOneMegabytePerRoundTrip() async throws {
+        // Every read costs a full request and response round trip through the
+        // tunnel, so pulls at 64 KiB per trip ran at half the push rate.
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        inbound.append(afcDataResponse(packetNumber: 2, payload: Data("x".utf8)))
+        inbound.append(afcDataResponse(packetNumber: 3, payload: Data()))
+        inbound.append(afcStatusResponse(packetNumber: 4, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        _ = try await client.contentsOfFile(at: "/Documents/file.txt")
+
+        let requestedLength = try connection.sent[1].littleEndianInteger(at: 48, as: UInt64.self)
+        XCTAssertEqual(requestedLength, 1024 * 1024)
+    }
+
     func testContentsOfFileReadsUntilEmptyChunkAndClosesFile() async throws {
         var inbound = Data()
         inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
