@@ -402,9 +402,11 @@ public final class AFCClient {
 private enum AFCStaging {
     static let directory = "./PublicStaging"
 
-    /// Keeps ordinary file reads bounded without requesting unusually large
-    /// responses from services that may produce data incrementally.
-    static let readChunkSize = 64 * 1024
+    /// Matches the write chunk so pulls and pushes pay the same number of
+    /// round trips. Every read costs a full request and response through the
+    /// tunnel, and 64 KiB chunks made pulls run at half the push rate. AFC
+    /// may return fewer bytes than requested and the read loops handle that.
+    static let readChunkSize = 1024 * 1024
 
     /// Amortizes AFC's mandatory status response across enough staged data to
     /// avoid hundreds of round trips for a typical IPA. The underlying
