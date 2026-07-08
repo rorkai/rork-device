@@ -427,10 +427,13 @@ int rork_lwip_stack_input(
         return ERR_ARG;
     }
 
+    // One contiguous allocation sized to the packet. Fixed-size pool buffers
+    // fit jumbo packets poorly: a small ACK wastes most of a block and a
+    // large packet needs a chain of them.
     struct pbuf *buffer = pbuf_alloc(
         PBUF_RAW,
         (u16_t)length,
-        PBUF_POOL
+        PBUF_RAM
     );
     if (buffer == NULL) {
         return ERR_MEM;
@@ -560,7 +563,10 @@ ptrdiff_t rork_lwip_connection_write(
         return 0;
     }
 
-    u16_t available = tcp_sndbuf(connection->pcb);
+    // The send buffer size is 32 bits wide when window scaling is enabled.
+    // Reading it into a u16 turned a full one-megabyte buffer into zero and
+    // stalled bulk sends.
+    tcpwnd_size_t available = tcp_sndbuf(connection->pcb);
     if (available == 0) {
         return 0;
     }

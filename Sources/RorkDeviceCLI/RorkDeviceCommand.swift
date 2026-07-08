@@ -1126,7 +1126,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
         name: .customLong("mtu"),
         help: "Maximum IPv6 packet size requested from CoreDevice."
     )
-    var maximumTransmissionUnit: UInt16 = 1_280
+    var maximumTransmissionUnit: UInt16 = 4_000
 
     @Option(
         name: .customLong("stats-interval"),

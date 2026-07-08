@@ -140,6 +140,23 @@ final class RorkDeviceCLITests: XCTestCase {
         )
     }
 
+    func testTunnelStartRequestsALargerMTUByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertEqual(command.maximumTransmissionUnit, 4_000)
+    }
+
+    func testTunnelStartAcceptsTheMinimumMTUOverride() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--mtu", "1280",
+        ])
+
+        XCTAssertEqual(command.maximumTransmissionUnit, 1_280)
+    }
+
     func testTunnelStartParsesReconnectFlag() throws {
         let command = try TunnelStartCommand.parse([
             "--identity", "identity.plist",

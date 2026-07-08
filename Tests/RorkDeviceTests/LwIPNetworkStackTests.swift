@@ -111,6 +111,136 @@ final class LwIPNetworkStackTests: XCTestCase {
         } catch {}
     }
 
+    func testSYNAdvertisesJumboMSSAndOffersWindowScaling() async throws {
+        let packets = LwIPPacketRecorder()
+        let stack = try LwIPNetworkStack(
+            localAddress: "fd00::2",
+            maximumTransmissionUnit: 16_000
+        ) { packet in
+            packets.append(packet)
+        }
+        defer {
+            stack.close()
+        }
+
+        let connectionTask = Task {
+            try? await stack.connect(
+                to: "fd00::1",
+                port: 58_783,
+                timeout: .milliseconds(200)
+            )
+        }
+        defer {
+            connectionTask.cancel()
+        }
+        let syn = try await packets.waitForPacket {
+            tcpFlags(in: $0).contains(.synchronize)
+        }
+
+        // A 16,000-byte MTU leaves 15,940 bytes after the IPv6 and TCP
+        // headers. The window-scale option must be offered too, because
+        // without it the receive window cannot grow past 64 KB.
+        XCTAssertEqual(tcpOptionValue(in: syn, kind: 2), 15_940)
+        XCTAssertNotNil(tcpOptionValue(in: syn, kind: 3))
+        _ = await connectionTask.value
+    }
+
+    func testSYNClampsAdvertisedMSSToTheGrantedMTU() async throws {
+        let packets = LwIPPacketRecorder()
+        let stack = try LwIPNetworkStack(
+            localAddress: "fd00::2",
+            maximumTransmissionUnit: 1_280
+        ) { packet in
+            packets.append(packet)
+        }
+        defer {
+            stack.close()
+        }
+
+        let connectionTask = Task {
+            try? await stack.connect(
+                to: "fd00::1",
+                port: 58_783,
+                timeout: .milliseconds(200)
+            )
+        }
+        defer {
+            connectionTask.cancel()
+        }
+        let syn = try await packets.waitForPacket {
+            tcpFlags(in: $0).contains(.synchronize)
+        }
+
+        // A device that grants only the IPv6 minimum MTU must see segment
+        // sizes that fit inside 1,280-byte packets, jumbo build or not.
+        XCTAssertEqual(tcpOptionValue(in: syn, kind: 2), 1_220)
+        _ = await connectionTask.value
+    }
+
+    func testBulkSendMovesDataWithTheScaledSendBuffer() async throws {
+        // Window scaling makes the send buffer a 32-bit quantity. The C
+        // shim used to read it into a u16, which turned a full one-megabyte
+        // buffer into zero capacity and stalled every bulk send.
+        let packets = LwIPPacketRecorder()
+        let stack = try LwIPNetworkStack(
+            localAddress: "fd00::2",
+            maximumTransmissionUnit: 16_000
+        ) { packet in
+            packets.append(packet)
+        }
+        defer {
+            stack.close()
+        }
+
+        let connectionTask = Task {
+            try await stack.connect(
+                to: "fd00::1",
+                port: 58_783,
+                timeout: .seconds(2)
+            )
+        }
+        let syn = try await packets.waitForPacket {
+            tcpFlags(in: $0).contains(.synchronize)
+        }
+        try await stack.receivePacket(
+            tcpPacket(
+                sourceAddress: ipv6Bytes("fd00::1"),
+                destinationAddress: ipv6Bytes("fd00::2"),
+                sourcePort: tcpDestinationPort(in: syn),
+                destinationPort: tcpSourcePort(in: syn),
+                sequenceNumber: 0x0102_0304,
+                acknowledgmentNumber: tcpSequenceNumber(in: syn) &+ 1,
+                flags: [.synchronize, .acknowledgment]
+            )
+        )
+        let connection = try await connectionTask.value
+        defer {
+            connection.close()
+        }
+
+        // 200 KB does not fit in any 16-bit reading of the send buffer, so
+        // this send hangs when the truncation bug is present. The race with
+        // the timer keeps a regression from hanging the whole suite.
+        let payload = Data(repeating: 0xAB, count: 200_000)
+        let outcome = await withThrowingTaskGroup(
+            of: Bool.self
+        ) { group -> Bool in
+            group.addTask {
+                try await connection.send(payload)
+                return true
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                return false
+            }
+            defer {
+                group.cancelAll()
+            }
+            return (try? await group.next()) ?? false
+        }
+        XCTAssertTrue(outcome, "Bulk send stalled with the scaled send buffer")
+    }
+
     func testConnectsAndExchangesTCPPayloadsOverIPv6Packets() async throws {
         let packets = LwIPPacketRecorder()
         let stack = try LwIPNetworkStack(
@@ -267,6 +397,40 @@ private func tcpFlags(in packet: Data) -> TCPFlags {
 private func tcpPayload(in packet: Data) -> Data {
     let headerLength = Int(packet[52] >> 4) * 4
     return Data(packet.dropFirst(40 + headerLength))
+}
+
+/// Reads one TCP option's value from a segment, or nil when absent.
+///
+/// The MSS option (kind 2) yields its 16-bit value. The window-scale option
+/// (kind 3) yields the shift count. Options without a value yield zero when
+/// present.
+private func tcpOptionValue(in packet: Data, kind: UInt8) -> Int? {
+    let headerLength = Int(packet[52] >> 4) * 4
+    let options = Data(packet.dropFirst(60).prefix(headerLength - 20))
+    var index = 0
+    while index < options.count {
+        let optionKind = options[options.startIndex + index]
+        if optionKind == 0 {
+            return nil
+        }
+        if optionKind == 1 {
+            index += 1
+            continue
+        }
+        guard index + 1 < options.count else {
+            return nil
+        }
+        let length = Int(options[options.startIndex + index + 1])
+        guard length >= 2, index + length <= options.count else {
+            return nil
+        }
+        if optionKind == kind {
+            let payload = options.dropFirst(index + 2).prefix(length - 2)
+            return payload.reduce(0) { ($0 << 8) | Int($1) }
+        }
+        index += length
+    }
+    return nil
 }
 
 private func tcpPacket(
