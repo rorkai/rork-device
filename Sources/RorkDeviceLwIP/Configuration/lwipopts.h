@@ -1,9 +1,6 @@
 #ifndef RORK_DEVICE_LWIP_OPTIONS_H
 #define RORK_DEVICE_LWIP_OPTIONS_H
 
-// Every documentation block in this file describes the whole group of
-// options that follows it, up to the next banner or block.
-
 // ============================================================================
 // MARK: Execution model
 // ============================================================================
