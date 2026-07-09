@@ -37,6 +37,36 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
         XCTAssertEqual(id, "9")
     }
 
+    func testDecodesTypedParametersFromTheRequestLine() throws {
+        struct ListParameters: Decodable, Equatable {
+            let type: String
+        }
+        let outcome = TunnelAgentIPC.decodeRequest(
+            from: #"{"id":"7","op":"apps-list","type":"all"}"#
+        )
+        guard case .request(let request) = outcome else {
+            return XCTFail("Expected a decoded request, got \(outcome)")
+        }
+
+        let parameters: ListParameters = try request.parameters()
+
+        XCTAssertEqual(parameters, ListParameters(type: "all"))
+    }
+
+    func testTypedParameterDecodingFailuresNameTheOperation() {
+        let outcome = TunnelAgentIPC.decodeRequest(from: #"{"id":"8","op":"apps-list"}"#)
+        guard case .request(let request) = outcome else {
+            return XCTFail("Expected a decoded request, got \(outcome)")
+        }
+
+        struct ListParameters: Decodable {
+            let type: String
+        }
+        XCTAssertThrowsError(try request.parameters() as ListParameters) { error in
+            XCTAssertTrue(String(describing: error).contains("apps-list"))
+        }
+    }
+
     func testRejectsARequestWithoutAnId() {
         let outcome = TunnelAgentIPC.decodeRequest(from: #"{"op":"ping"}"#)
 

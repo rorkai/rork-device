@@ -18,8 +18,27 @@ public enum TunnelAgentIPC {
         public let operation: String
 
         /// The complete request line, retained so handlers can decode
-        /// operation-specific fields with their own `Decodable` types.
+        /// operation-specific fields with their own `Decodable` types
+        /// through ``parameters()``.
         public let line: Data
+
+        /// Decodes the operation's parameters from the request line.
+        ///
+        /// The parameter type lives with its handler, so each operation's
+        /// contract stays local to the code that implements it. A decoding
+        /// failure names the operation, which becomes the `ok: false` reply
+        /// the supervisor sees.
+        public func parameters<Parameters: Decodable>(
+            _ type: Parameters.Type = Parameters.self
+        ) throws -> Parameters {
+            do {
+                return try JSONDecoder().decode(type, from: line)
+            } catch {
+                throw RorkDeviceError.invalidInput(
+                    "Invalid parameters for \(operation): \(describeDeviceSessionError(error))"
+                )
+            }
+        }
     }
 
     /// The result of decoding one input line.
