@@ -1702,16 +1702,38 @@ private func writeTunnelReadyEvent(
         mtu: network.configuration.maximumTransmissionUnit,
         capabilities: capabilities
     )
-    var data = try JSONEncoder().encode(event)
-    data.append(0x0a)
-    try FileHandle.standardOutput.write(contentsOf: data)
+    try MachineReadableOutput.standardOutput.writeLine(JSONEncoder().encode(event))
+}
+
+/// Writes newline-terminated machine-readable lines without interleaving.
+///
+/// Ready events, lifecycle events, and serving replies all share standard
+/// output. Concurrent writers hold one lock per complete line, so a consumer
+/// that frames on newlines never sees two lines spliced together.
+final class MachineReadableOutput: @unchecked Sendable {
+    static let standardOutput = MachineReadableOutput(handle: .standardOutput)
+
+    private let lock = NSLock()
+    private let handle: FileHandle
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    /// Appends the newline terminator and writes the whole line atomically
+    /// with respect to every other writer sharing this instance.
+    func writeLine(_ line: Data) throws {
+        var data = line
+        data.append(0x0a)
+        try lock.withLock {
+            try handle.write(contentsOf: data)
+        }
+    }
 }
 
 /// Writes one serving-loop reply line to machine-readable standard output.
 private func writeAgentReplyLine(_ line: Data) {
-    var data = line
-    data.append(0x0a)
-    try? FileHandle.standardOutput.write(contentsOf: data)
+    try? MachineReadableOutput.standardOutput.writeLine(line)
 }
 
 /// Best-effort NDJSON writer for reconnect-mode lifecycle lines.
@@ -1720,11 +1742,10 @@ private func writeAgentReplyLine(_ line: Data) {
 /// host that stopped reading stdout must not be able to kill the tunnel with
 /// a write failure, so encoding or pipe errors are swallowed.
 private func writeTunnelStdoutLine(_ line: some Encodable) {
-    guard var data = try? JSONEncoder().encode(line) else {
+    guard let data = try? JSONEncoder().encode(line) else {
         return
     }
-    data.append(0x0a)
-    try? FileHandle.standardOutput.write(contentsOf: data)
+    try? MachineReadableOutput.standardOutput.writeLine(data)
 }
 
 /// Writes human-readable tunnel progress separately from machine-readable stdout.
