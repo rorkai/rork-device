@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.24"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.25"),
 ]
 ```
 
@@ -318,8 +318,19 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 -> {"id":"1","op":"ping"}
 <- {"id":"1","event":"op-result","ok":true}
 -> {"id":"2","op":"capabilities"}
-<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities"]}
+<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities","apps-list"]}
+-> {"id":"3","op":"apps-list","type":"all"}
+<- {"id":"3","event":"op-result","ok":true,"apps":[{"bundleIdentifier":"com.example.app", ...}]}
 ```
+
+Device-backed operations run through one shared Remote Service Discovery
+session that the agent opens over its own tunnel when a cycle becomes ready,
+so they skip the process spawn and the discovery handshake that running the
+equivalent CLI command per operation costs. `apps-list` accepts the same
+`type` values as `apps list` and answers with the same entry fields as its
+`--json` output. A request that arrives while the tunnel is down waits up to
+thirty seconds for the next ready and then fails with the last reported
+failure reason.
 
 Unknown operations answer with `"ok":false` and malformed lines answer with an
 `op-error` event. Neither ends the process. The `ready` event lists the
