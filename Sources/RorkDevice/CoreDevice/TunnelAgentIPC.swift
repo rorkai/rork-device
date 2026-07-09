@@ -203,13 +203,29 @@ public enum TunnelAgentIPC {
 ///
 /// The payload encodes into the same keyed container as the envelope, so its
 /// fields appear at the top level of the reply object rather than nested.
+/// The type stays private because it describes the wire format the dispatcher
+/// owns. Handlers hand back payloads and supervisors read JSON, so no caller
+/// has a reason to construct or inspect a `Reply` directly.
 private struct Reply: Encodable {
+    /// Reply kind, `op-result` for handled requests and `op-error` for lines
+    /// that could not be dispatched.
     let event: String
+
+    /// The request's correlation id, absent when the line had none to salvage.
     let id: String?
+
+    /// Whether the operation succeeded, absent on `op-error` lines.
     let ok: Bool?
+
+    /// Human-readable failure description, absent on success.
     let error: String?
+
+    /// Operation-specific fields flattened into the reply, or nil when the
+    /// envelope says everything.
     let payload: (any Encodable & Sendable)?
 
+    /// The payload has no key on purpose. It encodes through the same encoder
+    /// so its fields merge into this object instead of nesting.
     private enum CodingKeys: String, CodingKey {
         case event
         case id
@@ -230,12 +246,20 @@ private struct Reply: Encodable {
 /// Serializes reply lines so concurrent handlers cannot interleave output.
 private final class ReplyWriter: @unchecked Sendable {
     private let lock = NSLock()
+
+    /// Receives one encoded reply line per call, never a partial line.
     private let send: @Sendable (Data) -> Void
 
     init(send: @escaping @Sendable (Data) -> Void) {
         self.send = send
     }
 
+    /// Encodes the reply and forwards it while holding the ordering lock.
+    ///
+    /// A reply that fails to encode is dropped rather than crashing the
+    /// serving loop. The dispatcher builds replies from strings, booleans,
+    /// and handler payloads that already encoded themselves once, so this is
+    /// a defensive guard rather than an expected path.
     func write(_ reply: Reply) {
         guard let data = try? JSONEncoder().encode(reply) else {
             return
