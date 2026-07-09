@@ -16,7 +16,7 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
         XCTAssertEqual(request.id, "7")
         XCTAssertEqual(request.operation, "apps-list")
         // Handlers decode operation-specific fields from the retained line.
-        XCTAssertTrue(String(data: request.body, encoding: .utf8)!.contains(#""type":"all""#))
+        XCTAssertTrue(String(data: request.line, encoding: .utf8)!.contains(#""type":"all""#))
     }
 
     func testRejectsALineThatIsNotJSON() {
@@ -56,8 +56,8 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
         let serving = Task {
             await TunnelAgentIPC.serve(
-                input: stdin.fileHandleForReading,
-                handlers: TunnelAgentIPC.baseHandlers(capabilities: ["ping", "capabilities"]),
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping", "capabilities"]),
                 send: replies.record
             )
             return true
@@ -78,8 +78,8 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
         let serving = Task {
             await TunnelAgentIPC.serve(
-                input: stdin.fileHandleForReading,
-                handlers: TunnelAgentIPC.baseHandlers(capabilities: ["ping", "capabilities"]),
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping", "capabilities"]),
                 send: replies.record
             )
         }
@@ -102,8 +102,8 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
         let serving = Task {
             await TunnelAgentIPC.serve(
-                input: stdin.fileHandleForReading,
-                handlers: TunnelAgentIPC.baseHandlers(capabilities: ["ping"]),
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping"]),
                 send: replies.record
             )
         }
@@ -130,8 +130,8 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
         let serving = Task {
             await TunnelAgentIPC.serve(
-                input: stdin.fileHandleForReading,
-                handlers: TunnelAgentIPC.baseHandlers(capabilities: ["ping"]),
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping"]),
                 send: replies.record
             )
         }
@@ -154,8 +154,8 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
         let serving = Task {
             await TunnelAgentIPC.serve(
-                input: stdin.fileHandleForReading,
-                handlers: TunnelAgentIPC.baseHandlers(capabilities: ["ping"]),
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping"]),
                 send: replies.record
             )
         }

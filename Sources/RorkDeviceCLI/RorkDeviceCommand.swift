@@ -1207,13 +1207,13 @@ struct TunnelStartCommand: AsyncParsableCommand {
             "Loaded remote-pairing identity \(identity.identifier)."
         )
         if serve {
-            // Serving owns standard input: requests while the pipe is open,
-            // shutdown when it reaches end-of-file. The read loop replacing
-            // the plain end-of-file watch keeps the parent-death contract.
+            // Serving owns standard input. It answers requests while the
+            // pipe is open and shuts down when the pipe reaches end-of-file,
+            // so the parent-death contract holds without a separate watcher.
             try await runSupervised(identity: identity, identityURL: identityURL) {
                 await TunnelAgentIPC.serve(
-                    input: .standardInput,
-                    handlers: TunnelAgentIPC.baseHandlers(
+                    requestsFrom: .standardInput,
+                    handlers: TunnelAgentIPC.builtInHandlers(
                         capabilities: TunnelStartCommand.serveCapabilities
                     ),
                     send: writeAgentReplyLine
@@ -1240,10 +1240,10 @@ struct TunnelStartCommand: AsyncParsableCommand {
 
     /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
     ///
-    /// The wind-down is bounded: establishment steps that do not observe
-    /// cancellation promptly must not keep an unsupervised process alive. A
-    /// cancelled grace timer means the tunnel wound down first, so the
-    /// orderly path owns the exit.
+    /// The wind-down is bounded because establishment steps that do not
+    /// observe cancellation promptly must not keep an unsupervised process
+    /// alive. A cancelled grace timer means the tunnel wound down first and
+    /// the orderly path owns the exit.
     private func runSupervised(
         identity: RemotePairingIdentity,
         identityURL: URL,

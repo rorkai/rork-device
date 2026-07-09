@@ -322,10 +322,11 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 ```
 
 Unknown operations answer with `"ok":false` and malformed lines answer with an
-`op-error` event; neither ends the process. The `ready` event lists the
-accepted operations in a `capabilities` field so supervisors can route
-accordingly. In serving mode, end-of-file on standard input still stops the
-process, so the parent-death contract below holds without the separate flag.
+`op-error` event. Neither ends the process. The `ready` event lists the
+accepted operations in a `capabilities` field so supervisors know what they
+can route through the pipe. In serving mode, end-of-file on standard input
+still stops the process, so the parent-death contract below holds without the
+separate flag.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard

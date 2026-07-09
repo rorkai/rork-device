@@ -3,11 +3,11 @@ import Foundation
 /// Serves newline-delimited JSON requests on a tunnel agent's standard input.
 ///
 /// A supervising process writes one request object per line and reads replies
-/// from the agent's standard output, correlated by the request `id`. The read
-/// loop doubles as the parent-liveness signal: end-of-file on standard input
-/// means the supervisor is gone, so the loop returns and the caller shuts the
-/// agent down. Handlers own operation semantics; this type owns framing,
-/// dispatch, and reply ordering.
+/// from the agent's standard output, matching them up by the request `id`.
+/// The read loop is also the parent-liveness signal. When standard input
+/// reaches end-of-file the supervisor is gone, the loop returns, and the
+/// caller shuts the agent down. Handlers own what each operation means.
+/// This type owns framing, dispatch, and reply ordering.
 public enum TunnelAgentIPC {
     /// One decoded request line, ready for dispatch.
     public struct Request: Equatable, Sendable {
@@ -19,7 +19,7 @@ public enum TunnelAgentIPC {
 
         /// The complete request line, retained so handlers can decode
         /// operation-specific fields with their own `Decodable` types.
-        public let body: Data
+        public let line: Data
     }
 
     /// The result of decoding one input line.
@@ -35,10 +35,10 @@ public enum TunnelAgentIPC {
     /// Produces the reply payload for one request.
     ///
     /// The payload's fields are merged into the top level of the `op-result`
-    /// reply; return nil when the result carries no fields beyond the
-    /// envelope. The `id`, `event`, and `ok` fields are owned by the
-    /// dispatcher. Throwing produces an `ok: false` result carrying the
-    /// error's description.
+    /// reply. Return nil when the result carries no fields beyond the
+    /// envelope. The dispatcher owns the `id`, `event`, and `ok` fields.
+    /// Throwing produces an `ok: false` result carrying the error's
+    /// description.
     public typealias Handler = @Sendable (Request) async throws -> (any Encodable & Sendable)?
 
     /// The wire shape of a request envelope.
@@ -64,7 +64,7 @@ public enum TunnelAgentIPC {
         if let envelope = try? decoder.decode(RequestEnvelope.self, from: data),
            !envelope.id.isEmpty, !envelope.op.isEmpty {
             return .request(
-                Request(id: envelope.id, operation: envelope.op, body: data)
+                Request(id: envelope.id, operation: envelope.op, line: data)
             )
         }
         guard let probe = try? decoder.decode(RequestIdProbe.self, from: data) else {
@@ -78,23 +78,23 @@ public enum TunnelAgentIPC {
 
     /// The operations every serving agent supports before any device work.
     ///
-    /// `ping` proves the channel; `capabilities` reports the operations the
-    /// supervisor may route through the pipe.
-    public static func baseHandlers(capabilities: [String]) -> [String: Handler] {
+    /// `ping` proves the channel works. `capabilities` reports the operations
+    /// the supervisor may route through the pipe.
+    public static func builtInHandlers(capabilities: [String]) -> [String: Handler] {
         [
             "ping": { _ in nil },
             "capabilities": { _ in CapabilitiesPayload(capabilities: capabilities) },
         ]
     }
 
-    /// Reads requests from `input` until end-of-file, dispatching each one.
+    /// Reads requests until end-of-file, dispatching each one to a handler.
     ///
     /// Every request runs as its own task, so a slow operation never blocks
     /// the read loop or other operations. Replies are serialized through
-    /// `send`, one complete line per call. Returns when the input reaches
-    /// end-of-file, which is the supervisor-is-gone signal.
+    /// `send`, one complete line per call. The method returns when the input
+    /// reaches end-of-file, which means the supervisor is gone.
     public static func serve(
-        input: FileHandle,
+        requestsFrom input: FileHandle,
         handlers: [String: Handler],
         send: @escaping @Sendable (Data) -> Void
     ) async {
