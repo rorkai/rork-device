@@ -1210,12 +1210,22 @@ struct TunnelStartCommand: AsyncParsableCommand {
             // Serving owns standard input. It answers requests while the
             // pipe is open and shuts down when the pipe reaches end-of-file,
             // so the parent-death contract holds without a separate watcher.
-            try await runSupervised(identity: identity, identityURL: identityURL) {
+            let sessions = TunnelAgentSessionGate()
+            let handlers = TunnelAgentIPC.builtInHandlers(
+                capabilities: TunnelStartCommand.serveCapabilities
+            ).merging(
+                TunnelAgentOperations.handlers(sessions: sessions)
+            ) { _, operation in
+                operation
+            }
+            try await runSupervised(
+                identity: identity,
+                identityURL: identityURL,
+                sessions: sessions
+            ) {
                 await TunnelAgentIPC.serve(
                     requestsFrom: .standardInput,
-                    handlers: TunnelAgentIPC.builtInHandlers(
-                        capabilities: TunnelStartCommand.serveCapabilities
-                    ),
+                    handlers: handlers,
                     send: writeAgentReplyLine
                 )
             }
@@ -1235,8 +1245,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
         }
     }
 
-    /// Operations the serving loop can answer before any device work.
-    static let serveCapabilities = ["ping", "capabilities"]
+    /// Operations the serving loop answers, device-backed ones included.
+    static let serveCapabilities = ["ping", "capabilities"] + TunnelAgentOperations.names
 
     /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
     ///
@@ -1247,12 +1257,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
     private func runSupervised(
         identity: RemotePairingIdentity,
         identityURL: URL,
+        sessions: TunnelAgentSessionGate? = nil,
         untilParentGone: @escaping @Sendable () async -> Void
     ) async throws {
         let serving = Task {
             try await serveUntilStopped(
                 identity: identity,
-                identityURL: identityURL
+                identityURL: identityURL,
+                sessions: sessions
             )
         }
         let supervision = Task {
@@ -1286,12 +1298,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// Serves tunnels in the selected mode until stopped or failed.
     private func serveUntilStopped(
         identity: RemotePairingIdentity,
-        identityURL: URL
+        identityURL: URL,
+        sessions: TunnelAgentSessionGate? = nil
     ) async throws {
         if reconnect {
             try await runReconnectLoop(
                 identity: identity,
-                identityURL: identityURL
+                identityURL: identityURL,
+                sessions: sessions
             )
             return
         }
@@ -1331,7 +1345,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// Keeps one device's tunnel alive across drops, reporting transitions.
     private func runReconnectLoop(
         identity: RemotePairingIdentity,
-        identityURL: URL
+        identityURL: URL,
+        sessions: TunnelAgentSessionGate? = nil
     ) async throws {
         // Pins the loop to one physical device and one local port after the
         // first healthy cycle, so reconnection can neither hop devices on a
@@ -1357,6 +1372,15 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 }
             },
             emit: { event in
+                // Waiting IPC requests fail with this reason when the
+                // tunnel stays down past their patience. Both event kinds
+                // carry one: a tunnel that never establishes reports its
+                // failures through re-establishing alone.
+                switch event {
+                case .tunnelLost(let reason),
+                     .reestablishing(_, _, let reason):
+                    sessions?.markLost(reason: reason)
+                }
                 writeTunnelLifecycleEvent(
                     event,
                     deviceIdentifier: pinned.deviceIdentifier
@@ -1375,9 +1399,38 @@ struct TunnelStartCommand: AsyncParsableCommand {
                     gatewayPort: cycle.gateway.port
                 )
                 onReady()
-                try await serve(cycle)
+                try await serve(cycle, sessions: sessions)
             }
         )
+    }
+
+    /// Serves one tunnel cycle, sharing one RSD session with IPC handlers.
+    ///
+    /// The shared session rides the cycle's own packet network, so operations
+    /// skip both the spawn and the discovery handshake that the per-operation
+    /// exec path pays. It lives exactly as long as the cycle: published to
+    /// handlers once the tunnel is ready, withdrawn and closed when it ends.
+    private func serve(
+        _ cycle: TunnelCycle,
+        sessions: TunnelAgentSessionGate?
+    ) async throws {
+        guard let sessions else {
+            try await serve(cycle)
+            return
+        }
+        let shared = try await DeviceClient().connect(
+            toRemoteServicesUsing: cycle.network,
+            discoveryPort: cycle.network.configuration.serviceDiscoveryPort,
+            label: "rorkdevice-agent"
+        )
+        sessions.publish(shared)
+        defer {
+            // The reason arrives with the loop's tunnel-lost event right
+            // after this teardown; nil keeps the gate's last known one.
+            sessions.markLost(reason: nil)
+            shared.close()
+        }
+        try await serve(cycle)
     }
 
     /// Establishes one complete tunnel: session, packet network, gateway,
@@ -2070,8 +2123,9 @@ func installedApplicationListJSON(
     return try encoder.encode(entries)
 }
 
-/// Stable application metadata emitted by `apps list --json`.
-private struct InstalledApplicationListEntry: Encodable {
+/// Stable application metadata emitted by `apps list --json` and by the
+/// tunnel agent's `apps-list` operation.
+struct InstalledApplicationListEntry: Encodable, Sendable {
     /// Bundle identifier used to address the application on the device.
     let bundleIdentifier: String?
 
