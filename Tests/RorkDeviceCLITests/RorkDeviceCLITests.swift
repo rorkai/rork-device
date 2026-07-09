@@ -174,6 +174,114 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertFalse(command.reconnect)
     }
 
+    func testMachineReadableOutputKeepsConcurrentLinesWhole() throws {
+        let pipe = Pipe()
+        let output = MachineReadableOutput(handle: pipe.fileHandleForWriting)
+        // Long lines exceed the pipe's atomic write size, so a missing lock
+        // would let concurrent writers interleave mid-line. A reader thread
+        // drains the pipe throughout, because the writes block without one.
+        let payload = String(repeating: "x", count: 128 * 1024)
+        let collected = CollectedPipeData()
+        let readerDrained = expectation(description: "reader drained the pipe")
+        Thread.detachNewThread {
+            while true {
+                let chunk = pipe.fileHandleForReading.availableData
+                if chunk.isEmpty {
+                    break
+                }
+                collected.append(chunk)
+            }
+            readerDrained.fulfill()
+        }
+
+        let writersFinished = expectation(description: "writers finished")
+        writersFinished.expectedFulfillmentCount = 8
+        for index in 0..<8 {
+            Thread.detachNewThread {
+                let line = Data("{\"writer\":\(index),\"payload\":\"\(payload)\"}".utf8)
+                try? output.writeLine(line)
+                writersFinished.fulfill()
+            }
+        }
+
+        wait(for: [writersFinished], timeout: 10)
+        try pipe.fileHandleForWriting.close()
+        wait(for: [readerDrained], timeout: 10)
+
+        let lines = collected.snapshot().split(separator: 0x0a)
+        XCTAssertEqual(lines.count, 8)
+        for line in lines {
+            XCTAssertNoThrow(try JSONSerialization.jsonObject(with: line))
+        }
+    }
+
+    func testTunnelStartParsesServe() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+            "--reconnect",
+            "--serve",
+        ])
+
+        XCTAssertTrue(command.serve)
+    }
+
+    func testTunnelStartDoesNotServeByDefault() throws {
+        let command = try TunnelStartCommand.parse([
+            "--identity", "identity.plist",
+        ])
+
+        XCTAssertFalse(command.serve)
+    }
+
+    func testServeRequiresReconnect() {
+        XCTAssertThrowsError(
+            try TunnelStartCommand.parse([
+                "--identity", "identity.plist",
+                "--serve",
+            ])
+        )
+    }
+
+    func testTunnelReadyEventListsCapabilitiesWhenServing() throws {
+        let event = TunnelReadyEvent(
+            address: "fd00::1",
+            rsdPort: 58_783,
+            udid: "00008150-TEST",
+            userspaceTunHost: "127.0.0.1",
+            userspaceTunPort: 50_918,
+            identityPath: "/tmp/identity.plist",
+            mtu: 4_000,
+            capabilities: ["ping", "capabilities"]
+        )
+
+        let data = try JSONEncoder().encode(event)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(output["capabilities"] as? [String], ["ping", "capabilities"])
+    }
+
+    func testTunnelReadyEventOmitsCapabilitiesWhenNotServing() throws {
+        let event = TunnelReadyEvent(
+            address: "fd00::1",
+            rsdPort: 58_783,
+            udid: "00008150-TEST",
+            userspaceTunHost: "127.0.0.1",
+            userspaceTunPort: 50_918,
+            identityPath: "/tmp/identity.plist",
+            mtu: 4_000,
+            capabilities: nil
+        )
+
+        let data = try JSONEncoder().encode(event)
+        let output = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertNil(output["capabilities"])
+    }
+
     func testTunnelStartParsesExitWhenStdinCloses() throws {
         let command = try TunnelStartCommand.parse([
             "--identity", "identity.plist",
@@ -264,7 +372,8 @@ final class RorkDeviceCLITests: XCTestCase {
             userspaceTunHost: "127.0.0.1",
             userspaceTunPort: 50_918,
             identityPath: "/tmp/identity.plist",
-            mtu: 1_280
+            mtu: 1_280,
+            capabilities: nil
         )
 
         let data = try JSONEncoder().encode(event)
@@ -1250,4 +1359,20 @@ private func makePairingDiagnosticTestRecord() throws -> PairingRecord {
             options: 0
         )
     )
+}
+
+/// Accumulates pipe output from the reader thread for later assertions.
+private final class CollectedPipeData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.withLock {
+            data.append(chunk)
+        }
+    }
+
+    func snapshot() -> Data {
+        lock.withLock { data }
+    }
 }
