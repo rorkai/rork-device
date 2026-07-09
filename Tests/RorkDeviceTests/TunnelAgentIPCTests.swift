@@ -77,8 +77,9 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
     }
 }
 
-/// The serve loop: scripted stdin sessions drive dispatch, error replies, and
-/// the end-of-file shutdown contract that replaces the plain liveness watch.
+/// Drives the serve loop through scripted stdin sessions. These cover
+/// dispatch, error replies, and the end-of-file shutdown contract that
+/// replaces the plain liveness watch.
 final class TunnelAgentServeLoopTests: XCTestCase {
     func testAnswersAPingAndEndsWhenStdinCloses() async throws {
         let stdin = Pipe()

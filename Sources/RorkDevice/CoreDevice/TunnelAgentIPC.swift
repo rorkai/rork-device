@@ -199,7 +199,7 @@ public enum TunnelAgentIPC {
     }
 }
 
-/// One reply line: the shared envelope plus a flattened operation payload.
+/// One reply line, carrying the shared envelope and the operation payload.
 ///
 /// The payload encodes into the same keyed container as the envelope, so its
 /// fields appear at the top level of the reply object rather than nested.
