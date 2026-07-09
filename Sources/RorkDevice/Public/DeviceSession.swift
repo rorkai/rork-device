@@ -12,7 +12,14 @@ import Foundation
 /// Each operation opens the service connection it needs. Callers may therefore
 /// retain a session for a complete install workflow without managing individual
 /// service ports or protocol handshakes.
-public final class DeviceSession {
+///
+/// The unchecked conformance is safe at the memory level because the session
+/// and its backends store only immutable references. Remote Service Discovery
+/// sessions additionally support concurrent operations, since every operation
+/// opens its own service connection through the shared directory. Lockdown
+/// sessions serialize a request/response protocol over one control connection,
+/// so their operations must not overlap in time.
+public final class DeviceSession: @unchecked Sendable {
     /// Kept outside `LockdownServiceName` because new public enum cases break
     /// exhaustive switches in existing clients.
     private static let personalizedDeveloperDiskImageServiceName =
