@@ -23,7 +23,7 @@ enum TunnelAgentOperations {
     ///   - gate: Hands out the shared session of the current tunnel cycle.
     ///   - patience: How long each request waits for a session.
     static func handlers(
-        sessions gate: TunnelAgentSessionGate,
+        sessionGate gate: TunnelAgentSessionGate,
         patience: Duration = sessionPatience
     ) -> [String: TunnelAgentIPC.Handler] {
         [

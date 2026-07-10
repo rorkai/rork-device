@@ -1210,18 +1210,18 @@ struct TunnelStartCommand: AsyncParsableCommand {
             // Serving owns standard input. It answers requests while the
             // pipe is open and shuts down when the pipe reaches end-of-file,
             // so the parent-death contract holds without a separate watcher.
-            let sessions = TunnelAgentSessionGate()
+            let sessionGate = TunnelAgentSessionGate()
             let handlers = TunnelAgentIPC.builtInHandlers(
                 capabilities: TunnelStartCommand.serveCapabilities
             ).merging(
-                TunnelAgentOperations.handlers(sessions: sessions)
+                TunnelAgentOperations.handlers(sessionGate: sessionGate)
             ) { _, operation in
                 operation
             }
             try await runSupervised(
                 identity: identity,
                 identityURL: identityURL,
-                sessions: sessions
+                sessionGate: sessionGate
             ) {
                 await TunnelAgentIPC.serve(
                     requestsFrom: .standardInput,
@@ -1257,14 +1257,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
     private func runSupervised(
         identity: RemotePairingIdentity,
         identityURL: URL,
-        sessions: TunnelAgentSessionGate? = nil,
+        sessionGate: TunnelAgentSessionGate? = nil,
         untilParentGone: @escaping @Sendable () async -> Void
     ) async throws {
         let serving = Task {
             try await serveUntilStopped(
                 identity: identity,
                 identityURL: identityURL,
-                sessions: sessions
+                sessionGate: sessionGate
             )
         }
         let supervision = Task {
@@ -1299,13 +1299,13 @@ struct TunnelStartCommand: AsyncParsableCommand {
     private func serveUntilStopped(
         identity: RemotePairingIdentity,
         identityURL: URL,
-        sessions: TunnelAgentSessionGate? = nil
+        sessionGate: TunnelAgentSessionGate? = nil
     ) async throws {
         if reconnect {
             try await runReconnectLoop(
                 identity: identity,
                 identityURL: identityURL,
-                sessions: sessions
+                sessionGate: sessionGate
             )
             return
         }
@@ -1346,7 +1346,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
     private func runReconnectLoop(
         identity: RemotePairingIdentity,
         identityURL: URL,
-        sessions: TunnelAgentSessionGate? = nil
+        sessionGate: TunnelAgentSessionGate? = nil
     ) async throws {
         // Pins the loop to one physical device and one local port after the
         // first healthy cycle, so reconnection can neither hop devices on a
@@ -1379,7 +1379,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 switch event {
                 case .tunnelLost(let reason),
                      .reestablishing(_, _, let reason):
-                    sessions?.markLost(reason: reason)
+                    sessionGate?.markLost(reason: reason)
                 }
                 writeTunnelLifecycleEvent(
                     event,
@@ -1399,7 +1399,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
                     gatewayPort: cycle.gateway.port
                 )
                 onReady()
-                try await serve(cycle, sessions: sessions)
+                try await serve(cycle, sessionGate: sessionGate)
             }
         )
     }
@@ -1412,9 +1412,9 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// handlers once the tunnel is ready, withdrawn and closed when it ends.
     private func serve(
         _ cycle: TunnelCycle,
-        sessions: TunnelAgentSessionGate?
+        sessionGate: TunnelAgentSessionGate?
     ) async throws {
-        guard let sessions else {
+        guard let sessionGate else {
             try await serve(cycle)
             return
         }
@@ -1423,11 +1423,11 @@ struct TunnelStartCommand: AsyncParsableCommand {
             discoveryPort: cycle.network.configuration.serviceDiscoveryPort,
             label: "rorkdevice-agent"
         )
-        sessions.publish(shared)
+        sessionGate.publish(shared)
         defer {
             // The reason arrives with the loop's tunnel-lost event right
             // after this teardown; nil keeps the gate's last known one.
-            sessions.markLost(reason: nil)
+            sessionGate.markLost(reason: nil)
             shared.close()
         }
         try await serve(cycle)

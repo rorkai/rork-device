@@ -9,7 +9,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
     func testAppsListReturnsInstalledApplicationsFromTheSharedSession() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(try scriptedSession())
-        let handlers = TunnelAgentOperations.handlers(sessions: gate)
+        let handlers = TunnelAgentOperations.handlers(sessionGate: gate)
         let request = try decodedRequest(#"{"id":"7","op":"apps-list","type":"all"}"#)
 
         let payload = try await XCTUnwrap(handlers["apps-list"])(request)
@@ -32,7 +32,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
         let backend = ScriptedServiceBackend(inbound: try browseResponse())
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: backend))
-        let handlers = TunnelAgentOperations.handlers(sessions: gate)
+        let handlers = TunnelAgentOperations.handlers(sessionGate: gate)
         let request = try decodedRequest(#"{"id":"8","op":"apps-list","type":"system"}"#)
 
         _ = try await XCTUnwrap(handlers["apps-list"])(request)
@@ -47,7 +47,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
         let backend = ScriptedServiceBackend(inbound: try browseResponse())
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: backend))
-        let handlers = TunnelAgentOperations.handlers(sessions: gate)
+        let handlers = TunnelAgentOperations.handlers(sessionGate: gate)
         let request = try decodedRequest(#"{"id":"9","op":"apps-list"}"#)
 
         _ = try await XCTUnwrap(handlers["apps-list"])(request)
@@ -60,7 +60,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
     func testAppsListRejectsAnUnknownApplicationType() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(try scriptedSession())
-        let handlers = TunnelAgentOperations.handlers(sessions: gate)
+        let handlers = TunnelAgentOperations.handlers(sessionGate: gate)
         let request = try decodedRequest(#"{"id":"10","op":"apps-list","type":"frobnicated"}"#)
 
         do {
@@ -82,7 +82,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
         gate.markLost(reason: nil)
         gate.markLost(reason: "No matching device found.")
         let handlers = TunnelAgentOperations.handlers(
-            sessions: gate,
+            sessionGate: gate,
             patience: .milliseconds(50)
         )
         let request = try decodedRequest(#"{"id":"12","op":"apps-list"}"#)
@@ -102,7 +102,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
         let gate = TunnelAgentSessionGate()
         gate.markLost(reason: "the cable was unplugged")
         let handlers = TunnelAgentOperations.handlers(
-            sessions: gate,
+            sessionGate: gate,
             patience: .milliseconds(50)
         )
         let request = try decodedRequest(#"{"id":"11","op":"apps-list"}"#)
@@ -125,7 +125,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
         gate.publish(try scriptedSession())
         let handlers = TunnelAgentIPC.builtInHandlers(
             capabilities: TunnelStartCommand.serveCapabilities
-        ).merging(TunnelAgentOperations.handlers(sessions: gate)) { _, operation in
+        ).merging(TunnelAgentOperations.handlers(sessionGate: gate)) { _, operation in
             operation
         }
         let stdin = Pipe()
