@@ -43,13 +43,16 @@ struct ConnectionOptions: ParsableArguments {
     ///
     /// A served command reuses the agent's shared session, and that path
     /// never reads the connection options, so a device or route selection
-    /// in the request would be silently ignored rather than honored. A
-    /// request that named another attached device would then run against
-    /// the served device and exit cleanly. A read would return the wrong
-    /// device's data, and a destructive command would act on the wrong
-    /// device. While this is bound, validation rejects those options
-    /// loudly instead. Commands parsed from the shell never see the
-    /// binding and accept all of their options as usual.
+    /// in the request would be silently ignored rather than honored.
+    ///
+    /// The failure that ignoring would produce is quiet and severe. A
+    /// request that named another attached device would run against the
+    /// served device and exit cleanly, so a read returns the wrong
+    /// device's data and a destructive command acts on the wrong device.
+    ///
+    /// While this is bound, validation rejects those options loudly
+    /// instead. Commands parsed from the shell never see the binding and
+    /// accept all of their options as usual.
     @TaskLocal static var rejectsRouteSelection = false
 
     /// Default Lockdown port, shared by the declaration and the
