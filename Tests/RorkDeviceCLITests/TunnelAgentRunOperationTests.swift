@@ -104,6 +104,34 @@ final class TunnelAgentRunOperationTests: XCTestCase {
         }
     }
 
+    func testRouteSelectionFlagsAreDeclaredConnectionOptions() {
+        // The rejected-flag list mirrors the options declared on
+        // ConnectionOptions, which Swift cannot enumerate at compile time.
+        // The parser's generated help names every declared option, so this
+        // holds the two together against renames.
+        let help = ConnectionOptions.helpMessage()
+        for flag in ConnectionOptions.routeSelectionFlags {
+            XCTAssertTrue(
+                help.contains(flag),
+                "\(flag) is not a declared connection option anymore"
+            )
+        }
+    }
+
+    func testRunnableCommandFamiliesDeriveFromTheCommandTree() {
+        // Every runnable command must remain a subcommand of the CLI root,
+        // or run would accept argv the command tree cannot parse.
+        let rootNames = Set(
+            RorkDeviceCommand.configuration.subcommands.compactMap {
+                $0.configuration.commandName
+            }
+        )
+        XCTAssertTrue(
+            TunnelAgentOperations.runnableCommandFamilies.isSubset(of: rootNames)
+        )
+        XCTAssertFalse(TunnelAgentOperations.runnableCommandFamilies.contains("tunnel"))
+    }
+
     func testRunRequiresANonEmptyArgv() async throws {
         let gate = TunnelAgentSessionGate()
         let handlers = TunnelAgentOperations.handlers(sessionGate: gate)

@@ -35,37 +35,40 @@ enum TunnelAgentOperations {
         Operation(name: "run", makeHandler: runHandler),
     ]
 
-    /// Command families the `run` operation accepts.
+    /// The command types the `run` operation may execute.
     ///
     /// Everything here works over the tunnel's Remote Service Discovery
-    /// session. The excluded families genuinely need something else. Tunnel
+    /// session. The excluded commands genuinely need something else. Tunnel
     /// commands cannot nest inside a serving agent, pairing and image
     /// commands require a Lockdown route, and device discovery belongs to
     /// the supervisor, which already watches attach events itself.
-    static let runnableCommandFamilies: Set<String> = [
-        "apps",
-        "files",
-        "info",
-        "install",
-        "launch",
-        "profiles",
-        "terminate",
-        "uninstall",
+    static let runnableCommands: [any ParsableCommand.Type] = [
+        Apps.self,
+        Files.self,
+        Info.self,
+        Install.self,
+        Launch.self,
+        Profiles.self,
+        Terminate.self,
+        Uninstall.self,
     ]
 
-    /// Connection flags rejected by `run`.
+    /// Command families accepted by `run`.
     ///
-    /// The served command reuses the agent's session, which is pinned to
-    /// the tunnel's device, so argv must not try to select a different
-    /// route or device.
-    private static let rejectedRunFlagPrefixes = [
-        "--udid",
-        "--host",
-        "--port",
-        "--pairing-record",
-        "--userspace-",
-        "--remote-service-discovery",
-    ]
+    /// Derived from the runnable command types, so renaming a command can
+    /// never leave this gate matching a stale name.
+    static var runnableCommandFamilies: Set<String> {
+        Set(
+            runnableCommands.map { command in
+                guard let name = command.configuration.commandName else {
+                    preconditionFailure(
+                        "Runnable commands must declare an explicit commandName."
+                    )
+                }
+                return name
+            }
+        )
+    }
 
     /// Wire names of the served operations, for capability advertisements.
     static var names: [String] {
@@ -145,7 +148,9 @@ enum TunnelAgentOperations {
             )
         }
         if let rejected = argv.first(where: { token in
-            rejectedRunFlagPrefixes.contains(where: token.hasPrefix)
+            ConnectionOptions.routeSelectionFlags.contains { flag in
+                token == flag || token.hasPrefix("\(flag)=")
+            }
         }) {
             throw RorkDeviceError.invalidInput(
                 "run pins the connection to the served tunnel, so \(rejected) is not accepted."

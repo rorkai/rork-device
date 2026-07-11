@@ -39,6 +39,24 @@ struct ConnectionOptions: ParsableArguments {
     /// shell never see a binding and dial exactly as before.
     @TaskLocal static var injectedSession: DeviceSession?
 
+    /// The declared options that select a device or a route.
+    ///
+    /// The serving agent's `run` operation rejects these because an
+    /// in-process command runs against the served tunnel's device. Swift
+    /// has no way to enumerate the option declarations above at compile
+    /// time, so this list mirrors them by hand and a test holds the two
+    /// together through the parser's generated help.
+    static let routeSelectionFlags = [
+        "--udid",
+        "--host",
+        "--port",
+        "--pairing-record",
+        "--userspace-device-address",
+        "--userspace-gateway-host",
+        "--userspace-gateway-port",
+        "--remote-service-discovery-port",
+    ]
+
     @Option(help: "Device UDID. Defaults to the first discovered device.")
     var udid: String?
 
