@@ -39,23 +39,26 @@ struct ConnectionOptions: ParsableArguments {
     /// shell never see a binding and dial exactly as before.
     @TaskLocal static var injectedSession: DeviceSession?
 
-    /// The declared options that select a device or a route.
+    /// Every option this type declares, spelled as on the command line.
     ///
-    /// The serving agent's `run` operation rejects these because an
-    /// in-process command runs against the served tunnel's device. Swift
-    /// has no way to enumerate the option declarations above at compile
-    /// time, so this list mirrors them by hand and a test holds the two
-    /// together through the parser's generated help.
-    static let routeSelectionFlags = [
-        "--udid",
-        "--host",
-        "--port",
-        "--pairing-record",
-        "--userspace-device-address",
-        "--userspace-gateway-host",
-        "--userspace-gateway-port",
-        "--remote-service-discovery-port",
-    ]
+    /// The serving agent's `run` operation rejects all of them, because an
+    /// in-process command runs against the served tunnel's device and must
+    /// not try to select a different one. The list is read from the parser's
+    /// generated help, so it always matches the declarations on this type.
+    static let routeSelectionFlags: [String] = {
+        let help = ConnectionOptions.helpMessage(columns: 10_000)
+        return help.split(separator: "\n").compactMap { line in
+            // Wide columns keep each option on one line, where it begins
+            // indented with its spellings, such as "  --udid <udid>  ...".
+            guard let match = line.firstMatch(
+                of: /^\s+(?:-\w, )?(--[a-z0-9-]+)/
+            ) else {
+                return nil
+            }
+            let flag = String(match.1)
+            return flag == "--help" ? nil : flag
+        }
+    }()
 
     @Option(help: "Device UDID. Defaults to the first discovered device.")
     var udid: String?

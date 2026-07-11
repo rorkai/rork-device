@@ -104,18 +104,16 @@ final class TunnelAgentRunOperationTests: XCTestCase {
         }
     }
 
-    func testRouteSelectionFlagsAreDeclaredConnectionOptions() {
-        // The rejected-flag list mirrors the options declared on
-        // ConnectionOptions, which Swift cannot enumerate at compile time.
-        // The parser's generated help names every declared option, so this
-        // holds the two together against renames.
-        let help = ConnectionOptions.helpMessage()
-        for flag in ConnectionOptions.routeSelectionFlags {
-            XCTAssertTrue(
-                help.contains(flag),
-                "\(flag) is not a declared connection option anymore"
-            )
-        }
+    func testRouteSelectionFlagsAreReadFromTheDeclaredOptions() {
+        let flags = ConnectionOptions.routeSelectionFlags
+
+        // Representative spellings across the default and custom-name
+        // derivations, proving the help-derived extraction works.
+        XCTAssertTrue(flags.contains("--udid"))
+        XCTAssertTrue(flags.contains("--pairing-record"))
+        XCTAssertTrue(flags.contains("--userspace-gateway-port"))
+        XCTAssertTrue(flags.contains("--remote-service-discovery-port"))
+        XCTAssertFalse(flags.contains("--help"))
     }
 
     func testRunnableCommandFamiliesDeriveFromTheCommandTree() {
