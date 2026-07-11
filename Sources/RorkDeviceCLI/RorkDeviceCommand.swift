@@ -31,6 +31,14 @@ struct RorkDeviceCommand: AsyncParsableCommand {
 
 /// Shared options for commands that need an authenticated device session.
 struct ConnectionOptions: ParsableArguments {
+    /// The serving agent's shared per-cycle session.
+    ///
+    /// The tunnel agent binds this task local while it runs a command
+    /// in-process for the `run` operation, so the command reuses the live
+    /// session instead of dialing its own connection. Commands run from the
+    /// shell never see a binding and dial exactly as before.
+    @TaskLocal static var injectedSession: DeviceSession?
+
     @Option(help: "Device UDID. Defaults to the first discovered device.")
     var udid: String?
 
@@ -103,8 +111,12 @@ struct ConnectionOptions: ParsableArguments {
         return try PairingRecord.load(from: URL(fileURLWithPath: pairingRecord))
     }
 
-    /// Opens a direct or usbmux-backed session from parsed CLI options.
+    /// Opens a direct or usbmux-backed session from parsed CLI options,
+    /// or returns the serving agent's session when one is bound.
     func session(label: String = "rorkdevice") async throws -> DeviceSession {
+        if let injected = Self.injectedSession {
+            return injected
+        }
         try validateConnectionOptions()
         if usesUserspaceRemoteServiceRoute {
             guard let userspaceDeviceAddress,
@@ -305,27 +317,27 @@ struct List: AsyncParsableCommand {
             ? discoveredDevices.filter(isUSBDevice)
             : discoveredDevices
         if json {
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: details
                     ? detailedDeviceListJSON(devices)
                     : deviceListJSON(devices)
             )
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: Data([0x0a])
             )
             return
         }
         if devices.isEmpty {
-            print("No devices found.")
+            CommandOutput.print("No devices found.")
             return
         }
         for device in devices {
             if details {
-                print(
+                CommandOutput.print(
                     "\(device.identifier)\t\(deviceConnectionType(device) ?? "unknown")"
                 )
             } else {
-                print(device.identifier)
+                CommandOutput.print(device.identifier)
             }
         }
     }
@@ -404,15 +416,15 @@ struct Watch: AsyncParsableCommand {
             if json {
                 var data = try deviceEventJSON(event)
                 data.append(0x0a)
-                try FileHandle.standardOutput.write(contentsOf: data)
+                try CommandOutput.write(contentsOf: data)
                 continue
             }
             switch event {
             case .attached(let device):
-                print("attached\t\(device.identifier)")
+                CommandOutput.print("attached\t\(device.identifier)")
             case .detached(let identifier, let connection):
                 let value = identifier ?? connection.map(String.init(describing:)) ?? "-"
-                print("detached\t\(value)")
+                CommandOutput.print("detached\t\(value)")
             }
         }
     }
@@ -530,7 +542,7 @@ struct PairingEstablish: AsyncParsableCommand {
                 )
             }
         )
-        print("Pairing is established for \(device.identifier).")
+        CommandOutput.print("Pairing is established for \(device.identifier).")
     }
 }
 
@@ -565,9 +577,9 @@ struct PairingExport: AsyncParsableCommand {
             let destination = URL(fileURLWithPath: outputPath)
                 .standardizedFileURL
             try data.write(to: destination, options: .atomic)
-            print(destination.path)
+            CommandOutput.print(destination.path)
         } else {
-            try FileHandle.standardOutput.write(contentsOf: data)
+            try CommandOutput.write(contentsOf: data)
         }
     }
 }
@@ -597,7 +609,7 @@ struct PairingRemove: AsyncParsableCommand {
             matching: udid
         )
         try await client.unpair(from: device)
-        print("Pairing was removed for \(device.identifier).")
+        CommandOutput.print("Pairing was removed for \(device.identifier).")
     }
 }
 
@@ -621,7 +633,7 @@ struct PairingValidate: AsyncParsableCommand {
             info,
             expectedDeviceIdentifier: connected.deviceIdentifier
         )
-        print("Pairing is valid for \(connected.deviceIdentifier).")
+        CommandOutput.print("Pairing is valid for \(connected.deviceIdentifier).")
     }
 }
 
@@ -640,7 +652,7 @@ struct PairingEnableWireless: AsyncParsableCommand {
     func run() async throws {
         let connected = try await connection.connectedSession()
         try await connected.session.enableWirelessConnections()
-        print(
+        CommandOutput.print(
             "Wireless Lockdown is enabled for \(connected.deviceIdentifier)."
         )
     }
@@ -698,9 +710,9 @@ struct DeveloperModeStatus: AsyncParsableCommand {
         let enabled = try await connection.session()
             .isDeveloperModeEnabled()
         if json {
-            print(enabled ? "true" : "false")
+            CommandOutput.print(enabled ? "true" : "false")
         } else {
-            print(enabled ? "enabled" : "disabled")
+            CommandOutput.print(enabled ? "enabled" : "disabled")
         }
     }
 }
@@ -720,7 +732,7 @@ struct DeveloperModeReveal: AsyncParsableCommand {
     func run() async throws {
         let session = try await connection.session()
         try await session.revealDeveloperMode()
-        print("Developer Mode is available in Settings.")
+        CommandOutput.print("Developer Mode is available in Settings.")
     }
 }
 
@@ -907,15 +919,15 @@ private func writeDeveloperDiskImageUnmountResult(asJSON: Bool) throws {
     if asJSON {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try FileHandle.standardOutput.write(
+        try CommandOutput.write(
             contentsOf: encoder.encode(
                 DeveloperDiskImageUnmountOutput(unmounted: true)
             )
         )
-        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        try CommandOutput.write(contentsOf: Data([0x0a]))
         return
     }
-    print("Unmounted the personalized Developer Disk Image.")
+    CommandOutput.print("Unmounted the personalized Developer Disk Image.")
 }
 
 /// Writes the mounted-image list without mixing human text into JSON mode.
@@ -929,7 +941,7 @@ private func writeDeveloperDiskImageListResult(
     if asJSON {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try FileHandle.standardOutput.write(
+        try CommandOutput.write(
             contentsOf: encoder.encode(
                 DeveloperDiskImageListOutput(
                     count: signatures.count,
@@ -937,19 +949,19 @@ private func writeDeveloperDiskImageListResult(
                 )
             )
         )
-        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        try CommandOutput.write(contentsOf: Data([0x0a]))
         return
     }
     guard !signatures.isEmpty else {
-        print("No personalized Developer Disk Image is mounted.")
+        CommandOutput.print("No personalized Developer Disk Image is mounted.")
         return
     }
     let header = signatures.count == 1
         ? "1 personalized Developer Disk Image is mounted:"
         : "\(signatures.count) personalized Developer Disk Images are mounted:"
-    print(header)
+    CommandOutput.print(header)
     for hex in hexSignatures {
-        print("- \(hex)")
+        CommandOutput.print("- \(hex)")
     }
 }
 
@@ -984,17 +996,17 @@ private func writeDeveloperDiskImageMountResult(
     asJSON: Bool
 ) throws {
     if asJSON {
-        try FileHandle.standardOutput.write(
+        try CommandOutput.write(
             contentsOf: developerDiskImageMountJSON(result)
         )
-        try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+        try CommandOutput.write(contentsOf: Data([0x0a]))
         return
     }
     switch result.status {
     case .alreadyMounted:
-        print("Personalized Developer Disk Image is already mounted.")
+        CommandOutput.print("Personalized Developer Disk Image is already mounted.")
     case .mounted:
-        print(
+        CommandOutput.print(
             "Personalized Developer Disk Image mounted. Recreate any existing CoreDevice tunnel before using developer services."
         )
     }
@@ -1081,7 +1093,7 @@ struct RemotePairingTrustCommand: AsyncParsableCommand {
             using: transport,
             discoveryPort: discoveryPort
         )
-        print("Remote-pairing identity is trusted.")
+        CommandOutput.print("Remote-pairing identity is trusted.")
     }
 }
 
@@ -1846,19 +1858,19 @@ struct Info: AsyncParsableCommand {
         let session = try await connection.session()
         let info = try await session.fetchDeviceInfo()
         if json {
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: lockdownInfoJSON(info)
             )
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: Data([0x0a])
             )
             return
         }
-        print("UDID: \(info.uniqueDeviceID ?? "-")")
-        print("Name: \(info.deviceName ?? "-")")
-        print("Product: \(info.productType ?? "-")")
-        print("Version: \(info.productVersion ?? "-")")
-        print("Build: \(info.buildVersion ?? "-")")
+        CommandOutput.print("UDID: \(info.uniqueDeviceID ?? "-")")
+        CommandOutput.print("Name: \(info.deviceName ?? "-")")
+        CommandOutput.print("Product: \(info.productType ?? "-")")
+        CommandOutput.print("Version: \(info.productVersion ?? "-")")
+        CommandOutput.print("Build: \(info.buildVersion ?? "-")")
     }
 }
 
@@ -1908,14 +1920,14 @@ struct FilesList: AsyncParsableCommand {
         let afc = try await access.afcClient()
         let entries = try await afc.directoryContents(at: path)
         if json {
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: fileListJSON(entries)
             )
-            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            try CommandOutput.write(contentsOf: Data([0x0a]))
             return
         }
         for name in entries {
-            print(name)
+            CommandOutput.print(name)
         }
     }
 }
@@ -1948,14 +1960,14 @@ struct FilesInfo: AsyncParsableCommand {
         let afc = try await access.afcClient()
         let info = try await afc.fileInfo(at: path)
         if json {
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: fileInfoJSON(info)
             )
-            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            try CommandOutput.write(contentsOf: Data([0x0a]))
             return
         }
         for key in info.values.keys.sorted() {
-            print("\(key): \(info.values[key] ?? "")")
+            CommandOutput.print("\(key): \(info.values[key] ?? "")")
         }
     }
 }
@@ -2097,16 +2109,16 @@ struct AppsList: AsyncParsableCommand {
         let session = try await connection.session()
         let apps = try await session.installedApplications(matching: type)
         if json {
-            try FileHandle.standardOutput.write(
+            try CommandOutput.write(
                 contentsOf: installedApplicationListJSON(apps)
             )
-            try FileHandle.standardOutput.write(contentsOf: Data([0x0a]))
+            try CommandOutput.write(contentsOf: Data([0x0a]))
             return
         }
         for app in apps {
             let identifier = app.bundleIdentifier ?? "-"
             let name = app.displayName ?? "-"
-            print("\(identifier)\t\(name)")
+            CommandOutput.print("\(identifier)\t\(name)")
         }
     }
 }
@@ -2170,9 +2182,9 @@ struct Install: AsyncParsableCommand {
             bundleIdentifier: bundleIdentifier
         ) { event in
             if let percent = event.percentComplete {
-                print("\(event.status) \(percent)%")
+                CommandOutput.print("\(event.status) \(percent)%")
             } else {
-                print(event.status)
+                CommandOutput.print(event.status)
             }
         }
     }
@@ -2193,7 +2205,7 @@ struct Uninstall: AsyncParsableCommand {
     func run() async throws {
         let session = try await connection.session()
         try await session.uninstallApplication(bundleIdentifier: bundleIdentifier) { event in
-            print(event.status)
+            CommandOutput.print(event.status)
         }
     }
 }
@@ -2247,7 +2259,7 @@ struct Launch: AsyncParsableCommand {
                 terminateExistingProcess: killExisting
             )
         )
-        print(processIdentifier)
+        CommandOutput.print(processIdentifier)
     }
 
     /// Converts repeated `KEY=VALUE` arguments into CoreDevice environment data.
@@ -2291,7 +2303,7 @@ struct Terminate: AsyncParsableCommand {
         let terminated = try await session.terminateApplication(
             bundleIdentifier: bundleIdentifier
         )
-        print(terminated ? "Terminated." : "Application is not running.")
+        CommandOutput.print(terminated ? "Terminated." : "Application is not running.")
     }
 }
 
@@ -2351,7 +2363,7 @@ struct ProfilesCopy: AsyncParsableCommand {
         for (index, profile) in profiles.enumerated() {
             let url = directory.appendingPathComponent("profile-\(index + 1).mobileprovision")
             try profile.write(to: url, options: .atomic)
-            print(url.path)
+            CommandOutput.print(url.path)
         }
     }
 }
