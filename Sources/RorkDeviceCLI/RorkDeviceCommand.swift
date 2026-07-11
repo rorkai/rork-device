@@ -39,26 +39,21 @@ struct ConnectionOptions: ParsableArguments {
     /// shell never see a binding and dial exactly as before.
     @TaskLocal static var injectedSession: DeviceSession?
 
-    /// Every option this type declares, spelled as on the command line.
+    /// True while the serving agent parses a `run` request's command line.
     ///
-    /// The serving agent's `run` operation rejects all of them, because an
-    /// in-process command runs against the served tunnel's device and must
-    /// not try to select a different one. The list is read from the parser's
-    /// generated help, so it always matches the declarations on this type.
-    static let routeSelectionFlags: [String] = {
-        let help = ConnectionOptions.helpMessage(columns: 10_000)
-        return help.split(separator: "\n").compactMap { line in
-            // Wide columns keep each option on one line, where it begins
-            // indented with its spellings, such as "  --udid <udid>  ...".
-            guard let match = line.firstMatch(
-                of: /^\s+(?:-\w, )?(--[a-z0-9-]+)/
-            ) else {
-                return nil
-            }
-            let flag = String(match.1)
-            return flag == "--help" ? nil : flag
-        }
-    }()
+    /// A served command runs against the tunnel's device over the shared
+    /// session, so while this is bound, validation rejects every option
+    /// that selects a device or a route. Commands parsed from the shell
+    /// never see the binding and accept all of their options as usual.
+    @TaskLocal static var rejectsRouteSelection = false
+
+    /// Default Lockdown port, shared by the declaration and the
+    /// route-selection check.
+    static let defaultPort: UInt16 = 62078
+
+    /// Default gateway host, shared by the declaration and the
+    /// route-selection check.
+    static let defaultUserspaceGatewayHost = "127.0.0.1"
 
     @Option(help: "Device UDID. Defaults to the first discovered device.")
     var udid: String?
@@ -67,7 +62,7 @@ struct ConnectionOptions: ParsableArguments {
     var host: String?
 
     @Option(help: "Direct Lockdown port.")
-    var port: UInt16 = 62078
+    var port: UInt16 = ConnectionOptions.defaultPort
 
     @Option(
         help:
@@ -82,7 +77,7 @@ struct ConnectionOptions: ParsableArguments {
     var userspaceDeviceAddress: String?
 
     @Option(help: "Host running an existing CoreDevice userspace gateway.")
-    var userspaceGatewayHost = "127.0.0.1"
+    var userspaceGatewayHost = ConnectionOptions.defaultUserspaceGatewayHost
 
     @Option(help: "Port of an existing CoreDevice userspace gateway.")
     var userspaceGatewayPort: UInt16?
@@ -95,7 +90,50 @@ struct ConnectionOptions: ParsableArguments {
 
     /// Rejects connection-option combinations that cannot be honored together.
     func validate() throws {
+        try validateNoRouteSelectionWhileServing()
         try validateConnectionOptions()
+    }
+
+    /// Rejects device and route selection while the serving agent parses.
+    ///
+    /// Named per flag so the reply tells the supervisor which token to drop.
+    /// The check runs before the combination rules, which would otherwise
+    /// answer an incomplete userspace triple with advice to add more of the
+    /// very options a served command cannot use.
+    private func validateNoRouteSelectionWhileServing() throws {
+        guard Self.rejectsRouteSelection else {
+            return
+        }
+        var selected: [String] = []
+        if udid != nil {
+            selected.append("--udid")
+        }
+        if host != nil {
+            selected.append("--host")
+        }
+        if port != Self.defaultPort {
+            selected.append("--port")
+        }
+        if pairingRecord != nil {
+            selected.append("--pairing-record")
+        }
+        if userspaceDeviceAddress != nil {
+            selected.append("--userspace-device-address")
+        }
+        if userspaceGatewayHost != Self.defaultUserspaceGatewayHost {
+            selected.append("--userspace-gateway-host")
+        }
+        if userspaceGatewayPort != nil {
+            selected.append("--userspace-gateway-port")
+        }
+        if remoteServiceDiscoveryPort != nil {
+            selected.append("--remote-service-discovery-port")
+        }
+        guard selected.isEmpty else {
+            throw ValidationError(
+                "run pins the connection to the served tunnel, so \(selected.joined(separator: ", ")) is not accepted."
+            )
+        }
     }
 
     /// Requires a route through an existing CoreDevice userspace gateway.

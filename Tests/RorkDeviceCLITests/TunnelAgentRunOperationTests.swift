@@ -104,16 +104,21 @@ final class TunnelAgentRunOperationTests: XCTestCase {
         }
     }
 
-    func testRouteSelectionFlagsAreReadFromTheDeclaredOptions() {
-        let flags = ConnectionOptions.routeSelectionFlags
+    func testRouteSelectionIsRejectedOnlyWhileServing() throws {
+        // The options type itself enforces the pinned connection during
+        // validation, so the same argv parses from the shell and fails
+        // under the serving marker.
+        XCTAssertThrowsError(
+            try ConnectionOptions.$rejectsRouteSelection.withValue(true) {
+                try AppsList.parse(["--udid", "00008150-TEST"])
+            }
+        ) { error in
+            XCTAssertTrue(
+                RorkDeviceCommand.message(for: error).contains("--udid")
+            )
+        }
 
-        // Representative spellings across the default and custom-name
-        // derivations, proving the help-derived extraction works.
-        XCTAssertTrue(flags.contains("--udid"))
-        XCTAssertTrue(flags.contains("--pairing-record"))
-        XCTAssertTrue(flags.contains("--userspace-gateway-port"))
-        XCTAssertTrue(flags.contains("--remote-service-discovery-port"))
-        XCTAssertFalse(flags.contains("--help"))
+        XCTAssertNoThrow(try AppsList.parse(["--udid", "00008150-TEST"]))
     }
 
     func testRunnableCommandFamiliesDeriveFromTheCommandTree() {

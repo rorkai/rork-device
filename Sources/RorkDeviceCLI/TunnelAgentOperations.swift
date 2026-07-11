@@ -109,9 +109,14 @@ enum TunnelAgentOperations {
 
             // Parsing precedes the session wait, so a malformed command
             // line answers immediately instead of riding out a reconnect.
+            // The marker makes ConnectionOptions itself reject any device
+            // or route selection during validation, since the command will
+            // run against the served tunnel's device.
             let command: ParsableCommand
             do {
-                command = try RorkDeviceCommand.parseAsRoot(argv)
+                command = try ConnectionOptions.$rejectsRouteSelection.withValue(true) {
+                    try RorkDeviceCommand.parseAsRoot(argv)
+                }
             } catch {
                 throw RorkDeviceError.invalidInput(
                     RorkDeviceCommand.message(for: error)
@@ -134,8 +139,11 @@ enum TunnelAgentOperations {
         }
     }
 
-    /// Validates a `run` request's argv against the allowlist and the
-    /// pinned-connection rule.
+    /// Validates that a `run` request names a served command family.
+    ///
+    /// Everything past the family is the parser's business, including the
+    /// rejection of device and route selection, which `ConnectionOptions`
+    /// enforces itself during validation.
     private static func validatedRunArgv(_ argv: [String]?) throws -> [String] {
         guard let argv, let family = argv.first, !family.isEmpty else {
             throw RorkDeviceError.invalidInput(
@@ -145,15 +153,6 @@ enum TunnelAgentOperations {
         guard runnableCommandFamilies.contains(family) else {
             throw RorkDeviceError.invalidInput(
                 "run cannot serve \(family) commands. It serves: \(runnableCommandFamilies.sorted().joined(separator: ", "))."
-            )
-        }
-        if let rejected = argv.first(where: { token in
-            ConnectionOptions.routeSelectionFlags.contains { flag in
-                token == flag || token.hasPrefix("\(flag)=")
-            }
-        }) {
-            throw RorkDeviceError.invalidInput(
-                "run pins the connection to the served tunnel, so \(rejected) is not accepted."
             )
         }
         return argv
