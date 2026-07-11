@@ -94,9 +94,45 @@ struct ConnectionOptions: ParsableArguments {
         try validateConnectionOptions()
     }
 
+    /// A declared option that selects a device or a route.
+    ///
+    /// The raw value is the option's command-line spelling, so a rejection
+    /// can name the exact tokens to drop.
+    enum RouteSelectingOption: String, CaseIterable {
+        case udid = "--udid"
+        case host = "--host"
+        case port = "--port"
+        case pairingRecord = "--pairing-record"
+        case userspaceDeviceAddress = "--userspace-device-address"
+        case userspaceGatewayHost = "--userspace-gateway-host"
+        case userspaceGatewayPort = "--userspace-gateway-port"
+        case remoteServiceDiscoveryPort = "--remote-service-discovery-port"
+
+        /// Whether the parsed options deviate from this option's default.
+        func isSelected(in options: ConnectionOptions) -> Bool {
+            switch self {
+            case .udid:
+                options.udid != nil
+            case .host:
+                options.host != nil
+            case .port:
+                options.port != ConnectionOptions.defaultPort
+            case .pairingRecord:
+                options.pairingRecord != nil
+            case .userspaceDeviceAddress:
+                options.userspaceDeviceAddress != nil
+            case .userspaceGatewayHost:
+                options.userspaceGatewayHost != ConnectionOptions.defaultUserspaceGatewayHost
+            case .userspaceGatewayPort:
+                options.userspaceGatewayPort != nil
+            case .remoteServiceDiscoveryPort:
+                options.remoteServiceDiscoveryPort != nil
+            }
+        }
+    }
+
     /// Rejects device and route selection while the serving agent parses.
     ///
-    /// Named per flag so the reply tells the supervisor which token to drop.
     /// The check runs before the combination rules, which would otherwise
     /// answer an incomplete userspace triple with advice to add more of the
     /// very options a served command cannot use.
@@ -104,34 +140,12 @@ struct ConnectionOptions: ParsableArguments {
         guard Self.rejectsRouteSelection else {
             return
         }
-        var selected: [String] = []
-        if udid != nil {
-            selected.append("--udid")
-        }
-        if host != nil {
-            selected.append("--host")
-        }
-        if port != Self.defaultPort {
-            selected.append("--port")
-        }
-        if pairingRecord != nil {
-            selected.append("--pairing-record")
-        }
-        if userspaceDeviceAddress != nil {
-            selected.append("--userspace-device-address")
-        }
-        if userspaceGatewayHost != Self.defaultUserspaceGatewayHost {
-            selected.append("--userspace-gateway-host")
-        }
-        if userspaceGatewayPort != nil {
-            selected.append("--userspace-gateway-port")
-        }
-        if remoteServiceDiscoveryPort != nil {
-            selected.append("--remote-service-discovery-port")
+        let selected = RouteSelectingOption.allCases.filter { option in
+            option.isSelected(in: self)
         }
         guard selected.isEmpty else {
             throw ValidationError(
-                "run pins the connection to the served tunnel, so \(selected.joined(separator: ", ")) is not accepted."
+                "run pins the connection to the served tunnel, so \(selected.map(\.rawValue).joined(separator: ", ")) is not accepted."
             )
         }
     }
