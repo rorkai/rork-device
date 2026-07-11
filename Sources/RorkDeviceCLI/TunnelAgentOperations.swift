@@ -114,7 +114,7 @@ enum TunnelAgentOperations {
             // run against the served tunnel's device.
             let command: ParsableCommand
             do {
-                command = try ConnectionOptions.$rejectsRouteSelection.withValue(true) {
+                command = try ConnectionOptions.$isParsingForServedTunnel.withValue(true) {
                     try RorkDeviceCommand.parseAsRoot(argv)
                 }
             } catch {

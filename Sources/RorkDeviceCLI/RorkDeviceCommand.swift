@@ -50,9 +50,11 @@ struct ConnectionOptions: ParsableArguments {
     /// served device and exit cleanly, so a read returns the wrong
     /// device's data and a destructive command acts on the wrong device.
     /// While this is bound, validation rejects those options loudly
-    /// instead. Commands parsed from the shell never see the binding and
-    /// accept all of their options as usual.
-    @TaskLocal static var rejectsRouteSelection = false
+    /// instead. The binding also satisfies `requireUserspaceRoute(for:)`,
+    /// because the shared session is itself the userspace route that
+    /// requirement exists to guarantee. Commands parsed from the shell
+    /// never see the binding and behave as usual.
+    @TaskLocal static var isParsingForServedTunnel = false
 
     /// Default Lockdown port, shared by the declaration and the
     /// route-selection check.
@@ -144,7 +146,7 @@ struct ConnectionOptions: ParsableArguments {
     /// answer an incomplete userspace triple with advice to add more of the
     /// very options a served command cannot use.
     private func validateNoRouteSelectionWhileServing() throws {
-        guard Self.rejectsRouteSelection else {
+        guard Self.isParsingForServedTunnel else {
             return
         }
         let selected = RouteSelectingOption.allCases.filter { option in
@@ -162,6 +164,11 @@ struct ConnectionOptions: ParsableArguments {
     /// CoreDevice-only commands cannot run through a Lockdown session because
     /// their services are advertised by Remote Service Discovery.
     func requireUserspaceRoute(for command: String) throws {
+        // The serving agent's shared session is an RSD-backed userspace
+        // route, so a served command already has what this guarantees.
+        if Self.isParsingForServedTunnel {
+            return
+        }
         guard usesUserspaceRemoteServiceRoute else {
             throw ValidationError(
                 "\(command) requires --userspace-device-address, --userspace-gateway-port, and --remote-service-discovery-port."

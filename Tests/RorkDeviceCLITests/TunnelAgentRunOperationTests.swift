@@ -109,7 +109,7 @@ final class TunnelAgentRunOperationTests: XCTestCase {
         // validation, so the same argv parses from the shell and fails
         // under the serving marker.
         XCTAssertThrowsError(
-            try ConnectionOptions.$rejectsRouteSelection.withValue(true) {
+            try ConnectionOptions.$isParsingForServedTunnel.withValue(true) {
                 try AppsList.parse(["--udid", "00008150-TEST"])
             }
         ) { error in
@@ -133,6 +133,26 @@ final class TunnelAgentRunOperationTests: XCTestCase {
             TunnelAgentOperations.runnableCommandFamilies.isSubset(of: rootNames)
         )
         XCTAssertFalse(TunnelAgentOperations.runnableCommandFamilies.contains("tunnel"))
+    }
+
+    func testUserspaceOnlyCommandsParseUnderTheServingMarker() throws {
+        // launch and terminate demand the userspace route flags from shell
+        // callers, but a served command reaches CoreDevice services through
+        // the injected session, so the marker must satisfy that requirement
+        // rather than leave the command impossible to serve.
+        try ConnectionOptions.$isParsingForServedTunnel.withValue(true) {
+            XCTAssertNoThrow(
+                try RorkDeviceCommand.parseAsRoot(["launch", "com.example.app"])
+            )
+            XCTAssertNoThrow(
+                try RorkDeviceCommand.parseAsRoot(["terminate", "com.example.app"])
+            )
+        }
+
+        // Shell callers still need the explicit route.
+        XCTAssertThrowsError(
+            try RorkDeviceCommand.parseAsRoot(["launch", "com.example.app"])
+        )
     }
 
     func testRunRequiresANonEmptyArgv() async throws {
