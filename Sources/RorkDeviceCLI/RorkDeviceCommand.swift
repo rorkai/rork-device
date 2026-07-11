@@ -49,7 +49,6 @@ struct ConnectionOptions: ParsableArguments {
     /// request that named another attached device would run against the
     /// served device and exit cleanly, so a read returns the wrong
     /// device's data and a destructive command acts on the wrong device.
-    ///
     /// While this is bound, validation rejects those options loudly
     /// instead. Commands parsed from the shell never see the binding and
     /// accept all of their options as usual.
