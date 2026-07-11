@@ -337,9 +337,11 @@ command's standard output in an `output` field, so anything a supervisor
 parses from the shell today parses identically from the pipe. It serves the
 `apps`, `files`, `info`, `install`, `launch`, `profiles`, `terminate`, and
 `uninstall` families. Tunnel, pairing, image, and discovery commands are
-rejected, since they need a route the serving agent does not hold, and
-connection flags are rejected because the command runs against the served
-tunnel's device. `apps-list` remains as a structured alternative that
+rejected, since they need a route the serving agent does not hold.
+Connection flags are rejected rather than ignored. A served command reuses
+the agent's session without reading them, so accepting them would let a
+request that names another device run against the served device and exit
+cleanly. `apps-list` remains as a structured alternative that
 accepts the same `type` values as `apps list` and answers with the same
 entry fields as its `--json` output.
 

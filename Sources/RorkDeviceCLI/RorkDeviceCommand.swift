@@ -41,10 +41,15 @@ struct ConnectionOptions: ParsableArguments {
 
     /// True while the serving agent parses a `run` request's command line.
     ///
-    /// A served command runs against the tunnel's device over the shared
-    /// session, so while this is bound, validation rejects every option
-    /// that selects a device or a route. Commands parsed from the shell
-    /// never see the binding and accept all of their options as usual.
+    /// A served command reuses the agent's shared session, and that path
+    /// never reads the connection options, so a device or route selection
+    /// in the request would be silently ignored rather than honored. A
+    /// request that named another attached device would then run against
+    /// the served device and exit cleanly. A read would return the wrong
+    /// device's data, and a destructive command would act on the wrong
+    /// device. While this is bound, validation rejects those options
+    /// loudly instead. Commands parsed from the shell never see the
+    /// binding and accept all of their options as usual.
     @TaskLocal static var rejectsRouteSelection = false
 
     /// Default Lockdown port, shared by the declaration and the
