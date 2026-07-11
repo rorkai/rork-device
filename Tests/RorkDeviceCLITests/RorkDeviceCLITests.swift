@@ -267,7 +267,7 @@ final class RorkDeviceCLITests: XCTestCase {
         // list names it, so it is the compatibility contract of the release.
         XCTAssertEqual(
             TunnelStartCommand.serveCapabilities,
-            ["ping", "capabilities", "apps-list"]
+            ["ping", "capabilities", "apps-list", "run"]
         )
     }
 
