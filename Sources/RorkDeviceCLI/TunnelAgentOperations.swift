@@ -14,8 +14,28 @@ enum TunnelAgentOperations {
     /// operation failed while the reconnect loop is re-establishing.
     static let sessionPatience: Duration = .seconds(30)
 
-    /// Names of the served operations, for capability advertisements.
-    static let names = ["apps-list"]
+    /// One device-backed operation: its wire name and its handler factory.
+    private struct Operation: Sendable {
+        let name: String
+        let makeHandler: @Sendable (
+            TunnelAgentSessionGate,
+            Duration
+        ) -> TunnelAgentIPC.Handler
+    }
+
+    /// Every served operation, in advertisement order.
+    ///
+    /// `names` and `handlers(sessionGate:patience:)` both derive from this
+    /// table, so an operation can neither be served without being advertised
+    /// nor advertised without being served.
+    private static let operations = [
+        Operation(name: "apps-list", makeHandler: appsListHandler),
+    ]
+
+    /// Wire names of the served operations, for capability advertisements.
+    static var names: [String] {
+        operations.map(\.name)
+    }
 
     /// Builds the handlers for every device-backed operation.
     ///
@@ -26,17 +46,27 @@ enum TunnelAgentOperations {
         sessionGate gate: TunnelAgentSessionGate,
         patience: Duration = sessionPatience
     ) -> [String: TunnelAgentIPC.Handler] {
-        [
-            "apps-list": { request in
-                let parameters: AppsListParameters = try request.parameters()
-                let type = try parameters.applicationType()
-                let session = try await gate.waitForSession(upTo: patience)
-                let apps = try await session.installedApplications(matching: type)
-                return AppsListPayload(
-                    apps: apps.map(InstalledApplicationListEntry.init)
-                )
-            },
-        ]
+        Dictionary(
+            uniqueKeysWithValues: operations.map { operation in
+                (operation.name, operation.makeHandler(gate, patience))
+            }
+        )
+    }
+
+    /// Lists installed applications through the shared session.
+    private static func appsListHandler(
+        gate: TunnelAgentSessionGate,
+        patience: Duration
+    ) -> TunnelAgentIPC.Handler {
+        { request in
+            let parameters: AppsListParameters = try request.parameters()
+            let type = try parameters.applicationType()
+            let session = try await gate.waitForSession(upTo: patience)
+            let apps = try await session.installedApplications(matching: type)
+            return AppsListPayload(
+                apps: apps.map(InstalledApplicationListEntry.init)
+            )
+        }
     }
 }
 
