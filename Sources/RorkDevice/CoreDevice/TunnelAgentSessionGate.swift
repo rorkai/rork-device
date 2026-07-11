@@ -20,6 +20,8 @@ public final class TunnelAgentSessionGate: @unchecked Sendable {
     private var lastLossReason: String?
     private var waiters: [UUID: CheckedContinuation<DeviceSession?, Never>] = [:]
 
+    /// Creates a gate with no session, which stays closed until the first
+    /// tunnel cycle publishes one.
     public init() {}
 
     /// Publishes the session serving the tunnel cycle that just became ready.
