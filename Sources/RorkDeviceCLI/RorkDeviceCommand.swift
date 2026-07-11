@@ -335,7 +335,7 @@ struct ConnectionOptions: ParsableArguments {
             guard host == nil,
                   udid == nil,
                   pairingRecord == nil,
-                  port == 62078 else {
+                  port == Self.defaultPort else {
                 throw ValidationError(
                     "Userspace gateway options cannot be combined with Lockdown connection options."
                 )
@@ -346,7 +346,7 @@ struct ConnectionOptions: ParsableArguments {
         if host != nil, udid != nil {
             throw ValidationError("--udid cannot be used with --host because direct Lockdown connections skip usbmux discovery.")
         }
-        if host == nil, port != 62078 {
+        if host == nil, port != Self.defaultPort {
             throw ValidationError("--port requires --host.")
         }
     }
@@ -356,7 +356,7 @@ struct ConnectionOptions: ParsableArguments {
         userspaceDeviceAddress != nil ||
         userspaceGatewayPort != nil ||
         remoteServiceDiscoveryPort != nil ||
-        userspaceGatewayHost != "127.0.0.1"
+        userspaceGatewayHost != Self.defaultUserspaceGatewayHost
     }
 }
 
