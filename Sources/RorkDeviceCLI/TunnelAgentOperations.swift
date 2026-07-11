@@ -14,7 +14,8 @@ enum TunnelAgentOperations {
     /// operation failed while the reconnect loop is re-establishing.
     static let sessionPatience: Duration = .seconds(30)
 
-    /// One device-backed operation: its wire name and its handler factory.
+    /// A served operation pairs its wire name with the factory that builds
+    /// its handler.
     private struct Operation: Sendable {
         let name: String
         let makeHandler: @Sendable (

@@ -118,8 +118,9 @@ final class TunnelAgentOperationsTests: XCTestCase {
         }
     }
 
-    /// The design-document session: one apps-list request answered on the
-    /// wire with the apps at the top level of the op-result reply.
+    /// Runs the README's example session, where one apps-list request is
+    /// answered on the wire with the apps at the top level of the op-result
+    /// reply.
     func testAppsListAnswersThroughTheServeLoop() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(try scriptedSession())
@@ -227,8 +228,8 @@ private final class ScriptedServiceBackend: DeviceSessionBackend, @unchecked Sen
     }
 }
 
-/// Byte-exact scripted service stream: reads consume the fixture, writes
-/// accumulate for assertions.
+/// A scripted service stream whose reads consume the fixture bytes and
+/// whose writes accumulate for assertions.
 private final class ScriptedConnection: DeviceConnection, @unchecked Sendable {
     private let lock = NSLock()
     private var inbound: Data

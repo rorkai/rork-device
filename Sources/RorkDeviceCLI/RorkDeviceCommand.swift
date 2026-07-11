@@ -1287,8 +1287,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
         do {
             try await serving.value
         } catch where serving.isCancelled {
-            // The supervisor is gone and the tunnel wound down in time; exit
-            // cleanly so nothing records this as a crash. Cancellation is
+            // The supervisor is gone and the tunnel wound down in time, so
+            // exit cleanly and nothing records this as a crash. Cancellation is
             // matched through `isCancelled` rather than error type because a
             // cancelled establishment step can surface as a transport error
             // from the connection teardown instead of `CancellationError`.
@@ -1374,8 +1374,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
             emit: { event in
                 // Waiting IPC requests fail with this reason when the
                 // tunnel stays down past their patience. Both event kinds
-                // carry one: a tunnel that never establishes reports its
-                // failures through re-establishing alone.
+                // carry a reason because a tunnel that never establishes
+                // reports its failures through re-establishing alone.
                 switch event {
                 case .tunnelLost(let reason),
                      .reestablishing(_, _, let reason):
@@ -1408,8 +1408,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
     ///
     /// The shared session rides the cycle's own packet network, so operations
     /// skip both the spawn and the discovery handshake that the per-operation
-    /// exec path pays. It lives exactly as long as the cycle: published to
-    /// handlers once the tunnel is ready, withdrawn and closed when it ends.
+    /// exec path pays. It lives exactly as long as the cycle. Handlers
+    /// receive it once the tunnel is ready and lose it when the cycle ends.
     private func serve(
         _ cycle: TunnelCycle,
         sessionGate: TunnelAgentSessionGate?
@@ -1426,7 +1426,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
         sessionGate.publish(shared)
         defer {
             // The reason arrives with the loop's tunnel-lost event right
-            // after this teardown; nil keeps the gate's last known one.
+            // after this teardown. Passing nil keeps the gate's last
+            // known reason.
             sessionGate.markLost(reason: nil)
             shared.close()
         }
@@ -1549,9 +1550,9 @@ struct TunnelStartCommand: AsyncParsableCommand {
         network: CoreDeviceUserspaceNetwork,
         requestedPort: UInt16
     ) async throws -> CoreDeviceUserspaceGateway {
-        // Only a port borrowed from an earlier cycle may fall back: a fixed
-        // `--gateway-port` must fail loudly, and an ephemeral request has
-        // nothing to fall back from.
+        // Only a port borrowed from an earlier cycle may fall back, because
+        // a fixed `--gateway-port` must fail loudly and an ephemeral request
+        // has nothing to fall back from.
         let borrowedEphemeralPort = gatewayPort == 0 && requestedPort != 0
         do {
             return try await CoreDeviceUserspaceGateway.start(
@@ -1584,7 +1585,7 @@ private struct TunnelCycle {
 
 /// Device and local-port choice that reconnection must keep honoring.
 ///
-/// Plain lock box: the reconnect loop's closures run sequentially but are
+/// A plain lock box. The reconnect loop's closures run sequentially but are
 /// escaping, so shared mutable state needs an explicitly synchronized home.
 private final class PinnedTunnelTarget: @unchecked Sendable {
     private let lock = NSLock()
@@ -1676,7 +1677,7 @@ struct TunnelReadyEvent: Encodable {
 
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
 ///
-/// `tunnel-lost` reports why a ready tunnel died; `re-establishing` announces
+/// `tunnel-lost` reports why a ready tunnel died. `re-establishing` announces
 /// the next attempt with its schedule position and the latest failure. The
 /// device is omitted while no cycle has identified one yet.
 struct TunnelLifecycleEventLine: Encodable {
@@ -1791,7 +1792,7 @@ private func writeAgentReplyLine(_ line: Data) {
 
 /// Best-effort NDJSON writer for reconnect-mode lifecycle lines.
 ///
-/// Unlike the initial `ready` line, lifecycle transitions are advisory: a
+/// Unlike the initial `ready` line, lifecycle transitions are advisory. A
 /// host that stopped reading stdout must not be able to kill the tunnel with
 /// a write failure, so encoding or pipe errors are swallowed.
 private func writeTunnelStdoutLine(_ line: some Encodable) {
