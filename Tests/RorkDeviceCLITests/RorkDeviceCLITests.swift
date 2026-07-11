@@ -262,6 +262,15 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(output["capabilities"] as? [String], ["ping", "capabilities"])
     }
 
+    func testServeCapabilitiesAdvertiseTheDeviceBackedOperations() {
+        // Supervisors route an operation through the pipe only when this
+        // list names it, so it is the compatibility contract of the release.
+        XCTAssertEqual(
+            TunnelStartCommand.serveCapabilities,
+            ["ping", "capabilities", "apps-list"]
+        )
+    }
+
     func testTunnelReadyEventOmitsCapabilitiesWhenNotServing() throws {
         let event = TunnelReadyEvent(
             address: "fd00::1",

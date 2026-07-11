@@ -1210,12 +1210,22 @@ struct TunnelStartCommand: AsyncParsableCommand {
             // Serving owns standard input. It answers requests while the
             // pipe is open and shuts down when the pipe reaches end-of-file,
             // so the parent-death contract holds without a separate watcher.
-            try await runSupervised(identity: identity, identityURL: identityURL) {
+            let sessionGate = TunnelAgentSessionGate()
+            let handlers = TunnelAgentIPC.builtInHandlers(
+                capabilities: TunnelStartCommand.serveCapabilities
+            ).merging(
+                TunnelAgentOperations.handlers(sessionGate: sessionGate)
+            ) { _, operation in
+                operation
+            }
+            try await runSupervised(
+                identity: identity,
+                identityURL: identityURL,
+                sessionGate: sessionGate
+            ) {
                 await TunnelAgentIPC.serve(
                     requestsFrom: .standardInput,
-                    handlers: TunnelAgentIPC.builtInHandlers(
-                        capabilities: TunnelStartCommand.serveCapabilities
-                    ),
+                    handlers: handlers,
                     send: writeAgentReplyLine
                 )
             }
@@ -1235,8 +1245,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
         }
     }
 
-    /// Operations the serving loop can answer before any device work.
-    static let serveCapabilities = ["ping", "capabilities"]
+    /// Operations the serving loop answers, device-backed ones included.
+    static let serveCapabilities = ["ping", "capabilities"] + TunnelAgentOperations.names
 
     /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
     ///
@@ -1247,12 +1257,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
     private func runSupervised(
         identity: RemotePairingIdentity,
         identityURL: URL,
+        sessionGate: TunnelAgentSessionGate? = nil,
         untilParentGone: @escaping @Sendable () async -> Void
     ) async throws {
         let serving = Task {
             try await serveUntilStopped(
                 identity: identity,
-                identityURL: identityURL
+                identityURL: identityURL,
+                sessionGate: sessionGate
             )
         }
         let supervision = Task {
@@ -1275,8 +1287,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
         do {
             try await serving.value
         } catch where serving.isCancelled {
-            // The supervisor is gone and the tunnel wound down in time; exit
-            // cleanly so nothing records this as a crash. Cancellation is
+            // The supervisor is gone and the tunnel wound down in time, so
+            // exit cleanly and nothing records this as a crash. Cancellation is
             // matched through `isCancelled` rather than error type because a
             // cancelled establishment step can surface as a transport error
             // from the connection teardown instead of `CancellationError`.
@@ -1286,12 +1298,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// Serves tunnels in the selected mode until stopped or failed.
     private func serveUntilStopped(
         identity: RemotePairingIdentity,
-        identityURL: URL
+        identityURL: URL,
+        sessionGate: TunnelAgentSessionGate? = nil
     ) async throws {
         if reconnect {
             try await runReconnectLoop(
                 identity: identity,
-                identityURL: identityURL
+                identityURL: identityURL,
+                sessionGate: sessionGate
             )
             return
         }
@@ -1331,7 +1345,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// Keeps one device's tunnel alive across drops, reporting transitions.
     private func runReconnectLoop(
         identity: RemotePairingIdentity,
-        identityURL: URL
+        identityURL: URL,
+        sessionGate: TunnelAgentSessionGate? = nil
     ) async throws {
         // Pins the loop to one physical device and one local port after the
         // first healthy cycle, so reconnection can neither hop devices on a
@@ -1357,6 +1372,15 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 }
             },
             emit: { event in
+                // Waiting IPC requests fail with this reason when the
+                // tunnel stays down past their patience. Both event kinds
+                // carry a reason because a tunnel that never establishes
+                // reports its failures through re-establishing alone.
+                switch event {
+                case .tunnelLost(let reason),
+                     .reestablishing(_, _, let reason):
+                    sessionGate?.markLost(reason: reason)
+                }
                 writeTunnelLifecycleEvent(
                     event,
                     deviceIdentifier: pinned.deviceIdentifier
@@ -1375,9 +1399,39 @@ struct TunnelStartCommand: AsyncParsableCommand {
                     gatewayPort: cycle.gateway.port
                 )
                 onReady()
-                try await serve(cycle)
+                try await serve(cycle, sessionGate: sessionGate)
             }
         )
+    }
+
+    /// Serves one tunnel cycle, sharing one RSD session with IPC handlers.
+    ///
+    /// The shared session rides the cycle's own packet network, so operations
+    /// skip both the spawn and the discovery handshake that the per-operation
+    /// exec path pays. It lives exactly as long as the cycle. Handlers
+    /// receive it once the tunnel is ready and lose it when the cycle ends.
+    private func serve(
+        _ cycle: TunnelCycle,
+        sessionGate: TunnelAgentSessionGate?
+    ) async throws {
+        guard let sessionGate else {
+            try await serve(cycle)
+            return
+        }
+        let shared = try await DeviceClient().connect(
+            toRemoteServicesUsing: cycle.network,
+            discoveryPort: cycle.network.configuration.serviceDiscoveryPort,
+            label: "rorkdevice-agent"
+        )
+        sessionGate.publish(shared)
+        defer {
+            // The reason arrives with the loop's tunnel-lost event right
+            // after this teardown. Passing nil keeps the gate's last
+            // known reason.
+            sessionGate.markLost(reason: nil)
+            shared.close()
+        }
+        try await serve(cycle)
     }
 
     /// Establishes one complete tunnel: session, packet network, gateway,
@@ -1496,9 +1550,9 @@ struct TunnelStartCommand: AsyncParsableCommand {
         network: CoreDeviceUserspaceNetwork,
         requestedPort: UInt16
     ) async throws -> CoreDeviceUserspaceGateway {
-        // Only a port borrowed from an earlier cycle may fall back: a fixed
-        // `--gateway-port` must fail loudly, and an ephemeral request has
-        // nothing to fall back from.
+        // Only a port borrowed from an earlier cycle may fall back, because
+        // a fixed `--gateway-port` must fail loudly and an ephemeral request
+        // has nothing to fall back from.
         let borrowedEphemeralPort = gatewayPort == 0 && requestedPort != 0
         do {
             return try await CoreDeviceUserspaceGateway.start(
@@ -1531,7 +1585,7 @@ private struct TunnelCycle {
 
 /// Device and local-port choice that reconnection must keep honoring.
 ///
-/// Plain lock box: the reconnect loop's closures run sequentially but are
+/// A plain lock box. The reconnect loop's closures run sequentially but are
 /// escaping, so shared mutable state needs an explicitly synchronized home.
 private final class PinnedTunnelTarget: @unchecked Sendable {
     private let lock = NSLock()
@@ -1623,7 +1677,7 @@ struct TunnelReadyEvent: Encodable {
 
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
 ///
-/// `tunnel-lost` reports why a ready tunnel died; `re-establishing` announces
+/// `tunnel-lost` reports why a ready tunnel died. `re-establishing` announces
 /// the next attempt with its schedule position and the latest failure. The
 /// device is omitted while no cycle has identified one yet.
 struct TunnelLifecycleEventLine: Encodable {
@@ -1738,7 +1792,7 @@ private func writeAgentReplyLine(_ line: Data) {
 
 /// Best-effort NDJSON writer for reconnect-mode lifecycle lines.
 ///
-/// Unlike the initial `ready` line, lifecycle transitions are advisory: a
+/// Unlike the initial `ready` line, lifecycle transitions are advisory. A
 /// host that stopped reading stdout must not be able to kill the tunnel with
 /// a write failure, so encoding or pipe errors are swallowed.
 private func writeTunnelStdoutLine(_ line: some Encodable) {
@@ -2070,8 +2124,9 @@ func installedApplicationListJSON(
     return try encoder.encode(entries)
 }
 
-/// Stable application metadata emitted by `apps list --json`.
-private struct InstalledApplicationListEntry: Encodable {
+/// Stable application metadata emitted by `apps list --json` and by the
+/// tunnel agent's `apps-list` operation.
+struct InstalledApplicationListEntry: Encodable, Sendable {
     /// Bundle identifier used to address the application on the device.
     let bundleIdentifier: String?
 
