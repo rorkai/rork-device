@@ -318,19 +318,30 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 -> {"id":"1","op":"ping"}
 <- {"id":"1","event":"op-result","ok":true}
 -> {"id":"2","op":"capabilities"}
-<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities","apps-list"]}
+<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities","apps-list","run"]}
 -> {"id":"3","op":"apps-list","type":"all"}
 <- {"id":"3","event":"op-result","ok":true,"apps":[{"bundleIdentifier":"com.example.app", ...}]}
+-> {"id":"4","op":"run","argv":["apps","list","--type=all","--json"]}
+<- {"id":"4","event":"op-result","ok":true,"output":"[{\"bundleIdentifier\":\"com.example.app\", ...}]\n"}
 ```
 
 Device-backed operations run through one shared Remote Service Discovery
 session that the agent opens over its own tunnel when a cycle becomes ready,
 so they skip the process spawn and the discovery handshake that running the
-equivalent CLI command per operation costs. `apps-list` accepts the same
-`type` values as `apps list` and answers with the same entry fields as its
-`--json` output. A request that arrives while the tunnel is down waits up to
-thirty seconds for the next ready and then fails with the last reported
-failure reason.
+equivalent CLI command per operation costs. A request that arrives while the
+tunnel is down waits up to thirty seconds for the next ready and then fails
+with the last reported failure reason.
+
+`run` executes an ordinary CLI command in-process and replies with the
+command's standard output in an `output` field, so anything a supervisor
+parses from the shell today parses identically from the pipe. It serves the
+`apps`, `files`, `info`, `install`, `launch`, `profiles`, `terminate`, and
+`uninstall` families. Tunnel, pairing, image, and discovery commands are
+rejected, since they need a route the serving agent does not hold, and
+connection flags are rejected because the command runs against the served
+tunnel's device. `apps-list` remains as a structured alternative that
+accepts the same `type` values as `apps list` and answers with the same
+entry fields as its `--json` output.
 
 Unknown operations answer with `"ok":false` and malformed lines answer with an
 `op-error` event. Neither ends the process. The `ready` event lists the
