@@ -1468,6 +1468,9 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 let outcome = try await TunnelReconnectLoop.waitForReattach(
                     of: pinned.deviceIdentifier,
                     upTo: delay,
+                    initialAttachments: {
+                        Set(try await DeviceClient().discoverDevices().map(\.identifier))
+                    },
                     deviceEvents: {
                         DeviceClient().deviceEvents()
                     }

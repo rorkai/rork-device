@@ -220,6 +220,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(60),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([
                     .detached(identifier: "udid-1", connection: nil),
@@ -236,6 +237,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: nil,
             upTo: .seconds(60),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([.attached(usbDevice(identifier: "whatever"))])
             },
@@ -249,6 +251,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(1),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([
                     .attached(usbDevice(identifier: "udid-2")),
@@ -261,11 +264,77 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         XCTAssertEqual(outcome, .waited)
     }
 
+    /// usbmuxd replays every currently attached device as an attach event
+    /// when a listen stream opens. A replayed attach is not a reattach, and
+    /// honoring it would defeat the whole backoff schedule while the device
+    /// sits attached with a persistent per-attempt failure, such as a locked
+    /// phone answering StartService with PasswordProtected.
+    func testAReplayedAttachOfAnAlreadyAttachedDeviceDoesNotEndTheWait() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(1),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .waited)
+    }
+
+    func testADetachThenAttachOfAnAlreadyAttachedDeviceEndsTheWait() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([
+                    .attached(usbDevice(identifier: "udid-1")),
+                    .detached(identifier: "udid-1", connection: nil),
+                    .attached(usbDevice(identifier: "udid-1")),
+                ])
+            },
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
+    func testAReplayedAttachDoesNotEndTheWaitWhenNoDeviceIsPinned() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: nil,
+            upTo: .seconds(1),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .waited)
+    }
+
+    func testAFailedInitialAttachmentQueryDegradesToHonoringEveryAttach() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: { throw RorkDeviceError.transport("usbmuxd is down") },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
     func testEventStreamFailureFallsBackToTheFullDelay() async throws {
         let sleepFinished = expectation(description: "full delay elapsed")
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(1),
+            initialAttachments: { [] },
             deviceEvents: {
                 AsyncThrowingStream { continuation in
                     continuation.finish(
