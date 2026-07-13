@@ -220,6 +220,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(60),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([
                     .detached(identifier: "udid-1", connection: nil),
@@ -236,6 +237,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: nil,
             upTo: .seconds(60),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([.attached(usbDevice(identifier: "whatever"))])
             },
@@ -249,6 +251,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(1),
+            initialAttachments: { [] },
             deviceEvents: {
                 deviceEventStream([
                     .attached(usbDevice(identifier: "udid-2")),
@@ -261,11 +264,100 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         XCTAssertEqual(outcome, .waited)
     }
 
-    func testEventStreamFailureFallsBackToTheFullDelay() async throws {
-        let sleepFinished = expectation(description: "full delay elapsed")
+    /// usbmuxd replays every currently attached device as an attach event
+    /// when a listen stream opens. A replayed attach is not a reattach, and
+    /// honoring it would defeat the whole backoff schedule while the device
+    /// sits attached with a persistent per-attempt failure, such as a locked
+    /// phone answering StartService with PasswordProtected.
+    func testAReplayedAttachOfAnAlreadyAttachedDeviceDoesNotEndTheWait() async throws {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(1),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .waited)
+    }
+
+    func testADetachThenAttachOfAnAlreadyAttachedDeviceEndsTheWait() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([
+                    .attached(usbDevice(identifier: "udid-1")),
+                    .detached(identifier: "udid-1", connection: nil),
+                    .attached(usbDevice(identifier: "udid-1")),
+                ])
+            },
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
+    func testAReplayedAttachDoesNotEndTheWaitWhenNoDeviceIsPinned() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: nil,
+            upTo: .seconds(1),
+            initialAttachments: { ["udid-1"] },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .waited)
+    }
+
+    /// Models a detach that fires while the initial attachment query is
+    /// still running. Events reach only an already-open stream, so this
+    /// passes only when the wait opens its event stream before querying.
+    func testADetachDuringTheInitialQueryStillUnlocksTheNextAttach() async throws {
+        let live = LiveDeviceEventFeed()
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: {
+                // The device unplugs and replugs mid-query. A wait that
+                // opened its stream first buffers both events; a wait that
+                // queries first never sees them.
+                live.emit(.detached(identifier: "udid-1", connection: nil))
+                live.emit(.attached(usbDevice(identifier: "udid-1")))
+                return ["udid-1"]
+            },
+            deviceEvents: live.open,
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
+    func testAFailedInitialAttachmentQueryDegradesToHonoringEveryAttach() async throws {
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: { throw RorkDeviceError.transport("usbmuxd is down") },
+            deviceEvents: {
+                deviceEventStream([.attached(usbDevice(identifier: "udid-1"))])
+            },
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
+    func testEventStreamFailureFallsBackToTheFullDelay() async throws {
+        let sleeps = SleepRecorder()
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(1),
+            initialAttachments: { [] },
             deviceEvents: {
                 AsyncThrowingStream { continuation in
                     continuation.finish(
@@ -273,11 +365,12 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
                     )
                 }
             },
-            sleep: { _ in sleepFinished.fulfill() }
+            sleep: sleeps.record
         )
 
-        await fulfillment(of: [sleepFinished], timeout: 1)
         XCTAssertEqual(outcome, .waited)
+        // The wait must have requested the entire delay, not a shortened one.
+        XCTAssertEqual(sleeps.requested, [.seconds(1)])
     }
 }
 
@@ -356,6 +449,46 @@ private func deviceEventStream(
             continuation.yield(event)
         }
         continuation.finish()
+    }
+}
+
+/// Records the durations handed to an injected sleep.
+private final class SleepRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var durations: [Duration] = []
+
+    /// The durations requested so far, in call order.
+    var requested: [Duration] {
+        lock.withLock { durations }
+    }
+
+    /// Records one requested duration and returns immediately.
+    @Sendable func record(_ duration: Duration) async throws {
+        lock.withLock {
+            durations.append(duration)
+        }
+    }
+}
+
+/// Delivers device events only to an already-open stream, like usbmuxd,
+/// which never replays events a listener missed.
+private final class LiveDeviceEventFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: AsyncThrowingStream<DeviceEvent, Error>.Continuation?
+
+    /// Opens the listen stream that future events are delivered to.
+    func open() -> AsyncThrowingStream<DeviceEvent, Error> {
+        AsyncThrowingStream { continuation in
+            lock.withLock {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    /// Emits one event, dropped when nobody is listening yet.
+    func emit(_ event: DeviceEvent) {
+        let continuation = lock.withLock { self.continuation }
+        continuation?.yield(event)
     }
 }
 

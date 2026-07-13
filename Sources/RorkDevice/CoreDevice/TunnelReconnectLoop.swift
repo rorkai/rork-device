@@ -95,7 +95,7 @@ public enum TunnelReconnectLoop {
         }
     }
 
-    /// Waits up to `delay`, ending early when a matching device attaches.
+    /// Waits up to `delay`, ending early when a matching device reattaches.
     ///
     /// The reconnect loop calls this between attempts so a replugged phone is
     /// retried immediately instead of after the rest of an exponential delay.
@@ -103,16 +103,29 @@ public enum TunnelReconnectLoop {
     /// the wait to a plain sleep — reattach detection is an accelerator, never
     /// a requirement.
     ///
+    /// Only a genuine reattach may end the wait. usbmuxd replays every
+    /// currently attached device as an attach event when a listen stream
+    /// opens, and this method opens a fresh stream per wait, so an attach of
+    /// a device that was already attached when the wait began is ignored
+    /// until a detach for it arrives first. Without that rule, a device that
+    /// stays attached while every attempt fails the same way, such as a
+    /// locked phone rejecting the tunnel service, would defeat the entire
+    /// backoff schedule and be retried in a tight loop.
+    ///
     /// - Parameters:
-    ///   - deviceIdentifier: Device to watch for, or `nil` to accept the first
-    ///     attach event of any device.
+    ///   - deviceIdentifier: Device to watch for, or `nil` to accept the
+    ///     first genuine attach of any device.
     ///   - delay: Upper bound on the wait.
+    ///   - initialAttachments: Identifiers of the devices attached when the
+    ///     wait begins. A query failure degrades to honoring every attach,
+    ///     which shortens one wait rather than lengthening it.
     ///   - deviceEvents: Opens a fresh attach/detach event stream.
     ///   - sleep: Suspends for the full delay; injectable for tests.
     /// - Returns: Whether a reattach ended the wait or the delay elapsed.
     public static func waitForReattach(
         of deviceIdentifier: String?,
         upTo delay: Duration,
+        initialAttachments: @escaping @Sendable () async throws -> Set<String>,
         deviceEvents: @escaping @Sendable () -> AsyncThrowingStream<DeviceEvent, Error>,
         sleep: @escaping @Sendable (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
@@ -125,12 +138,29 @@ public enum TunnelReconnectLoop {
             }
             group.addTask {
                 do {
-                    for try await event in deviceEvents() {
-                        guard case .attached(let device) = event else {
-                            continue
-                        }
-                        if deviceIdentifier == nil
-                            || device.identifier == deviceIdentifier {
+                    // The stream opens before the attachment query, so a
+                    // detach that fires mid-query buffers in the stream and
+                    // still unlocks its device's next attach. Anything the
+                    // asynchronous listen registration misses costs one
+                    // capped wait rather than a hot loop.
+                    let events = deviceEvents()
+                    var attachedBefore = (try? await initialAttachments()) ?? []
+                    for try await event in events {
+                        switch event {
+                        case .detached(let identifier, _):
+                            // The next attach of this device is a genuine
+                            // reattach, not a listen-stream replay.
+                            if let identifier {
+                                attachedBefore.remove(identifier)
+                            }
+                        case .attached(let device):
+                            guard deviceIdentifier == nil
+                                || device.identifier == deviceIdentifier else {
+                                continue
+                            }
+                            guard !attachedBefore.contains(device.identifier) else {
+                                continue
+                            }
                             return .reattached
                         }
                     }
