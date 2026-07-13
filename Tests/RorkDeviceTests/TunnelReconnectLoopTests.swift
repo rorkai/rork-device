@@ -315,6 +315,29 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
         XCTAssertEqual(outcome, .waited)
     }
 
+    /// Models a detach that fires while the initial attachment query is
+    /// still running. Events reach only an already-open stream, so this
+    /// passes only when the wait opens its event stream before querying.
+    func testADetachDuringTheInitialQueryStillUnlocksTheNextAttach() async throws {
+        let live = LiveDeviceEventFeed()
+        let outcome = try await TunnelReconnectLoop.waitForReattach(
+            of: "udid-1",
+            upTo: .seconds(60),
+            initialAttachments: {
+                // The device unplugs and replugs mid-query. A wait that
+                // opened its stream first buffers both events; a wait that
+                // queries first never sees them.
+                live.emit(.detached(identifier: "udid-1", connection: nil))
+                live.emit(.attached(usbDevice(identifier: "udid-1")))
+                return ["udid-1"]
+            },
+            deviceEvents: live.open,
+            sleep: Self.sleepForever
+        )
+
+        XCTAssertEqual(outcome, .reattached)
+    }
+
     func testAFailedInitialAttachmentQueryDegradesToHonoringEveryAttach() async throws {
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
@@ -425,6 +448,28 @@ private func deviceEventStream(
             continuation.yield(event)
         }
         continuation.finish()
+    }
+}
+
+/// Delivers device events only to an already-open stream, like usbmuxd,
+/// which never replays events a listener missed.
+private final class LiveDeviceEventFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: AsyncThrowingStream<DeviceEvent, Error>.Continuation?
+
+    /// Opens the listen stream that future events are delivered to.
+    func open() -> AsyncThrowingStream<DeviceEvent, Error> {
+        AsyncThrowingStream { continuation in
+            lock.withLock {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    /// Emits one event, dropped when nobody is listening yet.
+    func emit(_ event: DeviceEvent) {
+        let continuation = lock.withLock { self.continuation }
+        continuation?.yield(event)
     }
 }
 
