@@ -353,7 +353,7 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
     }
 
     func testEventStreamFailureFallsBackToTheFullDelay() async throws {
-        let sleepFinished = expectation(description: "full delay elapsed")
+        let sleeps = SleepRecorder()
         let outcome = try await TunnelReconnectLoop.waitForReattach(
             of: "udid-1",
             upTo: .seconds(1),
@@ -365,11 +365,12 @@ final class TunnelReconnectReattachWaitTests: XCTestCase {
                     )
                 }
             },
-            sleep: { _ in sleepFinished.fulfill() }
+            sleep: sleeps.record
         )
 
-        await fulfillment(of: [sleepFinished], timeout: 1)
         XCTAssertEqual(outcome, .waited)
+        // The wait must have requested the entire delay, not a shortened one.
+        XCTAssertEqual(sleeps.requested, [.seconds(1)])
     }
 }
 
@@ -448,6 +449,24 @@ private func deviceEventStream(
             continuation.yield(event)
         }
         continuation.finish()
+    }
+}
+
+/// Records the durations handed to an injected sleep.
+private final class SleepRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var durations: [Duration] = []
+
+    /// The durations requested so far, in call order.
+    var requested: [Duration] {
+        lock.withLock { durations }
+    }
+
+    /// Records one requested duration and returns immediately.
+    @Sendable func record(_ duration: Duration) async throws {
+        lock.withLock {
+            durations.append(duration)
+        }
     }
 }
 
