@@ -1292,6 +1292,17 @@ struct TunnelStartCommand: AsyncParsableCommand {
         maxAttempts: Int.max
     )
 
+    /// Caps retries after failures that prompt nothing on the device.
+    ///
+    /// A locked phone rejects the tunnel service with PasswordProtected on
+    /// every attempt, shows no dialog, and clears only when the user
+    /// unlocks. Retrying at most this far apart turns that unlock into a
+    /// recovery within seconds instead of the schedule's full ceiling.
+    static let passiveFailurePolicy = TunnelReconnectLoop.PassiveFailurePolicy(
+        cap: .seconds(10),
+        matches: { reason in reason.contains("PasswordProtected") }
+    )
+
     /// Opens the packet tunnel, establishes trust, and serves until terminated.
     ///
     /// With `--reconnect`, tunnel loss re-enters establishment with backoff
@@ -1464,6 +1475,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
         )
         try await TunnelReconnectLoop.run(
             backoff: Self.reconnectBackoff,
+            passiveFailurePolicy: Self.passiveFailurePolicy,
             waitBeforeAttempt: { delay in
                 let outcome = try await TunnelReconnectLoop.waitForReattach(
                     of: pinned.deviceIdentifier,

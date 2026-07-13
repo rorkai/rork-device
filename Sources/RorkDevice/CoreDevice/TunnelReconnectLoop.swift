@@ -28,6 +28,29 @@ public enum TunnelReconnectLoop {
         case reestablishing(attempt: Int, delay: Duration, reason: String)
     }
 
+    /// Caps retry delays for failures that prompt nothing on the device.
+    ///
+    /// The backoff ceiling exists to keep prompt-driving failures from
+    /// flickering the on-device pairing dialog. Failures like a locked
+    /// phone rejecting the tunnel service are passive. Each attempt is a
+    /// cheap query the user never sees, and the failure clears only through
+    /// a user action, so a long wait merely delays the recovery the user
+    /// just triggered. Attempts whose failure matches the policy wait at
+    /// most `cap`, and scheduled delays shorter than the cap are kept.
+    public struct PassiveFailurePolicy: Sendable {
+        /// Longest wait before retrying a matching failure.
+        public let cap: Duration
+
+        /// Decides whether a failure reason is passive.
+        public let matches: @Sendable (String) -> Bool
+
+        /// Creates a policy from a cap and a reason predicate.
+        public init(cap: Duration, matches: @escaping @Sendable (String) -> Bool) {
+            self.cap = cap
+            self.matches = matches
+        }
+    }
+
     /// How a reattach wait ended.
     public enum ReattachWaitOutcome: Equatable, Sendable {
         /// A matching device attached before the delay elapsed.
@@ -52,6 +75,9 @@ public enum TunnelReconnectLoop {
     ///     deliberately not enforced, because giving up is a supervision
     ///     decision that belongs to the process host, not this loop. Attempts
     ///     past the schedule's end wait its final delay.
+    ///   - passiveFailurePolicy: Caps delays after failures that prompt
+    ///     nothing on the device, so a user-driven recovery such as an
+    ///     unlock is picked up quickly. `nil` applies the schedule as is.
     ///   - waitBeforeAttempt: Waits the scheduled delay before a retry.
     ///     Production short-circuits the wait when the device reattaches;
     ///     a thrown error (such as cancellation) stops the loop.
@@ -61,6 +87,7 @@ public enum TunnelReconnectLoop {
     ///     throws when it fails or is lost.
     public static func run(
         backoff: Backoff,
+        passiveFailurePolicy: PassiveFailurePolicy? = nil,
         waitBeforeAttempt: (Duration) async throws -> Void,
         emit: (Event) -> Void,
         establishAndServe: (_ onReady: @escaping @Sendable () -> Void) async throws -> Void
@@ -89,7 +116,10 @@ public enum TunnelReconnectLoop {
             }
 
             attempt += 1
-            let delay = backoff.delay(beforeAttempt: attempt)
+            var delay = backoff.delay(beforeAttempt: attempt)
+            if let policy = passiveFailurePolicy, policy.matches(reason) {
+                delay = min(delay, policy.cap)
+            }
             emit(.reestablishing(attempt: attempt, delay: delay, reason: reason))
             try await waitBeforeAttempt(delay)
         }
