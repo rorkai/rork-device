@@ -208,6 +208,102 @@ final class TunnelReconnectLoopTests: XCTestCase {
     }
 }
 
+/// Delay capping for failures that prompt nothing on the device.
+final class TunnelReconnectPassiveFailureTests: XCTestCase {
+    /// The schedule alone would wait a minute. A locked phone answers every
+    /// attempt instantly and shows no dialog, so waiting the full minute
+    /// only delays the recovery the user triggers by unlocking.
+    func testAPassiveFailureCapsTheScheduledDelay() async throws {
+        let recorder = ReconnectRecorder(cycles: [
+            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .serveThenClose,
+        ])
+
+        try await TunnelReconnectLoop.run(
+            backoff: Backoff.delays([.seconds(60), .seconds(60)]),
+            passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
+                cap: .seconds(10),
+                matches: { reason in reason.contains("PasswordProtected") }
+            ),
+            waitBeforeAttempt: recorder.wait,
+            emit: recorder.emit,
+            establishAndServe: recorder.establishAndServe
+        )
+
+        XCTAssertEqual(recorder.waits, [.seconds(10), .seconds(10)])
+    }
+
+    func testTheCappedDelayIsWhatTheLifecycleEventReports() async throws {
+        let recorder = ReconnectRecorder(cycles: [
+            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .serveThenClose,
+        ])
+
+        try await TunnelReconnectLoop.run(
+            backoff: Backoff.delays([.seconds(60)]),
+            passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
+                cap: .seconds(10),
+                matches: { reason in reason.contains("PasswordProtected") }
+            ),
+            waitBeforeAttempt: recorder.wait,
+            emit: recorder.emit,
+            establishAndServe: recorder.establishAndServe
+        )
+
+        XCTAssertEqual(
+            recorder.events,
+            [
+                .reestablishing(
+                    attempt: 1,
+                    delay: .seconds(10),
+                    reason: "Lockdown error: StartService failed: PasswordProtected"
+                ),
+            ]
+        )
+    }
+
+    func testAPromptDrivingFailureKeepsTheFullSchedule() async throws {
+        let recorder = ReconnectRecorder(cycles: [
+            .failToEstablish("Pairing was rejected on the device."),
+            .serveThenClose,
+        ])
+
+        try await TunnelReconnectLoop.run(
+            backoff: Backoff.delays([.seconds(60)]),
+            passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
+                cap: .seconds(10),
+                matches: { reason in reason.contains("PasswordProtected") }
+            ),
+            waitBeforeAttempt: recorder.wait,
+            emit: recorder.emit,
+            establishAndServe: recorder.establishAndServe
+        )
+
+        XCTAssertEqual(recorder.waits, [.seconds(60)])
+    }
+
+    func testAShortScheduledDelayIsNotLengthenedToTheCap() async throws {
+        let recorder = ReconnectRecorder(cycles: [
+            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .serveThenClose,
+        ])
+
+        try await TunnelReconnectLoop.run(
+            backoff: Backoff.delays([.seconds(1)]),
+            passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
+                cap: .seconds(10),
+                matches: { reason in reason.contains("PasswordProtected") }
+            ),
+            waitBeforeAttempt: recorder.wait,
+            emit: recorder.emit,
+            establishAndServe: recorder.establishAndServe
+        )
+
+        XCTAssertEqual(recorder.waits, [.seconds(1)])
+    }
+}
+
 /// Deterministic reattach-wait behavior: which race participant may end the
 /// wait, and which events are ignored.
 final class TunnelReconnectReattachWaitTests: XCTestCase {

@@ -287,7 +287,10 @@ With `--reconnect`, tunnel loss no longer ends the process. The command
 re-establishes the tunnel with exponential backoff (1s doubling to a 60s
 ceiling, restarting after every healthy tunnel), retries immediately when the
 device reattaches over usbmux, and reports each transition as a
-newline-delimited JSON event on stdout:
+newline-delimited JSON event on stdout. Failures that prompt nothing on the
+device, such as a locked phone answering the tunnel service with
+PasswordProtected, retry at most ten seconds apart, so an unlock is picked
+up within seconds while prompt-driving failures keep the full ceiling:
 
 | Event               | Meaning                                                                                        |
 | ------------------- | ---------------------------------------------------------------------------------------------- |

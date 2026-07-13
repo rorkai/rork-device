@@ -242,6 +242,15 @@ final class RorkDeviceCLITests: XCTestCase {
         )
     }
 
+    func testPassiveFailurePolicyMatchesTheLockedPhoneAndNothingElse() {
+        let policy = TunnelStartCommand.passiveFailurePolicy
+
+        XCTAssertEqual(policy.cap, .seconds(10))
+        XCTAssertTrue(policy.matches("Lockdown error: StartService failed: PasswordProtected"))
+        XCTAssertFalse(policy.matches("Pairing was rejected on the device."))
+        XCTAssertFalse(policy.matches("No matching device found."))
+    }
+
     func testTunnelReadyEventListsCapabilitiesWhenServing() throws {
         let event = TunnelReadyEvent(
             address: "fd00::1",
