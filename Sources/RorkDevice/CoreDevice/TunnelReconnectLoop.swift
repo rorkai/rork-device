@@ -138,15 +138,11 @@ public enum TunnelReconnectLoop {
             }
             group.addTask {
                 do {
-                    // The stream opens before the attachment query, so
-                    // events that fire while the query runs buffer in the
-                    // stream and flow through the state machine below. A
-                    // detach during the query therefore still unlocks its
-                    // device's next attach. The listen registration inside
-                    // the stream is itself asynchronous, so a sliver of
-                    // race remains; anything missed there is suppressed as
-                    // already attached for this one wait, which delays a
-                    // single capped retry rather than looping hot.
+                    // The stream opens before the attachment query, so a
+                    // detach that fires mid-query buffers in the stream and
+                    // still unlocks its device's next attach. Anything the
+                    // asynchronous listen registration misses costs one
+                    // capped wait rather than a hot loop.
                     let events = deviceEvents()
                     var attachedBefore = (try? await initialAttachments()) ?? []
                     for try await event in events {
