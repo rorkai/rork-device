@@ -3,6 +3,9 @@ import Foundation
 import NIOCore
 import NIOFoundationCompat
 import NIOPosix
+#if os(Windows)
+import WinSDK
+#endif
 
 /// Loopback TCP gateway for services reachable through a CoreDevice userspace network.
 ///
@@ -256,10 +259,28 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 Never
             >
         do {
-            server = try await ServerBootstrap(
+            var bootstrap = ServerBootstrap(
                 group: NIOTransportRuntime.eventLoopGroup
             )
-            .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
+
+            // Windows address reuse permits overlapping listeners. Exclusive
+            // ownership keeps gateway port conflicts deterministic.
+            #if os(Windows)
+            bootstrap = bootstrap.serverChannelOption(
+                .socketOption(
+                    NIOBSDSocket.Option(
+                        rawValue: CInt(SO_EXCLUSIVEADDRUSE)
+                    )
+                ),
+                value: 1
+            )
+            #else
+            bootstrap = bootstrap.serverChannelOption(
+                .socketOption(.so_reuseaddr),
+                value: 1
+            )
+            #endif
+            server = try await bootstrap
             .childChannelOption(.autoRead, value: true)
             .bind(host: host, port: Int(port)) { channel in
                 channel.eventLoop.makeCompletedFuture {
