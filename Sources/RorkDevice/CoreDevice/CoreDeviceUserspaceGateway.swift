@@ -269,7 +269,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             bootstrap = bootstrap.serverChannelOption(
                 .socketOption(
                     NIOBSDSocket.Option(
-                        rawValue: CInt(SO_EXCLUSIVEADDRUSE)
+                        rawValue: ~CInt(SO_REUSEADDR)
                     )
                 ),
                 value: 1
