@@ -51,6 +51,9 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Preserves the owned network's terminal result until a waiter observes it.
     private let networkTermination = GatewayNetworkTermination()
 
+    /// Tracks accepted channels so synchronous shutdown can close every stream.
+    private let activeChannels = GatewayActiveChannels()
+
     /// Whether listener and network teardown has already begun.
     private var isClosed = false
 
@@ -74,10 +77,12 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         self.ownedNetwork = ownedNetwork
         self.server = server
 
+        let activeChannels = self.activeChannels
         acceptTask = Task {
             try await Self.runAcceptLoop(
                 server: server,
                 expectedDeviceAddress: expectedDeviceAddress,
+                activeChannels: activeChannels,
                 connectionFactory: connectionFactory
             )
         }
@@ -96,6 +101,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     }
                     networkTermination.finish(with: .failure(error))
                 }
+                activeChannels.closeAll()
                 server.channel.close(promise: nil)
             }
         }
@@ -185,8 +191,8 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             return
         }
 
-        tasks.acceptLoop?.cancel()
         tasks.networkMonitor?.cancel()
+        activeChannels.closeAll()
         server.channel.close(promise: nil)
         ownedNetwork?.close()
     }
@@ -321,12 +327,17 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             Never
         >,
         expectedDeviceAddress: Data,
+        activeChannels: GatewayActiveChannels,
         connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
     ) async throws {
         try await server.executeThenClose { inbound in
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for try await channel in inbound {
+                    activeChannels.insert(channel.channel)
                     group.addTask {
+                        defer {
+                            activeChannels.remove(channel.channel)
+                        }
                         await serve(
                             channel,
                             expectedDeviceAddress:
@@ -443,6 +454,41 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             }
         } catch {
             channel.channel.close(promise: nil)
+        }
+    }
+}
+
+/**
+ * Owns accepted channels until their forwarding scopes finish.
+ *
+ * Listener shutdown is synchronous, so the registry provides a safe way to
+ * interrupt every active stream without canceling tasks before their async
+ * writers can finish.
+ */
+private final class GatewayActiveChannels: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [ObjectIdentifier: any Channel] = [:]
+
+    func insert(_ channel: any Channel) {
+        lock.withLock {
+            channels[ObjectIdentifier(channel)] = channel
+        }
+    }
+
+    func remove(_ channel: any Channel) {
+        _ = lock.withLock {
+            channels.removeValue(forKey: ObjectIdentifier(channel))
+        }
+    }
+
+    func closeAll() {
+        let active = lock.withLock {
+            let active = Array(channels.values)
+            channels.removeAll()
+            return active
+        }
+        for channel in active {
+            channel.close(promise: nil)
         }
     }
 }
