@@ -30,11 +30,11 @@ var products: [Product] = [
 // graph.
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio.git",
-    revision: "1e3d2e6220796c7fd7450d86d3765bfd9505bdab"
+    revision: "9a03806bb6ebb08d4a345daba9fd5bbc145cdb1a"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
-    revision: "fb94b862a75e2487b5e7f4f7352aaadbca930143"
+    revision: "cbfbcbee436650ade89f87060bd7608d50549653"
 )
 
 // Swift 6.3 selects coordinated WASI forks. The Certificates fork resolves the
