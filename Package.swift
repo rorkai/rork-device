@@ -26,28 +26,16 @@ var products: [Product] = [
     ),
 ]
 
-// Swift 6.3 selects the WASI-capable forks used by RorkDeviceWeb. Earlier
-// toolchains retain the native package's Swift 6.0 compatibility by resolving
-// the last upstream releases whose manifests support that toolchain.
-#if compiler(>=6.3)
+// Coordinated revisions keep native Windows and WASI support on one package
+// graph.
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio.git",
-    exact: "2.100.0-rork.1"
+    revision: "1e3d2e6220796c7fd7450d86d3765bfd9505bdab"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
-    exact: "2.37.1-rork.1"
+    revision: "fb94b862a75e2487b5e7f4f7352aaadbca930143"
 )
-#else
-let swiftNIO: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-nio.git",
-    exact: "2.100.0-rork.1"
-)
-let swiftNIOSSL: Package.Dependency = .package(
-    url: "https://github.com/rorkai/swift-nio-ssl.git",
-    revision: "51727c0de5bb3bdc72d2de88439bdf8d941fcc9b"
-)
-#endif
 
 // Swift 6.3 selects coordinated WASI forks. The Certificates fork resolves the
 // same Crypto revision directly, which keeps the combined web package graph
