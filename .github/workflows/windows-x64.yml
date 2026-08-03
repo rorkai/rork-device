@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SWIFT_VERSION: 6.3.3
-  SWIFT_INSTALLER_URL: https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe
-  SWIFT_INSTALLER_SHA256: 235626548F249CD516D3D4D90EEE980DCCAD46F3822DAC1F8E3119B0FEDE94B7
+  SWIFT_VERSION: 6.2.4
+  SWIFT_INSTALLER_URL: https://download.swift.org/swift-6.2.4-release/windows10/swift-6.2.4-RELEASE/swift-6.2.4-RELEASE-windows10.exe
+  SWIFT_INSTALLER_SHA256: 222501D4A0EF6EC3B2F08B3E0055140BB3A5136527542239BB925F979689F4AD
 
 jobs:
   build-test:
