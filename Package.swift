@@ -34,7 +34,7 @@ let swiftNIO: Package.Dependency = .package(
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
-    revision: "cbfbcbee436650ade89f87060bd7608d50549653"
+    revision: "f9b84ed881ecce6ce17db76a2e7f056742aeb920"
 )
 
 // Swift 6.3 selects coordinated WASI forks. The Certificates fork resolves the

@@ -1,5 +1,5 @@
 {
-  "originHash" : "0f3c3aa75729faa9a6e42c4909243a56e51c0957ad860bb192c481921e170d27",
+  "originHash" : "0fe4621a87242046b17ca64f709a40b222c8779a7a45e92bd60e57cb49c3cc46",
   "pins" : [
     {
       "identity" : "bigint",
@@ -86,7 +86,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rorkai/swift-nio-ssl.git",
       "state" : {
-        "revision" : "cbfbcbee436650ade89f87060bd7608d50549653"
+        "revision" : "f9b84ed881ecce6ce17db76a2e7f056742aeb920"
       }
     },
     {
