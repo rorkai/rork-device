@@ -16,6 +16,7 @@ final class NIOTestServer: @unchecked Sendable {
             @escaping @Sendable (Channel) -> EventLoopFuture<Void>
     ) throws {
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        var startedChannel: Channel?
         do {
             let channel = try ServerBootstrap(group: eventLoopGroup)
                 .serverChannelOption(
@@ -25,12 +26,11 @@ final class NIOTestServer: @unchecked Sendable {
                 .childChannelInitializer(channelInitializer)
                 .bind(host: "127.0.0.1", port: 0)
                 .wait()
+            startedChannel = channel
             guard
                 let boundPort = channel.localAddress?.port,
                 let port = UInt16(exactly: boundPort)
             else {
-                try channel.close().wait()
-                try eventLoopGroup.syncShutdownGracefully()
                 throw RorkDeviceError.transport(
                     "Test server did not receive a valid local port."
                 )
@@ -39,13 +39,10 @@ final class NIOTestServer: @unchecked Sendable {
             self.channel = channel
             self.port = port
         } catch {
+            try? startedChannel?.close().wait()
             try? eventLoopGroup.syncShutdownGracefully()
             throw error
         }
-    }
-
-    deinit {
-        stop()
     }
 
     func stop() {

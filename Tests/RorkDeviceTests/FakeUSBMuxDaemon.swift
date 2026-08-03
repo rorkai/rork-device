@@ -6,8 +6,8 @@ import NIOCore
 /// Thread-safe socket daemon used to exercise usbmux and Lockdown workflows.
 ///
 /// Each accepted channel owns its protocol state. Immutable fixtures never
-/// change after initialization, while the lock protects lifecycle flags and
-/// recorded requests shared with test assertions.
+/// change after initialization, while the lock protects the server, lifecycle
+/// flags, and recorded requests shared with test assertions.
 final class FakeUSBMuxDaemon: @unchecked Sendable {
     private var server: NIOTestServer?
     private let secureLockdown: Bool
@@ -66,7 +66,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     private var _pairingAttemptCount = 0
 
     var port: UInt16 {
-        server?.port ?? 0
+        lock.withLock { server?.port ?? 0 }
     }
 
     var connectedPorts: [UInt16] {
@@ -219,14 +219,16 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock()
-        let shouldStop = !stopped
-        stopped = true
-        lock.unlock()
-        if shouldStop {
-            server?.stop()
-            server = nil
+        let serverToStop: NIOTestServer? = lock.withLock {
+            guard !stopped else {
+                return nil
+            }
+            stopped = true
+            let server = self.server
+            self.server = nil
+            return server
         }
+        serverToStop?.stop()
     }
 
     private func recordListenConnectionOpen() {

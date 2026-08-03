@@ -17,7 +17,7 @@ final class DirectLockdownTransportTests: XCTestCase {
 
         let connection = try await transport.connect(to: requestedPort)
         connection.close()
-        await server.waitUntilAccepted()
+        try await server.waitUntilAccepted()
 
         XCTAssertTrue(server.acceptedConnection)
     }
@@ -68,8 +68,8 @@ private final class OneShotTCPServer: @unchecked Sendable {
         server.stop()
     }
 
-    func waitUntilAccepted() async {
-        await recorder.waitUntilAccepted()
+    func waitUntilAccepted() async throws {
+        try await recorder.waitUntilAccepted()
     }
 }
 
@@ -78,39 +78,27 @@ private final class ConnectionAcceptanceRecorder:
 {
     private let lock = NSLock()
     private var accepted = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     var acceptedConnection: Bool {
         lock.withLock { accepted }
     }
 
     func recordConnection() {
-        let waiters = lock.withLock {
+        lock.withLock {
             accepted = true
-            let waiters = self.waiters
-            self.waiters.removeAll()
-            return waiters
-        }
-        for waiter in waiters {
-            waiter.resume()
         }
     }
 
-    func waitUntilAccepted() async {
-        if lock.withLock({ accepted }) {
-            return
-        }
-        await withCheckedContinuation { continuation in
-            let resumeImmediately = lock.withLock {
-                if accepted {
-                    return true
-                }
-                waiters.append(continuation)
-                return false
+    func waitUntilAccepted() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !lock.withLock({ accepted }) {
+            if clock.now >= deadline {
+                throw RorkDeviceError.transport(
+                    "Timed out waiting for the test server to accept a connection."
+                )
             }
-            if resumeImmediately {
-                continuation.resume()
-            }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 }

@@ -16,7 +16,6 @@ concurrency:
 
 env:
   SWIFT_VERSION: 6.3.3
-  RORKDEVICE_VERSION: 0.9.28
   SWIFT_INSTALLER_URL: https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe
   SWIFT_INSTALLER_SHA256: 235626548F249CD516D3D4D90EEE980DCCAD46F3822DAC1F8E3119B0FEDE94B7
 
@@ -27,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Install Swift
         shell: pwsh
@@ -157,9 +158,19 @@ jobs:
           if (-not (Test-Path $executable)) {
             throw "Release executable was not found at $executable."
           }
+          $versionSource = Get-Content `
+            "Sources/RorkDevice/Public/RorkDevice.swift" `
+            -Raw
+          $versionMatch = [Regex]::Match(
+            $versionSource,
+            'public static let version = "([^"]+)"'
+          )
+          if (-not $versionMatch.Success) {
+            throw "The package version could not be read."
+          }
           $version = (& $executable --version).Trim()
-          if ($version -ne $env:RORKDEVICE_VERSION) {
-            throw "Expected rorkdevice $env:RORKDEVICE_VERSION but received $version."
+          if ($version -ne $versionMatch.Groups[1].Value) {
+            throw "The executable version does not match the package version."
           }
           & $executable --help
           if ($LASTEXITCODE -ne 0) {
@@ -171,6 +182,7 @@ jobs:
       - name: Inspect runtime requirements
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $inspection = Join-Path $env:RUNNER_TEMP "windows-x64-inspection"
           New-Item -ItemType Directory -Path $inspection | Out-Null
           Copy-Item $env:RORKDEVICE_EXE $inspection

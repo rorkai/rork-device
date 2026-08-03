@@ -446,6 +446,24 @@ private final class ScriptedServerHandler:
         }
         started = true
         let channel = context.channel
+        let closeDelayMicros = self.closeDelayMicros
+        let scheduleClose: @Sendable () -> Void = {
+            if closeDelayMicros > 0 {
+                channel.eventLoop.scheduleTask(
+                    in: .microseconds(closeDelayMicros)
+                ) {
+                    channel.close(promise: nil)
+                }
+            } else {
+                channel.close(promise: nil)
+            }
+        }
+        guard !chunks.isEmpty else {
+            scheduleClose()
+            return
+        }
+
+        let lastChunkIndex = chunks.index(before: chunks.endIndex)
         var delay: Int64 = 0
         for (index, chunk) in chunks.enumerated() {
             if index > 0 {
@@ -461,17 +479,24 @@ private final class ScriptedServerHandler:
                     capacity: chunk.count
                 )
                 buffer.writeBytes(chunk)
-                channel.writeAndFlush(
-                    buffer,
-                    promise: nil
-                )
+                if index == lastChunkIndex {
+                    let writePromise = channel.eventLoop.makePromise(
+                        of: Void.self
+                    )
+                    writePromise.futureResult.whenComplete { _ in
+                        scheduleClose()
+                    }
+                    channel.writeAndFlush(
+                        buffer,
+                        promise: writePromise
+                    )
+                } else {
+                    channel.writeAndFlush(
+                        buffer,
+                        promise: nil
+                    )
+                }
             }
-        }
-
-        context.eventLoop.scheduleTask(
-            in: .microseconds(delay + closeDelayMicros)
-        ) {
-            channel.close(promise: nil)
         }
     }
 
