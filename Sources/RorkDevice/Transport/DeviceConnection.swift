@@ -20,9 +20,10 @@ public protocol DeviceConnection: AnyObject {
 
     /// Initiates closure of the connection.
     ///
-    /// Calling this method more than once must be safe. Implementations backed
-    /// by asynchronous transports may finish releasing their underlying
-    /// resources after this method returns.
+    /// Calling this method more than once must be safe, including while another
+    /// task is blocked in `send` or `receive`. Closing must finish or fail
+    /// pending operations. Implementations backed by asynchronous transports may
+    /// finish releasing their underlying resources after this method returns.
     func close()
 }
 

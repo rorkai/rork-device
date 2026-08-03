@@ -20,6 +20,25 @@ private func usesUSBRoute(_ device: Device) -> Bool {
         .caseInsensitiveCompare("USB") == .orderedSame
 }
 
+/**
+ * Closes one connection from a watchdog task without widening the connection
+ * protocol's concurrency contract.
+ *
+ * Device connections guarantee that close is idempotent and may interrupt a
+ * read from another task. No other operation crosses the task boundary.
+ */
+private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
+    private let connection: any DeviceConnection
+
+    init(connection: any DeviceConnection) {
+        self.connection = connection
+    }
+
+    func close() {
+        self.connection.close()
+    }
+}
+
 /// High-level entry point for device discovery and service sessions.
 ///
 /// `DeviceClient` supports two connection routes:
@@ -468,13 +487,14 @@ public final class DeviceClient {
             connection.close()
         }
         // A wedged device could accept the connection yet never answer the read.
-        // Closing the connection fails a stalled read — which the protocol allows
-        // from another task and makes idempotent — so a watchdog bounds the wait
-        // instead of hanging the caller. The read completing first cancels it.
-        nonisolated(unsafe) let readable = connection
+        // Closing from another task safely interrupts a stalled read, so a
+        // watchdog bounds the wait. The read completing first cancels it.
+        let watchdogCloser = DeviceConnectionWatchdogCloser(
+            connection: connection
+        )
         let watchdog = Task {
             try? await Task.sleep(for: readTimeout)
-            readable.close()
+            watchdogCloser.close()
         }
         defer {
             watchdog.cancel()
