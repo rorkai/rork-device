@@ -40,8 +40,8 @@ let swiftNIOSSL: Package.Dependency = .package(
 )
 #else
 let swiftNIO: Package.Dependency = .package(
-    url: "https://github.com/apple/swift-nio.git",
-    exact: "2.101.3"
+    url: "https://github.com/rorkai/swift-nio.git",
+    exact: "2.100.0-rork.1"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
