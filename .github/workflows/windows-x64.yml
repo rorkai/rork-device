@@ -142,9 +142,9 @@ jobs:
           }
           $versionOutput
 
-      - name: Build release executable
+      - name: Build release-layout executable
         shell: pwsh
-        run: swift build --configuration release --product rorkdevice
+        run: swift build --configuration release --product rorkdevice -Xswiftc -Onone
 
       - name: Run tests
         shell: pwsh
