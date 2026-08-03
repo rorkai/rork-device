@@ -508,8 +508,34 @@ public enum USBMuxEndpoint: Equatable, Sendable {
     /// TCP endpoint for a forwarded or embedded usbmux-compatible peer.
     case tcp(host: String, port: UInt16)
 
-    /// Standard platform endpoint used by Apple-host tooling.
-    public static let `default` = USBMuxEndpoint.unixSocket(path: "/var/run/usbmuxd")
+    /// Standard endpoint for the current host platform.
+    public static let `default` = USBMuxEndpoint.default(
+        for: USBMuxEndpointPlatform.current
+    )
+
+    static func `default`(
+        for platform: USBMuxEndpointPlatform
+    ) -> USBMuxEndpoint {
+        switch platform {
+        case .windows:
+            .tcp(host: "127.0.0.1", port: 27_015)
+        case .posix:
+            .unixSocket(path: "/var/run/usbmuxd")
+        }
+    }
+}
+
+enum USBMuxEndpointPlatform {
+    case windows
+    case posix
+
+    static var current: USBMuxEndpointPlatform {
+        #if os(Windows)
+        .windows
+        #else
+        .posix
+        #endif
+    }
 }
 
 /// `DeviceTransport` implementation backed by usbmux forwarding.

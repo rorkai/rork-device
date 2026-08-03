@@ -1,22 +1,15 @@
 import Foundation
+import NIOCore
 
 @testable import RorkDevice
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
-
 /// Thread-safe socket daemon used to exercise usbmux and Lockdown workflows.
 ///
-/// Detached accept and client threads share this instance. Immutable protocol
-/// fixtures never change after initialization, while the lock protects every
-/// lifecycle flag and recorded request exposed to test assertions.
+/// Each accepted channel owns its protocol state. Immutable fixtures never
+/// change after initialization, while the lock protects lifecycle flags and
+/// recorded requests shared with test assertions.
 final class FakeUSBMuxDaemon: @unchecked Sendable {
-    let port: UInt16
-
-    private let serverFD: Int32
+    private var server: NIOTestServer?
     private let secureLockdown: Bool
     private let secureServices: Set<String>
     private let devices: [USBMuxDevice]
@@ -71,6 +64,10 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     private var _unpairedHostIdentifier: String?
     private var pairingResponses: [[String: Any]]
     private var _pairingAttemptCount = 0
+
+    var port: UInt16 {
+        server?.port ?? 0
+    }
 
     var connectedPorts: [UInt16] {
         lock.lock()
@@ -207,53 +204,13 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         self.pairingResponses = pairingResponses
         self.unpairingResponse = unpairingResponse
         self.keepListenOpenAfterEvents = keepListenOpenAfterEvents
-        let fd = socket(AF_INET, testStreamSocketType, 0)
-        guard fd >= 0 else {
-            throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
-        }
-
-        var reuse: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var address = sockaddr_in()
-        #if canImport(Darwin)
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = 0
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-        let bindResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        server = try NIOTestServer { [weak self] channel in
+            guard let self else {
+                return channel.eventLoop.makeSucceededVoidFuture()
             }
-        }
-        guard bindResult == 0 else {
-            close(fd)
-            throw RorkDeviceError.transport("bind failed: \(String(cString: strerror(errno)))")
-        }
-        guard listen(fd, 16) == 0 else {
-            close(fd)
-            throw RorkDeviceError.transport("listen failed: \(String(cString: strerror(errno)))")
-        }
-
-        var boundAddress = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(fd, $0, &length)
-            }
-        }
-        guard nameResult == 0 else {
-            close(fd)
-            throw RorkDeviceError.transport(
-                "getsockname failed: \(String(cString: strerror(errno)))")
-        }
-        serverFD = fd
-        port = UInt16(bigEndian: boundAddress.sin_port)
-
-        Thread.detachNewThread { [weak self] in
-            self?.acceptLoop()
+            return channel.pipeline.addHandler(
+                ClientHandler(daemon: self)
+            )
         }
     }
 
@@ -267,26 +224,9 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         stopped = true
         lock.unlock()
         if shouldStop {
-            close(serverFD)
+            server?.stop()
+            server = nil
         }
-    }
-
-    private func acceptLoop() {
-        while !isStopped {
-            let clientFD = accept(serverFD, nil, nil)
-            if clientFD < 0 {
-                continue
-            }
-            Thread.detachNewThread { [weak self] in
-                self?.handleClient(clientFD)
-            }
-        }
-    }
-
-    private var isStopped: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
     }
 
     private func recordListenConnectionOpen() {
@@ -301,141 +241,243 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Blocks until the peer closes a held-open Listen connection.
-    private func waitForListenPeerClose(_ fd: Int32) {
-        var byte = UInt8(0)
-        while true {
-            let readCount = recv(fd, &byte, 1, 0)
-            if readCount <= 0 {
-                recordListenPeerClosed()
-                return
-            }
-        }
-    }
+    private final class ClientHandler:
+        ChannelInboundHandler,
+        @unchecked Sendable
+    {
+        typealias InboundIn = ByteBuffer
+        typealias OutboundOut = ByteBuffer
 
-    private func handleClient(_ fd: Int32) {
-        #if canImport(Darwin)
-        var noSIGPIPE: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
-        #endif
-        defer { close(fd) }
-        guard let request = readUSBMuxRequest(fd) else {
-            return
+        private enum State {
+            case usbmux
+            case listen
+            case lockdown
+            case afc
+            case installationProxy
+            case misagent
+            case heartbeat
+            case houseArrest
+            case closed
         }
 
-        switch request.dictionary["MessageType"] as? String {
-        case "ListDevices":
-            let deviceList: [[String: Any]] = devices.map { device in
-                var properties = device.properties
-                properties["SerialNumber"] = device.serialNumber
-                return [
-                    "DeviceID": device.deviceID,
-                    "Properties": properties,
-                ]
+        private let daemon: FakeUSBMuxDaemon
+        private var state = State.usbmux
+        private var inbound = ByteBuffer()
+
+        init(daemon: FakeUSBMuxDaemon) {
+            self.daemon = daemon
+        }
+
+        func channelRead(
+            context: ChannelHandlerContext,
+            data: NIOAny
+        ) {
+            var bytes = unwrapInboundIn(data)
+            inbound.writeBuffer(&bytes)
+            while processNextMessage(context: context) {}
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            if state == .listen {
+                daemon.recordListenPeerClosed()
             }
-            sendUSBMuxResponse(
-                [
-                    "DeviceList": deviceList
-                ], tag: request.packet.tag, to: fd)
-        case "Listen":
-            recordListenConnectionOpen()
-            sendUSBMuxResponse(listenResponse, tag: request.packet.tag, to: fd)
-            for event in deviceEvents {
-                sendUSBMuxEvent(event, to: fd)
+            context.fireChannelInactive()
+        }
+
+        func errorCaught(
+            context: ChannelHandlerContext,
+            error _: Error
+        ) {
+            state = .closed
+            context.close(promise: nil)
+        }
+
+        private func processNextMessage(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            switch state {
+            case .usbmux:
+                return processUSBMuxRequest(context: context)
+            case .lockdown:
+                return processLockdownRequest(context: context)
+            case .afc:
+                return processAFCRequest(context: context)
+            case .installationProxy:
+                return processInstallationProxyRequest(context: context)
+            case .misagent:
+                return processMISAgentRequest(context: context)
+            case .heartbeat:
+                return processHeartbeatRequest(context: context)
+            case .houseArrest:
+                return processHouseArrestRequest(context: context)
+            case .listen, .closed:
+                return false
             }
-            if keepListenOpenAfterEvents {
-                waitForListenPeerClose(fd)
+        }
+
+        private func processUSBMuxRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard let request = readUSBMuxRequest() else {
+                return false
             }
-        case "ReadPairRecord":
-            guard let pairingRecordData else {
+
+            switch request.dictionary["MessageType"] as? String {
+            case "ListDevices":
+                let deviceList: [[String: Any]] = daemon.devices.map {
+                    device in
+                    var properties = device.properties
+                    properties["SerialNumber"] = device.serialNumber
+                    return [
+                        "DeviceID": device.deviceID,
+                        "Properties": properties,
+                    ]
+                }
                 sendUSBMuxResponse(
-                    ["Number": 2],
+                    ["DeviceList": deviceList],
                     tag: request.packet.tag,
-                    to: fd
+                    context: context
                 )
-                return
-            }
-            var response: [String: Any] = [
-                "PairRecordData": pairingRecordData
-            ]
-            if let pairingRecordStatus {
-                response["Number"] = pairingRecordStatus
-            }
-            sendUSBMuxResponse(response, tag: request.packet.tag, to: fd)
-        case "ReadBUID":
-            sendUSBMuxResponse(
-                ["BUID": systemBUID],
-                tag: request.packet.tag,
-                to: fd
-            )
-        case "SavePairRecord":
-            if let identifier = request.dictionary["PairRecordID"] as? String,
-                let data = request.dictionary["PairRecordData"] as? Data
-            {
-                recordSavedPairingRecord(
-                    identifier: identifier,
-                    data: data,
-                    deviceID: request.dictionary.uint32("DeviceID")
+            case "Listen":
+                daemon.recordListenConnectionOpen()
+                sendUSBMuxResponse(
+                    daemon.listenResponse,
+                    tag: request.packet.tag,
+                    context: context
                 )
-            }
-            sendUSBMuxResponse(
-                ["Number": savePairingRecordStatus],
-                tag: request.packet.tag,
-                to: fd
-            )
-        case "DeletePairRecord":
-            if let identifier = request.dictionary["PairRecordID"] as? String {
-                recordRemovedPairingRecord(identifier: identifier)
-            }
-            sendUSBMuxResponse(
-                ["Number": removePairingRecordStatus],
-                tag: request.packet.tag,
-                to: fd
-            )
-        case "Connect":
-            let port = normalizedPort(from: request.dictionary["PortNumber"])
-            recordConnectedPort(port)
-            sendUSBMuxResponse(["Number": 0], tag: request.packet.tag, to: fd)
-            switch port {
-            case 62078:
-                handleLockdown(fd)
-            case 1234:
-                handleAFC(fd)
-            case 2345:
-                handleInstallationProxy(fd)
-            case 3456:
-                handleMISAgent(fd)
-            case 4567:
-                handleHeartbeat(fd)
-            case 5678:
-                handleHouseArrest(fd)
+                for event in daemon.deviceEvents {
+                    sendUSBMuxEvent(event, context: context)
+                }
+                if daemon.keepListenOpenAfterEvents {
+                    state = .listen
+                } else {
+                    close(context: context)
+                }
+            case "ReadPairRecord":
+                guard let pairingRecordData = daemon.pairingRecordData
+                else {
+                    sendUSBMuxResponse(
+                        ["Number": 2],
+                        tag: request.packet.tag,
+                        context: context
+                    )
+                    return true
+                }
+                var response: [String: Any] = [
+                    "PairRecordData": pairingRecordData
+                ]
+                if let pairingRecordStatus = daemon.pairingRecordStatus {
+                    response["Number"] = pairingRecordStatus
+                }
+                sendUSBMuxResponse(
+                    response,
+                    tag: request.packet.tag,
+                    context: context
+                )
+            case "ReadBUID":
+                sendUSBMuxResponse(
+                    ["BUID": daemon.systemBUID],
+                    tag: request.packet.tag,
+                    context: context
+                )
+            case "SavePairRecord":
+                if
+                    let identifier =
+                        request.dictionary["PairRecordID"] as? String,
+                    let data =
+                        request.dictionary["PairRecordData"] as? Data
+                {
+                    daemon.recordSavedPairingRecord(
+                        identifier: identifier,
+                        data: data,
+                        deviceID:
+                            request.dictionary.uint32("DeviceID")
+                    )
+                }
+                sendUSBMuxResponse(
+                    ["Number": daemon.savePairingRecordStatus],
+                    tag: request.packet.tag,
+                    context: context
+                )
+            case "DeletePairRecord":
+                if
+                    let identifier =
+                        request.dictionary["PairRecordID"] as? String
+                {
+                    daemon.recordRemovedPairingRecord(
+                        identifier: identifier
+                    )
+                }
+                sendUSBMuxResponse(
+                    ["Number": daemon.removePairingRecordStatus],
+                    tag: request.packet.tag,
+                    context: context
+                )
+            case "Connect":
+                let port = daemon.normalizedPort(
+                    from: request.dictionary["PortNumber"]
+                )
+                daemon.recordConnectedPort(port)
+                sendUSBMuxResponse(
+                    ["Number": 0],
+                    tag: request.packet.tag,
+                    context: context
+                )
+                switch port {
+                case 62_078:
+                    state = .lockdown
+                case 1_234:
+                    state = .afc
+                case 2_345:
+                    state = .installationProxy
+                case 3_456:
+                    state = .misagent
+                case 4_567:
+                    state = .heartbeat
+                    sendPlistMessage(
+                        ["Interval": 2],
+                        context: context
+                    )
+                case 5_678:
+                    state = .houseArrest
+                default:
+                    close(context: context)
+                }
             default:
-                return
+                sendUSBMuxResponse(
+                    ["Number": 1],
+                    tag: request.packet.tag,
+                    context: context
+                )
             }
-        default:
-            sendUSBMuxResponse(["Number": 1], tag: request.packet.tag, to: fd)
+            return true
         }
-    }
 
-    private func handleLockdown(_ fd: Int32) {
-        while let request = readPlistMessage(fd) {
+        private func processLockdownRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard let request = readPlistMessage() else {
+                return false
+            }
             switch request["Request"] as? String {
             case "StartSession":
                 sendPlistMessage(
                     [
                         "Result": "Success",
                         "SessionID": "fake-session",
-                        "EnableSessionSSL": secureLockdown,
-                    ], to: fd)
+                        "EnableSessionSSL": daemon.secureLockdown,
+                    ],
+                    context: context
+                )
             case "GetValue":
                 let value: Any
                 switch request["Key"] as? String {
                 case "UniqueDeviceID":
                     value = "fake-device-1"
                 case "DevicePublicKey":
-                    value = devicePublicKey
+                    value = daemon.devicePublicKey
                 case "WiFiAddress":
-                    value = wiFiMACAddress
+                    value = daemon.wiFiMACAddress
                 default:
                     value = [
                         "UniqueDeviceID": "fake-device-1",
@@ -449,179 +491,372 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                     [
                         "Result": "Success",
                         "Value": value,
-                    ], to: fd)
+                    ],
+                    context: context
+                )
             case "Pair":
-                sendPlistMessage(nextPairingResponse(), to: fd)
+                sendPlistMessage(
+                    daemon.nextPairingResponse(),
+                    context: context
+                )
             case "Unpair":
-                if let pairRecord = request["PairRecord"] as? [String: Any],
-                    let hostIdentifier = pairRecord["HostID"] as? String
+                if
+                    let pairRecord =
+                        request["PairRecord"] as? [String: Any],
+                    let hostIdentifier =
+                        pairRecord["HostID"] as? String
                 {
-                    recordUnpairedHostIdentifier(hostIdentifier)
+                    daemon.recordUnpairedHostIdentifier(
+                        hostIdentifier
+                    )
                 }
-                sendPlistMessage(unpairingResponse, to: fd)
+                sendPlistMessage(
+                    daemon.unpairingResponse,
+                    context: context
+                )
             case "StartService":
                 let service = request["Service"] as? String ?? ""
                 if request["EscrowBag"] is Data {
-                    recordServiceStartedWithEscrow(service)
+                    daemon.recordServiceStartedWithEscrow(service)
                 }
                 let port: Int
                 switch service {
                 case LockdownServiceName.afc.rawValue:
-                    port = 1234
+                    port = 1_234
                 case LockdownServiceName.installationProxy.rawValue:
-                    port = 2345
+                    port = 2_345
                 case LockdownServiceName.misagent.rawValue:
-                    port = 3456
+                    port = 3_456
                 case LockdownServiceName.heartbeat.rawValue:
-                    port = 4567
+                    port = 4_567
                 case LockdownServiceName.houseArrest.rawValue:
-                    port = 5678
+                    port = 5_678
                 default:
-                    sendPlistMessage(["Result": "Failure", "Error": "UnknownService"], to: fd)
-                    continue
+                    sendPlistMessage(
+                        [
+                            "Result": "Failure",
+                            "Error": "UnknownService",
+                        ],
+                        context: context
+                    )
+                    return true
                 }
                 sendPlistMessage(
                     [
                         "Result": "Success",
                         "Port": port,
-                        "EnableServiceSSL": secureServices.contains(service),
-                    ], to: fd)
+                        "EnableServiceSSL":
+                            daemon.secureServices.contains(service),
+                    ],
+                    context: context
+                )
             default:
-                sendPlistMessage(["Result": "Failure", "Error": "UnhandledRequest"], to: fd)
+                sendPlistMessage(
+                    [
+                        "Result": "Failure",
+                        "Error": "UnhandledRequest",
+                    ],
+                    context: context
+                )
             }
+            return true
         }
-    }
 
-    private func handleAFC(_ fd: Int32) {
-        while let packet = readAFCPacket(fd) {
-            recordAFCOperation(packet.operation)
+        private func processAFCRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard let packet = readAFCPacket() else {
+                return false
+            }
+            daemon.recordAFCOperation(packet.operation)
             switch packet.operation {
             case 13:
-                sendAll(
-                    fakeAFCFileOpenResponse(packetNumber: packet.packetNumber, handle: 99), to: fd)
+                send(
+                    fakeAFCFileOpenResponse(
+                        packetNumber: packet.packetNumber,
+                        handle: 99
+                    ),
+                    context: context
+                )
             case 20:
-                sendAll(fakeAFCStatusResponse(packetNumber: packet.packetNumber, status: 0), to: fd)
-                return
+                send(
+                    fakeAFCStatusResponse(
+                        packetNumber: packet.packetNumber,
+                        status: 0
+                    ),
+                    context: context
+                )
+                close(context: context)
             default:
-                sendAll(fakeAFCStatusResponse(packetNumber: packet.packetNumber, status: 0), to: fd)
+                send(
+                    fakeAFCStatusResponse(
+                        packetNumber: packet.packetNumber,
+                        status: 0
+                    ),
+                    context: context
+                )
             }
+            return true
         }
-    }
 
-    private func handleInstallationProxy(_ fd: Int32) {
-        guard let request = readPlistMessage(fd) else {
-            return
-        }
-        if let packagePath = request["PackagePath"] as? String {
-            recordInstalledPackage(packagePath)
-        }
-        sendPlistMessage(["Status": "Installing", "PercentComplete": 50], to: fd)
-        sendPlistMessage(["Status": "Complete"], to: fd)
-    }
-
-    private func handleMISAgent(_ fd: Int32) {
-        guard let request = readPlistMessage(fd) else {
-            return
-        }
-        let messageType = request["MessageType"] as? String ?? ""
-        recordMISAgentMessageType(messageType)
-        if messageType == "CopyAll" || messageType == "Copy" {
+        private func processInstallationProxyRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard let request = readPlistMessage() else {
+                return false
+            }
+            if let packagePath = request["PackagePath"] as? String {
+                daemon.recordInstalledPackage(packagePath)
+            }
             sendPlistMessage(
-                [
-                    "Status": 0,
-                    "Payload": [Data([9, 9, 9])],
-                ], to: fd)
-        } else {
-            sendPlistMessage(["Status": 0], to: fd)
+                ["Status": "Installing", "PercentComplete": 50],
+                context: context
+            )
+            sendPlistMessage(
+                ["Status": "Complete"],
+                context: context
+            )
+            close(context: context)
+            return true
         }
-    }
 
-    private func handleHeartbeat(_ fd: Int32) {
-        sendPlistMessage(["Interval": 2], to: fd)
-        guard let request = readPlistMessage(fd),
-            let command = request["Command"] as? String
-        else {
-            return
-        }
-        recordHeartbeatReply(command)
-    }
-
-    private func handleHouseArrest(_ fd: Int32) {
-        guard let request = readPlistMessage(fd),
-            let command = request["Command"] as? String,
-            let identifier = request["Identifier"] as? String
-        else {
-            return
-        }
-        recordHouseArrestRequest(command: command, identifier: identifier)
-        sendPlistMessage(["Status": "Complete"], to: fd)
-        handleAFC(fd)
-    }
-
-    private func readUSBMuxRequest(_ fd: Int32) -> (
-        packet: USBMuxPacket, dictionary: [String: Any]
-    )? {
-        guard let header = readExact(fd, count: USBMuxPacket.headerLength),
-            let length = try? Int(header.littleEndianInteger(at: 0, as: UInt32.self)),
-            length >= USBMuxPacket.headerLength,
-            let payload = readExact(fd, count: length - USBMuxPacket.headerLength),
-            let packet = try? USBMuxPacket.decode(header: header, payload: payload),
-            let dictionary = try? PropertyListCodec.decode(packet.payload) as? [String: Any]
-        else {
-            return nil
-        }
-        return (packet, dictionary)
-    }
-
-    private func readPlistMessage(_ fd: Int32) -> [String: Any]? {
-        guard let lengthData = readExact(fd, count: 4),
-            let length = try? Int(lengthData.bigEndianInteger(at: 0, as: UInt32.self)),
-            let payload = readExact(fd, count: length)
-        else {
-            return nil
-        }
-        return try? PropertyListCodec.decode(payload) as? [String: Any]
-    }
-
-    private func sendUSBMuxResponse(_ dictionary: [String: Any], tag: UInt32, to fd: Int32) {
-        guard let payload = try? PropertyListCodec.encode(dictionary),
-            let packet = try? USBMuxPacket(tag: tag, payload: payload).encoded()
-        else {
-            return
-        }
-        sendAll(packet, to: fd)
-    }
-
-    private func sendUSBMuxEvent(_ event: USBMuxDeviceEvent, to fd: Int32) {
-        let dictionary: [String: Any]
-        switch event {
-        case .attached(let device):
-            dictionary = [
-                "MessageType": "Attached",
-                "DeviceID": device.deviceID,
-                "Properties": [
-                    "SerialNumber": device.serialNumber,
-                    "ConnectionType": device.properties["ConnectionType"] ?? "USB",
-                ],
-            ]
-        case .detached(let deviceID, let serialNumber):
-            var detached: [String: Any] = [
-                "MessageType": "Detached",
-                "DeviceID": deviceID,
-            ]
-            if let serialNumber {
-                detached["SerialNumber"] = serialNumber
+        private func processMISAgentRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard let request = readPlistMessage() else {
+                return false
             }
-            dictionary = detached
+            let messageType =
+                request["MessageType"] as? String ?? ""
+            daemon.recordMISAgentMessageType(messageType)
+            if messageType == "CopyAll" || messageType == "Copy" {
+                sendPlistMessage(
+                    [
+                        "Status": 0,
+                        "Payload": [Data([9, 9, 9])],
+                    ],
+                    context: context
+                )
+            } else {
+                sendPlistMessage(
+                    ["Status": 0],
+                    context: context
+                )
+            }
+            close(context: context)
+            return true
         }
-        sendUSBMuxResponse(dictionary, tag: 0, to: fd)
-    }
 
-    private func sendPlistMessage(_ dictionary: [String: Any], to fd: Int32) {
-        guard let message = try? PropertyListMessageFramer.encode(dictionary) else {
-            return
+        private func processHeartbeatRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard
+                let request = readPlistMessage(),
+                let command = request["Command"] as? String
+            else {
+                return false
+            }
+            daemon.recordHeartbeatReply(command)
+            close(context: context)
+            return true
         }
-        sendAll(message, to: fd)
+
+        private func processHouseArrestRequest(
+            context: ChannelHandlerContext
+        ) -> Bool {
+            guard
+                let request = readPlistMessage(),
+                let command = request["Command"] as? String,
+                let identifier = request["Identifier"] as? String
+            else {
+                return false
+            }
+            daemon.recordHouseArrestRequest(
+                command: command,
+                identifier: identifier
+            )
+            sendPlistMessage(
+                ["Status": "Complete"],
+                context: context
+            )
+            state = .afc
+            return true
+        }
+
+        private func readUSBMuxRequest() -> (
+            packet: USBMuxPacket,
+            dictionary: [String: Any]
+        )? {
+            guard
+                inbound.readableBytes >= USBMuxPacket.headerLength,
+                let rawLength = inbound.getInteger(
+                    at: inbound.readerIndex,
+                    endianness: .little,
+                    as: UInt32.self
+                ),
+                let length = Int(exactly: rawLength),
+                length >= USBMuxPacket.headerLength,
+                inbound.readableBytes >= length,
+                let headerBytes = inbound.readBytes(
+                    length: USBMuxPacket.headerLength
+                ),
+                let payloadBytes = inbound.readBytes(
+                    length: length - USBMuxPacket.headerLength
+                ),
+                let packet = try? USBMuxPacket.decode(
+                    header: Data(headerBytes),
+                    payload: Data(payloadBytes)
+                ),
+                let dictionary = try? PropertyListCodec.decode(
+                    packet.payload
+                ) as? [String: Any]
+            else {
+                return nil
+            }
+            return (packet, dictionary)
+        }
+
+        private func readPlistMessage() -> [String: Any]? {
+            guard
+                inbound.readableBytes >= 4,
+                let rawLength = inbound.getInteger(
+                    at: inbound.readerIndex,
+                    endianness: .big,
+                    as: UInt32.self
+                ),
+                let length = Int(exactly: rawLength),
+                inbound.readableBytes >= length + 4
+            else {
+                return nil
+            }
+            inbound.moveReaderIndex(forwardBy: 4)
+            guard
+                let payload = inbound.readBytes(length: length)
+            else {
+                return nil
+            }
+            return try? PropertyListCodec.decode(
+                Data(payload)
+            ) as? [String: Any]
+        }
+
+        private func readAFCPacket() -> FakeAFCPacket? {
+            let start = inbound.readerIndex
+            guard
+                inbound.readableBytes >= 40,
+                inbound.getBytes(at: start, length: 8) ==
+                    Array("CFA6LPAA".utf8),
+                let entireLength = inbound.getInteger(
+                    at: start + 8,
+                    endianness: .little,
+                    as: UInt64.self
+                ),
+                entireLength >= 40,
+                let length = Int(exactly: entireLength),
+                inbound.readableBytes >= length,
+                let packetNumber = inbound.getInteger(
+                    at: start + 24,
+                    endianness: .little,
+                    as: UInt64.self
+                ),
+                let operation = inbound.getInteger(
+                    at: start + 32,
+                    endianness: .little,
+                    as: UInt64.self
+                )
+            else {
+                return nil
+            }
+            inbound.moveReaderIndex(forwardBy: length)
+            return FakeAFCPacket(
+                operation: operation,
+                packetNumber: packetNumber
+            )
+        }
+
+        private func sendUSBMuxResponse(
+            _ dictionary: [String: Any],
+            tag: UInt32,
+            context: ChannelHandlerContext
+        ) {
+            guard
+                let payload = try? PropertyListCodec.encode(dictionary),
+                let packet = try? USBMuxPacket(
+                    tag: tag,
+                    payload: payload
+                ).encoded()
+            else {
+                return
+            }
+            send(packet, context: context)
+        }
+
+        private func sendUSBMuxEvent(
+            _ event: USBMuxDeviceEvent,
+            context: ChannelHandlerContext
+        ) {
+            let dictionary: [String: Any]
+            switch event {
+            case .attached(let device):
+                dictionary = [
+                    "MessageType": "Attached",
+                    "DeviceID": device.deviceID,
+                    "Properties": [
+                        "SerialNumber": device.serialNumber,
+                        "ConnectionType":
+                            device.properties["ConnectionType"] ??
+                            "USB",
+                    ],
+                ]
+            case .detached(let deviceID, let serialNumber):
+                var detached: [String: Any] = [
+                    "MessageType": "Detached",
+                    "DeviceID": deviceID,
+                ]
+                if let serialNumber {
+                    detached["SerialNumber"] = serialNumber
+                }
+                dictionary = detached
+            }
+            sendUSBMuxResponse(
+                dictionary,
+                tag: 0,
+                context: context
+            )
+        }
+
+        private func sendPlistMessage(
+            _ dictionary: [String: Any],
+            context: ChannelHandlerContext
+        ) {
+            guard
+                let message = try? PropertyListMessageFramer.encode(
+                    dictionary
+                )
+            else {
+                return
+            }
+            send(message, context: context)
+        }
+
+        private func send(
+            _ data: Data,
+            context: ChannelHandlerContext
+        ) {
+            var buffer = context.channel.allocator.buffer(
+                capacity: data.count
+            )
+            buffer.writeBytes(data)
+            context.writeAndFlush(
+                wrapOutboundOut(buffer),
+                promise: nil
+            )
+        }
+
+        private func close(context: ChannelHandlerContext) {
+            state = .closed
+            context.close(promise: nil)
+        }
     }
 
     private func normalizedPort(from value: Any?) -> UInt16 {
@@ -739,67 +974,4 @@ private func fakeAFCResponse(packetNumber: UInt64, operation: UInt64, payload: D
     data.appendLittleEndian(operation)
     data.append(payload)
     return data
-}
-
-private func readAFCPacket(_ fd: Int32) -> FakeAFCPacket? {
-    guard let header = readExact(fd, count: 40),
-        header.prefix(8) == Data("CFA6LPAA".utf8),
-        let entireLength = try? header.littleEndianInteger(at: 8, as: UInt64.self),
-        entireLength >= 40
-    else {
-        return nil
-    }
-    if entireLength > 40 {
-        _ = readExact(fd, count: Int(entireLength - 40))
-    }
-    return FakeAFCPacket(
-        operation: (try? header.littleEndianInteger(at: 32, as: UInt64.self)) ?? 0,
-        packetNumber: (try? header.littleEndianInteger(at: 24, as: UInt64.self)) ?? 0
-    )
-}
-
-private func readExact(_ fd: Int32, count: Int) -> Data? {
-    var bytes = [UInt8](repeating: 0, count: count)
-    var offset = 0
-    let success = bytes.withUnsafeMutableBytes { buffer -> Bool in
-        guard let base = buffer.baseAddress else {
-            return true
-        }
-        while offset < count {
-            let result = recv(fd, base.advanced(by: offset), count - offset, 0)
-            if result <= 0 {
-                return false
-            }
-            offset += result
-        }
-        return true
-    }
-    return success ? Data(bytes) : nil
-}
-
-private func sendAll(_ data: Data, to fd: Int32) {
-    #if canImport(Glibc)
-    let sendFlags = Int32(MSG_NOSIGNAL)
-    #else
-    let sendFlags: Int32 = 0
-    #endif
-
-    data.withUnsafeBytes { buffer in
-        guard let base = buffer.baseAddress else {
-            return
-        }
-        var offset = 0
-        while offset < data.count {
-            let sent = send(
-                fd,
-                base.advanced(by: offset),
-                data.count - offset,
-                sendFlags
-            )
-            if sent <= 0 {
-                return
-            }
-            offset += sent
-        }
-    }
 }

@@ -107,6 +107,17 @@ var dependencies: [Package.Dependency] = [
 
 var targets: [Target] = [
     .target(
+        name: "RorkDevicePlatform",
+        path: "Sources/RorkDevicePlatform",
+        publicHeadersPath: "include",
+        linkerSettings: [
+            .linkedLibrary(
+                "advapi32",
+                .when(platforms: [.windows])
+            ),
+        ]
+    ),
+    .target(
         name: "RorkDeviceLwIP",
         path: "Sources/RorkDeviceLwIP",
         exclude: [
@@ -139,12 +150,19 @@ var targets: [Target] = [
         cSettings: [
             .headerSearchPath("Configuration"),
             .headerSearchPath("Vendor/lwip/src/include"),
+        ],
+        linkerSettings: [
+            .linkedLibrary(
+                "bcrypt",
+                .when(platforms: [.windows])
+            ),
         ]
     ),
     .target(
         name: "RorkDevice",
         dependencies: [
             "RorkDeviceLwIP",
+            "RorkDevicePlatform",
             .product(name: "BigInt", package: "BigInt"),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),

@@ -268,7 +268,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     )
                 }
             }
-        } catch let error as IOError where error.errnoCode == EADDRINUSE {
+        } catch let error as IOError where isAddressInUseError(error) {
             throw PortUnavailableError(host: host, port: port)
         }
 
