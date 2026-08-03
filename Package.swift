@@ -41,7 +41,7 @@ let swiftNIOSSL: Package.Dependency = .package(
 #else
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/apple/swift-nio.git",
-    "2.97.1"..<"2.98.0"
+    exact: "2.101.3"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/apple/swift-nio-ssl.git",
