@@ -1,3 +1,4 @@
+import Foundation
 import NIOCore
 import XCTest
 
@@ -26,6 +27,7 @@ final class NIOTransportRuntimeLifecycleTests: XCTestCase {
  *
  * Windows keeps native event-loop threads alive until they are explicitly
  * joined, so the test process cannot terminate while the shared runtime runs.
+ * A dedicated thread avoids asking an event loop to synchronously join itself.
  * The observer has no mutable state, so callbacks may cross test executors.
  */
 private final class NIOTransportRuntimeShutdownObserver:
@@ -34,11 +36,15 @@ private final class NIOTransportRuntimeShutdownObserver:
     @unchecked Sendable
 {
     func testBundleDidFinish(_ testBundle: Bundle) {
-        do {
-            try NIOTransportRuntime.eventLoopGroup
-                .syncShutdownGracefully()
-        } catch {
-            XCTFail("Failed to stop the shared event-loop runtime: \(error)")
+        Thread.detachNewThread {
+            do {
+                try NIOTransportRuntime.eventLoopGroup
+                    .syncShutdownGracefully()
+            } catch {
+                fatalError(
+                    "Failed to stop the shared event-loop runtime: \(error)"
+                )
+            }
         }
     }
 }
