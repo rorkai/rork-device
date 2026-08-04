@@ -169,9 +169,14 @@ final class NIODeviceConnection:
             return
         }
 
-        channel.close(promise: nil)
         let coordinator = self.coordinator
-        Task { await coordinator.finishClosing(with: NIODeviceConnection.closedError) }
+        let channel = self.channel
+        Task {
+            await coordinator.finishClosing(
+                with: NIODeviceConnection.closedError
+            )
+            channel.close(promise: nil)
+        }
     }
 
     deinit {
@@ -416,6 +421,11 @@ private actor InboundReadCoordinator {
         }
         parkedReader?.resume(returning: nil)
     }
+
+    /// Prefers an established local close reason over a later transport error.
+    func terminalError(or fallback: Error) -> Error {
+        closeError ?? fallback
+    }
 }
 
 /// Bridges the channel's inbound async sequence to the read coordinator.
@@ -454,7 +464,9 @@ private func runInboundReader(
                 for: demand.kind, leftover: &leftover, iterator: &iterator)
             demand.continuation.resume(returning: data)
         } catch {
-            let streamError = normalizedStreamError(error)
+            let streamError = await coordinator.terminalError(
+                or: normalizedStreamError(error)
+            )
             demand.continuation.resume(throwing: streamError)
             await coordinator.finishClosing(with: streamError)
             break
