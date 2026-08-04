@@ -37,9 +37,8 @@ final class NIODeviceConnection:
 
     /// Long-lived task draining the channel's inbound async sequence.
     ///
-    /// The task is retained so `close()` can cancel the pump immediately after
-    /// marking the stream closed, instead of waiting for the channel teardown to
-    /// wake the inbound iterator.
+    /// The task retains async-channel ownership until channel teardown wakes the
+    /// inbound iterator and lets its writer finish.
     private let pumpTask: Task<Void, Never>
 
     /// Guards `closedLocally` so close is observable from any thread.
@@ -171,7 +170,6 @@ final class NIODeviceConnection:
         }
 
         channel.close(promise: nil)
-        pumpTask.cancel()
         let coordinator = self.coordinator
         Task { await coordinator.finishClosing(with: NIODeviceConnection.closedError) }
     }
