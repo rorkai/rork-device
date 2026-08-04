@@ -150,7 +150,9 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: swift test
+        run: |
+          swift test --filter "CoreDeviceUserspaceGatewayTests|NIOTransportRuntimeLifecycleTests"
+          swift test --skip "CoreDeviceUserspaceGatewayTests"
 
       - name: Verify command line entry points
         shell: pwsh
