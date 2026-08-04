@@ -183,7 +183,6 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     acceptLoop: acceptTask,
                     networkMonitor: networkMonitorTask
                 )
-                acceptTask = nil
                 networkMonitorTask = nil
                 return tasks
             }
@@ -195,6 +194,15 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         activeChannels.closeAll()
         server.channel.close(promise: nil)
         ownedNetwork?.close()
+    }
+
+    /**
+     * Closes the gateway and waits for every forwarding scope to finish.
+     */
+    func closeAndWait() async {
+        close()
+        let task = closeLock.withLock { acceptTask }
+        _ = try? await task?.value
     }
 
     /// Failure to start a gateway because its requested port is already bound.

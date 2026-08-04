@@ -48,6 +48,8 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         XCTAssertEqual(response, Data("world".utf8))
         XCTAssertEqual(ports, [54_130])
         XCTAssertEqual(sentData, Data("hello".utf8))
+        client.close()
+        await gateway.closeAndWait()
     }
 
     func testBindingAnOccupiedPortThrowsPortUnavailable() async throws {
@@ -79,6 +81,7 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
                 "Local gateway port \(first.port) on 127.0.0.1 is already in use."
             )
         }
+        await first.closeAndWait()
     }
 
     func testRejectsPreambleForAnotherDeviceAddress() async throws {
@@ -115,6 +118,8 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         }) { _ in }
         let ports = await requestedPorts.values
         XCTAssertEqual(ports, [])
+        client.close()
+        await gateway.closeAndWait()
     }
 
     func testClosingGatewayTerminatesActiveForwardingConnection() async throws {
