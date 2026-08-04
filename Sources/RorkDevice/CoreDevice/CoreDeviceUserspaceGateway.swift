@@ -35,7 +35,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Async server channel that owns the listening socket.
     private let server:
         NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+            NIOAsyncChannel<ByteBuffer, Never>,
             Never
         >
 
@@ -65,7 +65,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         expectedDeviceAddress: Data,
         ownedNetwork: CoreDeviceUserspaceNetwork?,
         server: NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+            NIOAsyncChannel<ByteBuffer, Never>,
             Never
         >,
         waitUntilNetworkCloses: (@Sendable () async throws -> Void)?,
@@ -261,7 +261,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
 
         let server:
             NIOAsyncChannel<
-                NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+                NIOAsyncChannel<ByteBuffer, Never>,
                 Never
             >
         do {
@@ -290,7 +290,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             .childChannelOption(.autoRead, value: true)
             .bind(host: host, port: Int(port)) { channel in
                 channel.eventLoop.makeCompletedFuture {
-                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                    try NIOAsyncChannel<ByteBuffer, Never>(
                         wrappingChannelSynchronously: channel
                     )
                 }
@@ -323,7 +323,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Accepts clients concurrently while keeping each forwarding failure local.
     private static func runAcceptLoop(
         server: NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+            NIOAsyncChannel<ByteBuffer, Never>,
             Never
         >,
         expectedDeviceAddress: Data,
@@ -353,12 +353,12 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
 
     /// Validates one destination preamble and proxies the remaining byte stream.
     private static func serve(
-        _ channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+        _ channel: NIOAsyncChannel<ByteBuffer, Never>,
         expectedDeviceAddress: Data,
         connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
     ) async {
         do {
-            try await channel.executeThenClose { inbound, outbound in
+            try await channel.executeThenClose { inbound in
                 var iterator = inbound.makeAsyncIterator()
                 var pending = ByteBufferAllocator().buffer(capacity: 20)
                 while pending.readableBytes < 20 {
@@ -429,7 +429,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                             capacity: data.count
                         )
                         buffer.writeBytes(data)
-                        try await outbound.write(buffer)
+                        try await channel.channel.writeAndFlush(buffer).get()
                     }
                 }
 
