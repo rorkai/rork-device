@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "*"
   workflow_dispatch:
 
 permissions:
@@ -292,3 +294,51 @@ jobs:
           name: rorkdevice-windows-x64
           path: ${{ env.RORKDEVICE_PACKAGE }}
           if-no-files-found: error
+
+  publish-windows:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-test
+    runs-on: blacksmith-4vcpu-windows-2025
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download portable Windows executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "rorkdevice-windows-x64"
+          gh run download `
+            $env:GITHUB_RUN_ID `
+            --name "rorkdevice-windows-x64" `
+            --dir $package
+          if ($LASTEXITCODE -ne 0) {
+            throw "The portable Windows artifact could not be downloaded."
+          }
+          $archive = Join-Path $env:RUNNER_TEMP "rorkdevice-windows-x64.zip"
+          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $archive
+          Add-Content -Path $env:GITHUB_ENV -Value "WINDOWS_RELEASE_ARCHIVE=$archive"
+
+      - name: Publish portable Windows executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload `
+              $env:GITHUB_REF_NAME `
+              $env:WINDOWS_RELEASE_ARCHIVE `
+              --clobber
+          } else {
+            gh release create `
+              $env:GITHUB_REF_NAME `
+              $env:WINDOWS_RELEASE_ARCHIVE `
+              --verify-tag `
+              --title $env:GITHUB_REF_NAME
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "The portable Windows release asset could not be published."
+          }
