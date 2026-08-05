@@ -1,0 +1,151 @@
+name: macOS universal
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-universal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    runs-on: blacksmith-6vcpu-macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Record Swift toolchain
+        run: swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build universal release executable
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/rorkdevice-build"
+
+          swift build --configuration release --product rorkdevice \
+            --triple arm64-apple-macosx13.0 \
+            --scratch-path "$scratch/arm64"
+          arm64="$(swift build --configuration release --product rorkdevice \
+            --triple arm64-apple-macosx13.0 \
+            --scratch-path "$scratch/arm64" \
+            --show-bin-path)/rorkdevice"
+
+          swift build --configuration release --product rorkdevice \
+            --triple x86_64-apple-macosx13.0 \
+            --scratch-path "$scratch/x86_64"
+          x86_64="$(swift build --configuration release --product rorkdevice \
+            --triple x86_64-apple-macosx13.0 \
+            --scratch-path "$scratch/x86_64" \
+            --show-bin-path)/rorkdevice"
+
+          output="$RUNNER_TEMP/rorkdevice"
+          lipo -create "$arm64" "$x86_64" -output "$output"
+          chmod 755 "$output"
+          echo "RORKDEVICE_RELEASE=$output" >> "$GITHUB_ENV"
+
+      - name: Strip and ad-hoc sign
+        run: |
+          set -euo pipefail
+          strip "$RORKDEVICE_RELEASE"
+          codesign --force --sign - "$RORKDEVICE_RELEASE"
+          codesign --verify --strict --verbose=2 "$RORKDEVICE_RELEASE"
+
+      - name: Verify executable
+        run: |
+          set -euo pipefail
+          architectures="$(lipo -archs "$RORKDEVICE_RELEASE")"
+          echo "Architectures: $architectures"
+          grep -Fq "arm64" <<< "$architectures"
+          grep -Fq "x86_64" <<< "$architectures"
+
+          version="$("$RORKDEVICE_RELEASE" --version | tr -d '\r\n')"
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$' <<< "$version"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            [[ "$version" == "$GITHUB_REF_NAME" ]]
+          fi
+
+          "$RORKDEVICE_RELEASE" --help
+          apps_help="$("$RORKDEVICE_RELEASE" apps list --help)"
+          tunnel_help="$("$RORKDEVICE_RELEASE" tunnel start --help)"
+          grep -Fq -- "--json" <<< "$apps_help"
+          for option in --identity --reconnect --exit-when-stdin-closes --serve --stats-interval; do
+            grep -Fq -- "$option" <<< "$tunnel_help"
+          done
+
+      - name: Package portable macOS executable
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/rorkdevice-macos-universal"
+          mkdir -p "$package"
+          cp "$RORKDEVICE_RELEASE" "$package/rorkdevice"
+          cp LICENSE THIRD_PARTY_NOTICES.md "$package/"
+          cp -R ThirdPartyLicenses "$package/"
+          (
+            cd "$package"
+            find . -type f ! -name SHA256SUMS.txt | sort | while IFS= read -r file; do
+              path="${file#./}"
+              hash="$(shasum -a 256 "$file" | awk '{print $1}')"
+              printf '%s  %s\n' "$hash" "$path"
+            done
+          ) > "$package/SHA256SUMS.txt"
+          echo "RORKDEVICE_PACKAGE=$package" >> "$GITHUB_ENV"
+
+      - name: Upload portable macOS executable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rorkdevice-macos-universal
+          path: ${{ env.RORKDEVICE_PACKAGE }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-macos:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-test-package
+    runs-on: blacksmith-6vcpu-macos-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download portable macOS executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/rorkdevice-macos-universal"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "rorkdevice-macos-universal" \
+            --dir "$package"
+          archive="$RUNNER_TEMP/rorkdevice-macos-universal.zip"
+          (cd "$package" && zip -qry "$archive" .)
+          echo "MACOS_RELEASE_ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Publish portable macOS executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$MACOS_RELEASE_ARCHIVE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$MACOS_RELEASE_ARCHIVE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME"
+          fi
