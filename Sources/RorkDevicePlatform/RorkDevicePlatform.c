@@ -12,10 +12,19 @@
 
 /// Owns the token, SID, ACL, and descriptor used for owner-only files.
 typedef struct rork_current_user_security {
+    /// Process token queried for the current user SID.
     HANDLE token;
+
+    /// Token information buffer that owns the current user SID.
     PTOKEN_USER token_user;
+
+    /// Protected access-control list granting the current user full access.
     PACL acl;
+
+    /// Security descriptor that owns the protected DACL.
     PSECURITY_DESCRIPTOR descriptor;
+
+    /// Attributes passed to file creation after the descriptor is complete.
     SECURITY_ATTRIBUTES attributes;
 } rork_current_user_security_t;
 
