@@ -12,15 +12,15 @@ that must accompany binary distributions are preserved under
 ## Apache License 2.0 Components
 
 - [Swift Argument Parser 1.8.1](https://github.com/apple/swift-argument-parser)
-- [SwiftNIO 2.100.0-rork.1](https://github.com/rorkai/swift-nio)
-- [SwiftNIO SSL 2.37.1-rork.1](https://github.com/rorkai/swift-nio-ssl)
+- [SwiftNIO 2.100.0-rork.2](https://github.com/rorkai/swift-nio)
+- [SwiftNIO SSL 2.37.2-rork.1](https://github.com/rorkai/swift-nio-ssl)
 - [Swift Certificates 1.19.1-rork.1](https://github.com/rorkai/swift-certificates)
 - [Swift Crypto 4.5.0-rork.1](https://github.com/rorkai/swift-crypto)
 - [Swift ASN.1 1.7.1](https://github.com/apple/swift-asn1)
 - [Swift Atomics 1.3.0](https://github.com/apple/swift-atomics)
 - [Swift Collections 1.6.0](https://github.com/apple/swift-collections)
 - [Swift System 1.7.2](https://github.com/apple/swift-system)
-- [Swift ZIP Archive 0.8.1-rork.3](https://github.com/rorkai/swift-zip-archive)
+- [Swift ZIP Archive 0.8.1-rork.4](https://github.com/rorkai/swift-zip-archive)
 
 The upstream attribution notices that apply to these components and their
 incorporated works are reproduced in:
