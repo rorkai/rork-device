@@ -9,15 +9,34 @@ import NIOCore
 /// change after initialization, while the lock protects the server, lifecycle
 /// flags, and recorded requests shared with test assertions.
 final class FakeUSBMuxDaemon: @unchecked Sendable {
+    /// Optional listener removed after idempotent shutdown.
     private var server: NIOTestServer?
+
+    /// Whether Lockdown replies request an encrypted session.
     private let secureLockdown: Bool
+
+    /// Service names whose start replies require TLS.
     private let secureServices: Set<String>
+
+    /// Devices returned by usbmux discovery.
     private let devices: [USBMuxDevice]
+
+    /// Attachment events delivered after a Listen request.
     private let deviceEvents: [USBMuxDeviceEvent]
+
+    /// Result returned after the Listen request is accepted.
     private let listenResponse: [String: Any]
+
+    /// Optional pairing record returned by usbmux.
     private let pairingRecordData: Data?
+
+    /// Host identity advertised by usbmux.
     private let systemBUID: String
+
+    /// Device public key returned by Lockdown.
     private let devicePublicKey: Data
+
+    /// Wi-Fi address returned by Lockdown device information.
     private let wiFiMACAddress: String
 
     /// Lockdown response returned after recording an Unpair request.
@@ -40,21 +59,47 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     /// Keeps a Listen socket readable until the client closes it.
     private let keepListenOpenAfterEvents: Bool
+
+    /// Serializes lifecycle state and all assertion records.
     private let lock = NSLock()
+
+    /// Whether listener shutdown has already run.
     private var stopped = false
+
     /// Whether a Listen request reached the fake daemon.
     private var _listenConnectionOpen = false
+
     /// Whether the client closed the long-lived Listen socket.
     private var _listenPeerClosed = false
+
+    /// Service ports requested through usbmux Connect.
     private var _connectedPorts: [UInt16] = []
+
+    /// AFC operation codes observed by the fixture.
     private var _afcOperations: [UInt64] = []
+
+    /// Package paths sent to InstallationProxy.
     private var _installedPackagePaths: [String] = []
+
+    /// MISAgent message types observed by the fixture.
     private var _misagentMessageTypes: [String] = []
+
+    /// Services started with escrow-bag authorization.
     private var _servicesStartedWithEscrow: [String] = []
+
+    /// Heartbeat command names answered by the fixture.
     private var _heartbeatReplies: [String] = []
+
+    /// HouseArrest command and identifier pairs.
     private var _houseArrestRequests: [[String: String]] = []
+
+    /// Last pairing record saved through usbmux.
     private var _savedPairingRecordData: Data?
+
+    /// Pairing-record identifier from the most recent save.
     private var _savedPairingRecordIdentifier: String?
+
+    /// Active usbmux device identifier from the most recent save.
     private var _savedPairingRecordDeviceID: UInt32?
 
     /// Device identifier from the most recent DeletePairRecord request.
@@ -62,13 +107,19 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     /// Host identifier from the most recent Lockdown Unpair request.
     private var _unpairedHostIdentifier: String?
+
+    /// Pairing responses returned in order for retry tests.
     private var pairingResponses: [[String: Any]]
+
+    /// Number of Lockdown pairing attempts observed.
     private var _pairingAttemptCount = 0
 
+    /// Ephemeral listener port, or zero after shutdown.
     var port: UInt16 {
         lock.withLock { server?.port ?? 0 }
     }
 
+    /// Snapshot of service ports requested through usbmux Connect.
     var connectedPorts: [UInt16] {
         lock.lock()
         defer { lock.unlock() }
@@ -89,48 +140,56 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         return _listenPeerClosed
     }
 
+    /// Snapshot of AFC operation codes observed by the fixture.
     var afcOperations: [UInt64] {
         lock.lock()
         defer { lock.unlock() }
         return _afcOperations
     }
 
+    /// Snapshot of package paths sent to InstallationProxy.
     var installedPackagePaths: [String] {
         lock.lock()
         defer { lock.unlock() }
         return _installedPackagePaths
     }
 
+    /// Snapshot of MISAgent message types observed by the fixture.
     var misagentMessageTypes: [String] {
         lock.lock()
         defer { lock.unlock() }
         return _misagentMessageTypes
     }
 
+    /// Snapshot of services started with escrow-bag authorization.
     var servicesStartedWithEscrow: [String] {
         lock.lock()
         defer { lock.unlock() }
         return _servicesStartedWithEscrow
     }
 
+    /// Snapshot of heartbeat commands answered by the fixture.
     var heartbeatReplies: [String] {
         lock.lock()
         defer { lock.unlock() }
         return _heartbeatReplies
     }
 
+    /// Snapshot of HouseArrest requests observed by the fixture.
     var houseArrestRequests: [[String: String]] {
         lock.lock()
         defer { lock.unlock() }
         return _houseArrestRequests
     }
 
+    /// Pairing-record bytes from the most recent save.
     var savedPairingRecordData: Data? {
         lock.lock()
         defer { lock.unlock() }
         return _savedPairingRecordData
     }
 
+    /// Pairing-record identifier from the most recent save.
     var savedPairingRecordIdentifier: String? {
         lock.lock()
         defer { lock.unlock() }
@@ -158,12 +217,14 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         return _unpairedHostIdentifier
     }
 
+    /// Number of Lockdown pairing attempts observed.
     var pairingAttemptCount: Int {
         lock.lock()
         defer { lock.unlock() }
         return _pairingAttemptCount
     }
 
+    /// Starts a loopback daemon with injectable protocol responses and records.
     init(
         secureLockdown: Bool = false,
         secureServices: Set<String> = [],
@@ -218,6 +279,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         stop()
     }
 
+    /// Tears down the listener once and clears its published port.
     func stop() {
         let serverToStop: NIOTestServer? = lock.withLock {
             guard !stopped else {
@@ -231,45 +293,76 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         serverToStop?.stop()
     }
 
+    /// Records that a client established the long-lived Listen connection.
     private func recordListenConnectionOpen() {
         lock.lock()
         _listenConnectionOpen = true
         lock.unlock()
     }
 
+    /// Records that the client closed the long-lived Listen connection.
     private func recordListenPeerClosed() {
         lock.lock()
         _listenPeerClosed = true
         lock.unlock()
     }
 
+    /// Connection-local protocol state machine for one accepted client.
     private final class ClientHandler:
         ChannelInboundHandler,
         @unchecked Sendable
     {
+        /// Inbound data arrives as NIO byte buffers.
         typealias InboundIn = ByteBuffer
+
+        /// Outbound protocol frames are written as NIO byte buffers.
         typealias OutboundOut = ByteBuffer
 
+        /// Framing parser active for the current connection phase.
         private enum State {
+            /// Parses length-prefixed usbmux packets.
             case usbmux
+
+            /// Holds a Listen connection open after event delivery.
             case listen
+
+            /// Parses Lockdown property-list frames.
             case lockdown
+
+            /// Parses Apple File Conduit packets.
             case afc
+
+            /// Parses InstallationProxy property-list frames.
             case installationProxy
+
+            /// Parses MISAgent property-list frames.
             case misagent
+
+            /// Parses Heartbeat property-list frames.
             case heartbeat
+
+            /// Parses HouseArrest property-list frames.
             case houseArrest
+
+            /// Ignores input after intentional closure.
             case closed
         }
 
+        /// Shared fixture configuration and assertion records.
         private let daemon: FakeUSBMuxDaemon
+
+        /// Current protocol parser for inbound byte dispatch.
         private var state = State.usbmux
+
+        /// Partial frames retained until their complete payload arrives.
         private var inbound = ByteBuffer()
 
+        /// Binds the connection-local handler to shared daemon state.
         init(daemon: FakeUSBMuxDaemon) {
             self.daemon = daemon
         }
 
+        /// Appends inbound bytes and drains every complete buffered message.
         func channelRead(
             context: ChannelHandlerContext,
             data: NIOAny
@@ -279,6 +372,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             while processNextMessage(context: context) {}
         }
 
+        /// Records Listen peer closure before propagating inactivity.
         func channelInactive(context: ChannelHandlerContext) {
             if state == .listen {
                 daemon.recordListenPeerClosed()
@@ -286,6 +380,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             context.fireChannelInactive()
         }
 
+        /// Marks the handler closed and tears down a failed channel.
         func errorCaught(
             context: ChannelHandlerContext,
             error _: Error
@@ -294,6 +389,10 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             context.close(promise: nil)
         }
 
+        /// Dispatches one message through the parser for the active phase.
+        ///
+        /// The return value is `true` when another complete message may already
+        /// be buffered.
         private func processNextMessage(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -317,6 +416,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             }
         }
 
+        /// Handles one complete usbmux request and any resulting state change.
         private func processUSBMuxRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -455,6 +555,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Handles one Lockdown request using the configured pairing fixtures.
         private func processLockdownRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -564,6 +665,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Records one AFC operation and returns its canned response.
         private func processAFCRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -601,6 +703,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Records one InstallationProxy request and returns its canned response.
         private func processInstallationProxyRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -622,6 +725,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Records one MISAgent request and returns its canned response.
         private func processMISAgentRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -649,6 +753,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Records one heartbeat command and closes the accepted channel.
         private func processHeartbeatRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -663,6 +768,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Records one HouseArrest request and returns its canned response.
         private func processHouseArrestRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -685,6 +791,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
+        /// Parses one usbmux packet, or returns nil for incomplete or invalid input.
         private func readUSBMuxRequest() -> (
             packet: USBMuxPacket,
             dictionary: [String: Any]
@@ -718,6 +825,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return (packet, dictionary)
         }
 
+        /// Parses one length-prefixed property-list frame.
         private func readPlistMessage() -> [String: Any]? {
             guard
                 inbound.readableBytes >= 4,
@@ -742,6 +850,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             ) as? [String: Any]
         }
 
+        /// Parses one AFC packet, or returns nil for incomplete or invalid input.
         private func readAFCPacket() -> FakeAFCPacket? {
             let start = inbound.readerIndex
             guard
@@ -776,6 +885,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             )
         }
 
+        /// Encodes and flushes one tagged usbmux response.
         private func sendUSBMuxResponse(
             _ dictionary: [String: Any],
             tag: UInt32,
@@ -793,6 +903,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             send(packet, context: context)
         }
 
+        /// Encodes and flushes one usbmux attachment event.
         private func sendUSBMuxEvent(
             _ event: USBMuxDeviceEvent,
             context: ChannelHandlerContext
@@ -827,6 +938,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             )
         }
 
+        /// Encodes and flushes one length-prefixed property-list frame.
         private func sendPlistMessage(
             _ dictionary: [String: Any],
             context: ChannelHandlerContext
@@ -841,6 +953,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             send(message, context: context)
         }
 
+        /// Writes raw bytes through the channel's outbound buffer.
         private func send(
             _ data: Data,
             context: ChannelHandlerContext
@@ -855,53 +968,62 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             )
         }
 
+        /// Marks the state closed before closing the accepted channel.
         private func close(context: ChannelHandlerContext) {
             state = .closed
             context.close(promise: nil)
         }
     }
 
+    /// Converts a usbmux network-order port value to host order.
     private func normalizedPort(from value: Any?) -> UInt16 {
         let raw = (value as? NSNumber)?.uint32Value ?? value as? UInt32 ?? 0
         return UInt16(truncatingIfNeeded: raw).bigEndian
     }
 
+    /// Appends one requested service port to the assertion record.
     private func recordConnectedPort(_ port: UInt16) {
         lock.lock()
         _connectedPorts.append(port)
         lock.unlock()
     }
 
+    /// Appends one AFC operation code to the assertion record.
     private func recordAFCOperation(_ operation: UInt64) {
         lock.lock()
         _afcOperations.append(operation)
         lock.unlock()
     }
 
+    /// Appends one InstallationProxy package path to the assertion record.
     private func recordInstalledPackage(_ packagePath: String) {
         lock.lock()
         _installedPackagePaths.append(packagePath)
         lock.unlock()
     }
 
+    /// Appends one MISAgent message type to the assertion record.
     private func recordMISAgentMessageType(_ messageType: String) {
         lock.lock()
         _misagentMessageTypes.append(messageType)
         lock.unlock()
     }
 
+    /// Appends one escrow-authorized service to the assertion record.
     private func recordServiceStartedWithEscrow(_ service: String) {
         lock.lock()
         _servicesStartedWithEscrow.append(service)
         lock.unlock()
     }
 
+    /// Appends one heartbeat command to the assertion record.
     private func recordHeartbeatReply(_ command: String) {
         lock.lock()
         _heartbeatReplies.append(command)
         lock.unlock()
     }
 
+    /// Appends one HouseArrest request to the assertion record.
     private func recordHouseArrestRequest(command: String, identifier: String) {
         lock.lock()
         _houseArrestRequests.append([
@@ -911,6 +1033,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Replaces the recorded pairing payload and its usbmux attachment.
     private func recordSavedPairingRecord(
         identifier: String,
         data: Data,
@@ -937,6 +1060,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Returns the next configured pairing response and counts the attempt.
     private func nextPairingResponse() -> [String: Any] {
         lock.lock()
         defer { lock.unlock() }
@@ -951,23 +1075,30 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     }
 }
 
+/// Parsed AFC request metadata used by the fake service handler.
 private struct FakeAFCPacket {
+    /// AFC operation code from the packet header.
     let operation: UInt64
+
+    /// AFC packet number echoed by the response.
     let packetNumber: UInt64
 }
 
+/// Encodes an AFC status response.
 private func fakeAFCStatusResponse(packetNumber: UInt64, status: UInt64) -> Data {
     var payload = Data()
     payload.appendLittleEndian(status)
     return fakeAFCResponse(packetNumber: packetNumber, operation: 1, payload: payload)
 }
 
+/// Encodes an AFC file-open response.
 private func fakeAFCFileOpenResponse(packetNumber: UInt64, handle: UInt64) -> Data {
     var payload = Data()
     payload.appendLittleEndian(handle)
     return fakeAFCResponse(packetNumber: packetNumber, operation: 14, payload: payload)
 }
 
+/// Encodes one AFC response packet with the supplied operation and payload.
 private func fakeAFCResponse(packetNumber: UInt64, operation: UInt64, payload: Data) -> Data {
     var data = Data("CFA6LPAA".utf8)
     data.appendLittleEndian(UInt64(40 + payload.count))

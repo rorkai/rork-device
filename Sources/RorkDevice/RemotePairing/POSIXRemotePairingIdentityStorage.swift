@@ -17,14 +17,17 @@ struct POSIXRemotePairingIdentityStorage:
         self.fileManager = fileManager
     }
 
+    /// Reports whether an identity already exists at the destination.
     func fileExists(at url: URL) -> Bool {
         fileManager.fileExists(atPath: url.path)
     }
 
+    /// Loads the persisted identity bytes.
     func read(from url: URL) throws -> Data {
         try Data(contentsOf: url)
     }
 
+    /// Replaces an identity through an owner-only sibling file.
     func write(_ data: Data, to url: URL) throws {
         let temporaryURL = identitySiblingURL(for: url, suffix: "tmp")
         defer {
@@ -42,6 +45,9 @@ struct POSIXRemotePairingIdentityStorage:
         }
     }
 
+    /// Publishes a new identity without replacing an existing destination.
+    ///
+    /// The return value is `false` when the destination already exists.
     func createIfAbsent(_ data: Data, at url: URL) throws -> Bool {
         let candidateURL = identitySiblingURL(
             for: url,
@@ -63,6 +69,7 @@ struct POSIXRemotePairingIdentityStorage:
         }
     }
 
+    /// Creates and fills a new file whose POSIX mode grants owner access only.
     private func writeNewFile(
         _ data: Data,
         to url: URL

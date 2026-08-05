@@ -369,29 +369,38 @@ private final class RecordingIdentityFileManager: FileManager, @unchecked Sendab
 }
 #endif
 
+/// Storage double that always loses creation and exposes the winning bytes.
 private final class LosingCreationRaceIdentityStorage:
     RemotePairingIdentityStorage,
     @unchecked Sendable
 {
+    /// Identity bytes returned after the simulated concurrent win.
     private let winnerData: Data
+
+    /// Number of candidate publications attempted by the code under test.
     private(set) var creationAttempts = 0
 
+    /// Stores the identity that the simulated competing writer published.
     init(winnerData: Data) {
         self.winnerData = winnerData
     }
 
+    /// Reports absence so the creation path always runs.
     func fileExists(at _: URL) -> Bool {
         false
     }
 
+    /// Returns the predetermined winning identity.
     func read(from _: URL) throws -> Data {
         winnerData
     }
 
+    /// Fails the test if the race path attempts a replacement write.
     func write(_ data: Data, to url: URL) throws {
         XCTFail("Unexpected replacement write of \(data.count) bytes to \(url)")
     }
 
+    /// Records a candidate attempt and simulates a concurrent winner.
     func createIfAbsent(_ data: Data, at url: URL) throws -> Bool {
         creationAttempts += 1
         XCTAssertFalse(data.isEmpty)

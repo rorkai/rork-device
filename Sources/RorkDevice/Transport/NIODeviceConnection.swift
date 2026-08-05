@@ -158,7 +158,11 @@ final class NIODeviceConnection:
         }
     }
 
-    /// Closes the channel and fails any in-flight or future reads.
+    /// Marks the connection closed and terminalizes every pending read.
+    ///
+    /// The coordinator receives the close reason before the channel closes so
+    /// blocked reads fail promptly. The inbound pump remains alive until channel
+    /// teardown wakes its iterator.
     func close() {
         stateLock.lock()
         let alreadyClosed = closedLocally

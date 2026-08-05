@@ -55,6 +55,16 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     private var isClosed = false
 
     /// Creates a bound gateway around its listener and optional owned network.
+    ///
+    /// - Parameters:
+    ///   - host: Local address on which the listener is bound.
+    ///   - port: Actual listener port after an ephemeral bind is resolved.
+    ///   - deviceAddress: Device IPv6 address accepted in client preambles.
+    ///   - ownedNetwork: Network whose lifecycle belongs to this gateway.
+    ///   - server: Bound listener channel that signals listener teardown.
+    ///   - forwardingChannels: Registry that owns accepted channels until their
+    ///     forwarding tasks finish.
+    ///   - waitUntilNetworkCloses: Optional monitor for network lifecycle closure.
     private init(
         host: String,
         port: UInt16,
@@ -443,9 +453,16 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
 /// lets callers wait until their forwarding tasks release every channel.
 /// Its lock protects all mutable state shared by listener and forwarding tasks.
 private final class GatewayForwardingChannels: @unchecked Sendable {
+    /// Serializes registry mutation, shutdown, and waiter registration.
     private let lock = NSLock()
+
+    /// Active accepted channels keyed by object identity.
     private var channels: [ObjectIdentifier: any Channel] = [:]
+
+    /// Whether shutdown has begun and late channels must be rejected.
     private var isClosing = false
+
+    /// Continuations resumed after the final active channel unregisters.
     private var emptyWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Registers a channel unless gateway shutdown has already begun.

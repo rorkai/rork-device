@@ -15,6 +15,8 @@ import WinSDK
 /// Transport implementations may receive either package errors or framework
 /// errors from SwiftNIO and platform APIs. This helper keeps those diagnostics
 /// consistent across TCP, Unix-domain, and future connection backends.
+/// Windows diagnostics omit POSIX errno because Winsock uses a separate error
+/// domain.
 func describeTransportError(_ error: Error) -> String {
     if let deviceError = error as? RorkDeviceError {
         return deviceError.description
@@ -32,7 +34,9 @@ func describeTransportError(_ error: Error) -> String {
     return error.localizedDescription
 }
 
-/// Returns whether a socket bind failed because the requested address is busy.
+/// Reports whether a bind failed because the requested address is already in use.
+///
+/// Windows inspects the Winsock error code. Other hosts compare the POSIX errno.
 func isAddressInUseError(_ error: NIOCore.IOError) -> Bool {
     #if os(Windows)
     error.winsockErrorCode == WSAEADDRINUSE

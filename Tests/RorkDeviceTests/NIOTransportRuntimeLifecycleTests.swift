@@ -4,10 +4,13 @@ import XCTest
 
 @testable import RorkDevice
 
+/// Verifies the shared runtime is safe to use and shuts down after the suite.
 final class NIOTransportRuntimeLifecycleTests: XCTestCase {
+    /// Bundle observer that owns the one permitted runtime shutdown.
     private static let runtimeShutdownObserver =
         NIOTransportRuntimeShutdownObserver()
 
+    /// Registers runtime teardown before this test class executes.
     override class func setUp() {
         super.setUp()
         XCTestObservationCenter.shared.addTestObserver(
@@ -15,6 +18,7 @@ final class NIOTransportRuntimeLifecycleTests: XCTestCase {
         )
     }
 
+    /// Confirms callers are not already executing on the shared event loop.
     func testSharedRuntimeUsesBackgroundEventLoop() {
         XCTAssertFalse(
             NIOTransportRuntime.eventLoopGroup.next().inEventLoop
@@ -32,6 +36,7 @@ private final class NIOTransportRuntimeShutdownObserver:
     XCTestObservation,
     @unchecked Sendable
 {
+    /// Joins the shared event-loop threads after the complete test bundle ends.
     func testBundleDidFinish(_: Bundle) {
         precondition(
             !NIOTransportRuntime.eventLoopGroup.next().inEventLoop,
