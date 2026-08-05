@@ -6,18 +6,24 @@ import RorkDevicePlatform
 struct WindowsRemotePairingIdentityStorage:
     RemotePairingIdentityStorage
 {
+    /// Reports whether an identity already exists at the destination.
     func fileExists(at url: URL) -> Bool {
         FileManager.default.fileExists(atPath: url.path)
     }
 
+    /// Loads the persisted identity bytes.
     func read(from url: URL) throws -> Data {
         try Data(contentsOf: url)
     }
 
+    /// Replaces an identity through the native atomic writer.
     func write(_ data: Data, to url: URL) throws {
         _ = try writeAtomically(data, to: url, replaceExisting: true)
     }
 
+    /// Publishes a new identity without replacing a concurrent winner.
+    ///
+    /// The return value is `false` when the destination already exists.
     func createIfAbsent(_ data: Data, at url: URL) throws -> Bool {
         try writeAtomically(
             data,
@@ -88,6 +94,7 @@ func windowsIdentityFileHasCurrentUserOnlyAccess(
     return hasProtectedAccess != 0
 }
 
+/// Creates a file error that preserves the Win32 code and affected path.
 private func windowsIdentityFileError(
     code: UInt32,
     url: URL

@@ -3,14 +3,27 @@ import NIOCore
 import NIOPosix
 @testable import RorkDevice
 
+/// Ephemeral loopback server backed by one dedicated event loop.
+///
+/// Tests must call `stop()` so the listener closes and its event-loop thread
+/// joins before bundle teardown.
 final class NIOTestServer: @unchecked Sendable {
+    /// Ephemeral port assigned by the operating system.
     let port: UInt16
 
+    /// Dedicated event loop that owns the listener and accepted channels.
     private let eventLoopGroup: MultiThreadedEventLoopGroup
+
+    /// Listening channel retained until explicit teardown.
     private let channel: Channel
+
+    /// Serializes idempotent shutdown across test cleanup paths.
     private let lock = NSLock()
+
+    /// Whether listener and event-loop teardown has already run.
     private var stopped = false
 
+    /// Binds on loopback and installs the supplied child pipeline initializer.
     init(
         channelInitializer:
             @escaping @Sendable (Channel) -> EventLoopFuture<Void>
@@ -45,6 +58,7 @@ final class NIOTestServer: @unchecked Sendable {
         }
     }
 
+    /// Closes the listener and synchronously joins the event loop once.
     func stop() {
         let shouldStop = lock.withLock {
             guard !stopped else {

@@ -145,13 +145,17 @@ final class PartialReceiveConnectionTests: XCTestCase {
     }
 }
 
+/// Loopback server that sends one fixed payload to the first client.
 private final class TCPDataServer: @unchecked Sendable {
+    /// Underlying listener and event-loop owner.
     private let server: NIOTestServer
 
+    /// Ephemeral port assigned to the listener.
     var port: UInt16 {
         server.port
     }
 
+    /// Starts a server that sends the UTF-8 bytes of `string`.
     init(data string: String) throws {
         let data = Data(string.utf8)
         server = try NIOTestServer { channel in
@@ -161,24 +165,32 @@ private final class TCPDataServer: @unchecked Sendable {
         }
     }
 
+    /// Tears down the underlying listener and event loop.
     func stop() {
         server.stop()
     }
 }
 
+/// Pipeline handler that writes a fixed payload and then closes the stream.
 private final class FixedDataServerHandler:
     ChannelInboundHandler,
     @unchecked Sendable
 {
+    /// Inbound bytes are ignored by this write-only fixture.
     typealias InboundIn = ByteBuffer
+
+    /// Outbound payloads use the channel's byte-buffer representation.
     typealias OutboundOut = ByteBuffer
 
+    /// Payload written when the accepted channel becomes active.
     private let data: Data
 
+    /// Stores the fixed payload for the accepted connection.
     init(data: Data) {
         self.data = data
     }
 
+    /// Flushes the payload and closes after the write completes.
     func channelActive(context: ChannelHandlerContext) {
         var buffer = context.channel.allocator.buffer(capacity: data.count)
         buffer.writeBytes(data)
@@ -188,6 +200,7 @@ private final class FixedDataServerHandler:
         }
     }
 
+    /// Closes the accepted channel after a pipeline failure.
     func errorCaught(
         context: ChannelHandlerContext,
         error _: Error
@@ -334,18 +347,25 @@ private func assertTransportError(
     XCTAssertEqual(message, expectedMessage, file: file, line: line)
 }
 
+/// Loopback server that runs a timed sequence of reads, writes, and closure.
 private final class TCPScriptedServer: @unchecked Sendable {
+    /// Underlying listener and event-loop owner.
     private let server: NIOTestServer
+
+    /// Thread-safe recorder for the optional inbound prefix.
     private let recorder: ScriptedServerRecorder
 
+    /// Ephemeral port assigned to the listener.
     var port: UInt16 {
         server.port
     }
 
+    /// Prefix bytes received before scripted transmission began.
     var receivedBytes: Data {
         recorder.receivedBytes
     }
 
+    /// Starts a server with optional prefix capture and timed response chunks.
     init(
         prefixReadLength: Int = 0,
         chunks: [Data],
@@ -367,19 +387,26 @@ private final class TCPScriptedServer: @unchecked Sendable {
         }
     }
 
+    /// Tears down the underlying listener and event loop.
     func stop() {
         server.stop()
     }
 }
 
+/// Thread-safe accumulator for bytes read before a scripted response.
 private final class ScriptedServerRecorder: @unchecked Sendable {
+    /// Serializes access to the recorded bytes.
     private let lock = NSLock()
+
+    /// Most recently recorded prefix bytes.
     private var received = Data()
 
+    /// Snapshot of the recorded prefix bytes.
     var receivedBytes: Data {
         lock.withLock { received }
     }
 
+    /// Replaces the recorded prefix with one completed read.
     func record(_ data: Data) {
         lock.withLock {
             received = data
@@ -387,21 +414,39 @@ private final class ScriptedServerRecorder: @unchecked Sendable {
     }
 }
 
+/// Pipeline handler that drives one configured response script.
 private final class ScriptedServerHandler:
     ChannelInboundHandler,
     @unchecked Sendable
 {
+    /// Inbound bytes may satisfy the script's prefix read.
     typealias InboundIn = ByteBuffer
+
+    /// Scripted response chunks use the channel's byte-buffer representation.
     typealias OutboundOut = ByteBuffer
 
+    /// Number of inbound bytes required before transmission starts.
     private let prefixReadLength: Int
+
+    /// Response chunks written in order.
     private let chunks: [Data]
+
+    /// Delay inserted between adjacent response chunks.
     private let interChunkDelayMicros: Int64
+
+    /// Delay between the final write and channel closure.
     private let closeDelayMicros: Int64
+
+    /// Recorder that receives the configured inbound prefix.
     private let recorder: ScriptedServerRecorder
+
+    /// Partial inbound bytes waiting to satisfy `prefixReadLength`.
     private var pending = ByteBuffer()
+
+    /// Whether the response script has already been scheduled.
     private var started = false
 
+    /// Captures the timing, payload, and recording contract for one connection.
     init(
         prefixReadLength: Int,
         chunks: [Data],
@@ -416,12 +461,14 @@ private final class ScriptedServerHandler:
         self.recorder = recorder
     }
 
+    /// Starts transmission immediately when no prefix read is required.
     func channelActive(context: ChannelHandlerContext) {
         if prefixReadLength == 0 {
             startScript(context: context)
         }
     }
 
+    /// Buffers input until the configured prefix can be recorded.
     func channelRead(
         context: ChannelHandlerContext,
         data: NIOAny
@@ -440,6 +487,7 @@ private final class ScriptedServerHandler:
         startScript(context: context)
     }
 
+    /// Schedules every response chunk and the final channel closure.
     private func startScript(context: ChannelHandlerContext) {
         guard !started else {
             return
@@ -500,6 +548,7 @@ private final class ScriptedServerHandler:
         }
     }
 
+    /// Closes the accepted channel after a pipeline failure.
     func errorCaught(
         context: ChannelHandlerContext,
         error _: Error

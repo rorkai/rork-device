@@ -10,6 +10,7 @@
 #include <accctrl.h>
 #include <aclapi.h>
 
+/// Owns the token, SID, ACL, and descriptor used for owner-only files.
 typedef struct rork_current_user_security {
     HANDLE token;
     PTOKEN_USER token_user;
@@ -18,6 +19,7 @@ typedef struct rork_current_user_security {
     SECURITY_ATTRIBUTES attributes;
 } rork_current_user_security_t;
 
+/// Releases every handle and allocation owned by a security bundle.
 static void rork_release_current_user_security(
     rork_current_user_security_t *security
 ) {
@@ -35,6 +37,9 @@ static void rork_release_current_user_security(
     }
 }
 
+/// Builds protected file security that grants access only to the current user.
+///
+/// Returns nonzero on success. Failure returns zero and stores the Win32 code.
 static int rork_make_current_user_security(
     rork_current_user_security_t *security,
     uint32_t *error_code
@@ -147,6 +152,9 @@ static int rork_make_current_user_security(
     return 1;
 }
 
+/// Writes the complete buffer while accepting partial `WriteFile` progress.
+///
+/// Returns nonzero on success. Failure returns zero and stores the Win32 code.
 static int rork_write_all(
     HANDLE file,
     const uint8_t *bytes,

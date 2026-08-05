@@ -11,8 +11,10 @@ import Glibc
 import WinSDK
 #endif
 
+/// Verifies diagnostics preserve platform error domains and useful detail.
 final class TransportErrorFormattingTests: XCTestCase {
     #if os(Windows)
+    /// Confirms Winsock diagnostics do not access the unrelated POSIX errno.
     func testWinsockErrorPreservesSystemDescriptionWithoutReadingErrno() {
         let error = NIOCore.IOError(
             winsock: WSAECONNREFUSED,
@@ -25,6 +27,7 @@ final class TransportErrorFormattingTests: XCTestCase {
         XCTAssertTrue(description.contains(error.description))
     }
 
+    /// Confirms only the Winsock address-in-use code matches.
     func testRecognizesWinsockAddressInUse() {
         XCTAssertTrue(
             isAddressInUseError(
@@ -44,6 +47,7 @@ final class TransportErrorFormattingTests: XCTestCase {
         )
     }
     #else
+    /// Confirms POSIX diagnostics retain errno, operation, and system text.
     func testSwiftNIOErrorPreservesErrnoAndOperation() {
         let error: Error = NIOCore.IOError(
             errnoCode: ECONNREFUSED,
@@ -58,6 +62,7 @@ final class TransportErrorFormattingTests: XCTestCase {
         XCTAssertFalse(description.contains("NIOCore.IOError error 1"))
     }
 
+    /// Confirms only the POSIX address-in-use code matches.
     func testRecognizesPOSIXAddressInUse() {
         XCTAssertTrue(
             isAddressInUseError(
@@ -78,6 +83,7 @@ final class TransportErrorFormattingTests: XCTestCase {
     }
     #endif
 
+    /// Confirms TLS handshake diagnostics retain structured SSL details.
     func testNIOSSLHandshakeErrorPreservesBoringSSLDetails() {
         let error: Error = NIOSSLError.handshakeFailed(
             .sslError([])

@@ -26,12 +26,15 @@ private func usesUSBRoute(_ device: Device) -> Bool {
 /// Device connections guarantee that close is idempotent and may interrupt a
 /// read from another task. No other operation crosses the task boundary.
 private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
+    /// Connection that the watchdog may interrupt after its deadline.
     private let connection: any DeviceConnection
 
+    /// Retains a connection whose close operation is safe across tasks.
     init(connection: any DeviceConnection) {
         self.connection = connection
     }
 
+    /// Interrupts the watched connection through its idempotent close boundary.
     func close() {
         self.connection.close()
     }

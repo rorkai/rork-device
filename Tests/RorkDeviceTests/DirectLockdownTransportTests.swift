@@ -42,18 +42,25 @@ final class DirectLockdownTransportTests: XCTestCase {
     }
 }
 
+/// Loopback listener that records one accepted transport connection.
 private final class OneShotTCPServer: @unchecked Sendable {
+    /// Underlying listener and event-loop owner.
     private let server: NIOTestServer
+
+    /// Cross-thread acceptance signal shared with the channel handler.
     private let recorder: ConnectionAcceptanceRecorder
 
+    /// Whether an inbound connection has become active.
     var acceptedConnection: Bool {
         recorder.acceptedConnection
     }
 
+    /// Ephemeral port assigned to the loopback listener.
     var port: UInt16 {
         server.port
     }
 
+    /// Starts a listener that closes each connection after recording it.
     init() throws {
         let recorder = ConnectionAcceptanceRecorder()
         self.recorder = recorder
@@ -64,31 +71,40 @@ private final class OneShotTCPServer: @unchecked Sendable {
         }
     }
 
+    /// Tears down the underlying listener and event loop.
     func stop() {
         server.stop()
     }
 
+    /// Waits for acceptance or throws after the fixture deadline.
     func waitUntilAccepted() async throws {
         try await recorder.waitUntilAccepted()
     }
 }
 
+/// Thread-safe acceptance flag shared by a test and its event-loop handler.
 private final class ConnectionAcceptanceRecorder:
     @unchecked Sendable
 {
+    /// Serializes reads and writes of the acceptance flag.
     private let lock = NSLock()
+
+    /// Whether a client connection has become active.
     private var accepted = false
 
+    /// Snapshot of the acceptance flag.
     var acceptedConnection: Bool {
         lock.withLock { accepted }
     }
 
+    /// Records that the listener accepted a connection.
     func recordConnection() {
         lock.withLock {
             accepted = true
         }
     }
 
+    /// Polls until acceptance or a two-second deadline.
     func waitUntilAccepted() async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))
@@ -103,23 +119,29 @@ private final class ConnectionAcceptanceRecorder:
     }
 }
 
+/// Pipeline handler that turns channel activation into a one-shot test signal.
 private final class ConnectionAcceptanceHandler:
     ChannelInboundHandler,
     @unchecked Sendable
 {
+    /// Inbound bytes are ignored because connection activation is the signal.
     typealias InboundIn = ByteBuffer
 
+    /// Recorder updated when the accepted channel becomes active.
     private let recorder: ConnectionAcceptanceRecorder
 
+    /// Stores the recorder that receives activation.
     init(recorder: ConnectionAcceptanceRecorder) {
         self.recorder = recorder
     }
 
+    /// Records activation and closes the one-shot connection.
     func channelActive(context: ChannelHandlerContext) {
         recorder.recordConnection()
         context.close(promise: nil)
     }
 
+    /// Closes the accepted channel after a pipeline failure.
     func errorCaught(
         context: ChannelHandlerContext,
         error _: Error
