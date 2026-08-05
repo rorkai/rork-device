@@ -10,9 +10,10 @@ import WinSDK
 /// Loopback TCP gateway for services reachable through a CoreDevice userspace network.
 ///
 /// Existing device tooling commonly selects a destination by opening a local
-/// TCP connection and sending a 20-byte preamble: the device's 16-byte IPv6
-/// address followed by a little-endian 32-bit port. This gateway accepts that
-/// protocol and forwards each connection through `CoreDeviceUserspaceNetwork`.
+/// TCP connection and sending a 20-byte preamble. It contains the device's
+/// 16-byte IPv6 address followed by a little-endian 32-bit port. This gateway
+/// accepts that protocol and forwards each connection through
+/// `CoreDeviceUserspaceNetwork`.
 ///
 /// The listener binds only to the host requested by the caller. Applications
 /// should normally keep the default loopback address because the preamble has
@@ -32,18 +33,11 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Network retained and closed by gateways created through the public API.
     private let ownedNetwork: CoreDeviceUserspaceNetwork?
 
-    /// Async server channel that owns the listening socket.
-    private let server:
-        NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, Never>,
-            Never
-        >
+    /// Server channel that owns the listening socket.
+    private let server: any Channel
 
-    /// Protects listener shutdown and access to the accept-loop task.
+    /// Protects listener shutdown and access to the network monitor task.
     private let closeLock = NSLock()
-
-    /// Long-lived task accepting clients until the gateway closes.
-    private var acceptTask: Task<Void, Error>?
 
     /// Task that closes the listener when the owned packet network terminates.
     private var networkMonitorTask: Task<Void, Never>?
@@ -52,7 +46,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     private let networkTermination = GatewayNetworkTermination()
 
     /// Tracks accepted channels so synchronous shutdown can close every stream.
-    private let activeChannels = GatewayActiveChannels()
+    private let activeChannels: GatewayActiveChannels
 
     /// Whether listener and network teardown has already begun.
     private var isClosed = false
@@ -62,30 +56,18 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         host: String,
         port: UInt16,
         deviceAddress: String,
-        expectedDeviceAddress: Data,
         ownedNetwork: CoreDeviceUserspaceNetwork?,
-        server: NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, Never>,
-            Never
-        >,
-        waitUntilNetworkCloses: (@Sendable () async throws -> Void)?,
-        connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
+        server: any Channel,
+        activeChannels: GatewayActiveChannels,
+        waitUntilNetworkCloses: (@Sendable () async throws -> Void)?
     ) {
         self.host = host
         self.port = port
         self.deviceAddress = deviceAddress
         self.ownedNetwork = ownedNetwork
         self.server = server
+        self.activeChannels = activeChannels
 
-        let activeChannels = self.activeChannels
-        acceptTask = Task {
-            try await Self.runAcceptLoop(
-                server: server,
-                expectedDeviceAddress: expectedDeviceAddress,
-                activeChannels: activeChannels,
-                connectionFactory: connectionFactory
-            )
-        }
         if let waitUntilNetworkCloses {
             let networkTermination = self.networkTermination
             networkMonitorTask = Task {
@@ -102,7 +84,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     networkTermination.finish(with: .failure(error))
                 }
                 activeChannels.closeAll()
-                server.channel.close(promise: nil)
+                server.close(promise: nil)
             }
         }
     }
@@ -145,12 +127,11 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Waits until the gateway or its owned userspace network closes.
     ///
     /// Long-running command-line tools can await this method after publishing
-    /// the gateway endpoint. Explicit `close()` completes the wait normally;
-    /// listener failures and terminal packet-network failures are rethrown.
+    /// the gateway endpoint. Explicit `close()` completes the wait normally.
+    /// Listener failures and terminal packet-network failures are rethrown.
     public func waitUntilClosed() async throws {
-        let task = closeLock.withLock { acceptTask }
         do {
-            try await task?.value
+            try await server.closeFuture.get()
         } catch {
             if let networkResult = networkTermination.result {
                 try networkResult.get()
@@ -170,46 +151,38 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     ///
     /// Calling this method more than once is safe.
     public func close() {
-        let tasks:
-            (
-                acceptLoop: Task<Void, Error>?,
-                networkMonitor: Task<Void, Never>?
-            )? = closeLock.withLock {
+        let state: (shouldClose: Bool, networkMonitor: Task<Void, Never>?) =
+            closeLock.withLock {
                 guard !isClosed else {
-                    return nil
+                    return (false, nil)
                 }
                 isClosed = true
-                let tasks = (
-                    acceptLoop: acceptTask,
-                    networkMonitor: networkMonitorTask
-                )
+                let networkMonitor = networkMonitorTask
                 networkMonitorTask = nil
-                return tasks
+                return (true, networkMonitor)
             }
-        guard let tasks else {
+        guard state.shouldClose else {
             return
         }
 
-        tasks.networkMonitor?.cancel()
+        state.networkMonitor?.cancel()
         activeChannels.closeAll()
-        server.channel.close(promise: nil)
+        server.close(promise: nil)
         ownedNetwork?.close()
     }
 
-    /**
-     * Closes the gateway and waits for every forwarding scope to finish.
-     */
+    /// Closes the gateway and waits for every forwarding scope to finish.
     func closeAndWait() async {
         close()
-        let task = closeLock.withLock { acceptTask }
-        _ = try? await task?.value
+        _ = try? await server.closeFuture.get()
+        await activeChannels.waitUntilEmpty()
     }
 
     /// Failure to start a gateway because its requested port is already bound.
     ///
     /// Callers that re-request a previous ephemeral port across restarts catch
-    /// this to fall back to a fresh port. Other start failures — an invalid
-    /// host, exhausted descriptors — are not fixed by changing ports and keep
+    /// this to fall back to a fresh port. An invalid host and exhausted
+    /// descriptors are not fixed by changing ports, so those failures keep
     /// their original error type.
     public struct PortUnavailableError: Error, CustomStringConvertible,
         LocalizedError
@@ -267,11 +240,8 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 "CoreDevice userspace gateway requires a valid device IPv6 address."
         )
 
-        let server:
-            NIOAsyncChannel<
-                NIOAsyncChannel<ByteBuffer, Never>,
-                Never
-            >
+        let activeChannels = GatewayActiveChannels()
+        let server: any Channel
         do {
             var bootstrap = ServerBootstrap(
                 group: NIOTransportRuntime.eventLoopGroup
@@ -294,23 +264,44 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 value: 1
             )
             #endif
-            server = try await bootstrap
-            .childChannelOption(.autoRead, value: true)
-            .bind(host: host, port: Int(port)) { channel in
-                channel.eventLoop.makeCompletedFuture {
-                    try NIOAsyncChannel<ByteBuffer, Never>(
-                        wrappingChannelSynchronously: channel
-                    )
+            bootstrap = bootstrap
+                .childChannelOption(.autoRead, value: true)
+                .childChannelInitializer { channel in
+                    channel.eventLoop.makeCompletedFuture {
+                        let asyncChannel = try NIOAsyncChannel<
+                            ByteBuffer,
+                            Never
+                        >(
+                            wrappingChannelSynchronously: channel
+                        )
+                        guard activeChannels.insert(channel) else {
+                            channel.close(promise: nil)
+                            return
+                        }
+                        _ = Task {
+                            defer {
+                                activeChannels.remove(channel)
+                            }
+                            await serve(
+                                asyncChannel,
+                                expectedDeviceAddress: expectedDeviceAddress,
+                                connectionFactory: connectionFactory
+                            )
+                        }
+                    }
                 }
-            }
+            server = try await bootstrap.bind(
+                host: host,
+                port: Int(port)
+            ).get()
         } catch let error as IOError where isAddressInUseError(error) {
             throw PortUnavailableError(host: host, port: port)
         }
 
-        guard let boundPort = server.channel.localAddress?.port,
+        guard let boundPort = server.localAddress?.port,
             let gatewayPort = UInt16(exactly: boundPort)
         else {
-            server.channel.close(promise: nil)
+            server.close(promise: nil)
             throw RorkDeviceError.transport(
                 "CoreDevice userspace gateway did not receive a valid local port."
             )
@@ -320,43 +311,11 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             host: host,
             port: gatewayPort,
             deviceAddress: deviceAddress,
-            expectedDeviceAddress: expectedDeviceAddress,
             ownedNetwork: ownedNetwork,
             server: server,
-            waitUntilNetworkCloses: waitUntilNetworkCloses,
-            connectionFactory: connectionFactory
+            activeChannels: activeChannels,
+            waitUntilNetworkCloses: waitUntilNetworkCloses
         )
-    }
-
-    /// Accepts clients concurrently while keeping each forwarding failure local.
-    private static func runAcceptLoop(
-        server: NIOAsyncChannel<
-            NIOAsyncChannel<ByteBuffer, Never>,
-            Never
-        >,
-        expectedDeviceAddress: Data,
-        activeChannels: GatewayActiveChannels,
-        connectionFactory: @escaping CoreDeviceGatewayConnectionFactory
-    ) async throws {
-        try await server.executeThenClose { inbound in
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                for try await channel in inbound {
-                    activeChannels.insert(channel.channel)
-                    group.addTask {
-                        defer {
-                            activeChannels.remove(channel.channel)
-                        }
-                        await serve(
-                            channel,
-                            expectedDeviceAddress:
-                                expectedDeviceAddress,
-                            connectionFactory: connectionFactory
-                        )
-                    }
-                }
-                try await group.waitForAll()
-            }
-        }
     }
 
     /// Validates one destination preamble and proxies the remaining byte stream.
@@ -466,37 +425,63 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     }
 }
 
-/**
- * Owns accepted channels until their forwarding scopes finish.
- *
- * Listener shutdown is synchronous, so the registry provides a safe way to
- * interrupt every active stream without canceling tasks before their async
- * writers can finish.
- */
+/// Owns accepted channels until their forwarding scopes finish.
+///
+/// Listener shutdown is synchronous. The registry closes active streams and
+/// lets callers wait until their forwarding tasks release every channel.
 private final class GatewayActiveChannels: @unchecked Sendable {
     private let lock = NSLock()
     private var channels: [ObjectIdentifier: any Channel] = [:]
+    private var isClosing = false
+    private var emptyWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func insert(_ channel: any Channel) {
+    func insert(_ channel: any Channel) -> Bool {
         lock.withLock {
+            guard !isClosing else {
+                return false
+            }
             channels[ObjectIdentifier(channel)] = channel
+            return true
         }
     }
 
     func remove(_ channel: any Channel) {
-        _ = lock.withLock {
-            channels.removeValue(forKey: ObjectIdentifier(channel))
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            _ = channels.removeValue(forKey: ObjectIdentifier(channel))
+            guard channels.isEmpty else {
+                return []
+            }
+            let waiters = emptyWaiters
+            emptyWaiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 
     func closeAll() {
         let active = lock.withLock {
-            let active = Array(channels.values)
-            channels.removeAll()
-            return active
+            isClosing = true
+            return Array(channels.values)
         }
         for channel in active {
             channel.close(promise: nil)
+        }
+    }
+
+    func waitUntilEmpty() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock {
+                guard !channels.isEmpty else {
+                    return true
+                }
+                emptyWaiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
         }
     }
 }
@@ -505,7 +490,7 @@ private final class GatewayActiveChannels: @unchecked Sendable {
 ///
 /// The monitor publishes its result before closing the NIO listener. This lets
 /// `waitUntilClosed()` distinguish orderly network shutdown from failure and
-/// prefer that outcome over errors caused by releasing the accept loop.
+/// prefer that outcome over errors caused by closing the listener.
 private final class GatewayNetworkTermination: @unchecked Sendable {
     /// Protects terminal-result publication across monitor and waiter tasks.
     private let lock = NSLock()
