@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 @testable import RorkDevice
 import XCTest
 
@@ -24,6 +25,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
     }
 
     /// Verifies Unix-domain socket short reads return available bytes without waiting for the caller's full capacity.
+    #if !os(Windows)
     func testUnixConnectionReceiveUpToReturnsAvailableBytesWithoutWaitingForFullRequest() async throws {
         let server = try UnixDataServer(data: "abc")
         defer { server.stop() }
@@ -35,6 +37,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
 
         XCTAssertEqual(String(data: data, encoding: .utf8), "abc")
     }
+    #endif
 
     /// Verifies explicit close prevents later reads from draining stale buffered data.
     func testClosedConnectionDoesNotReturnBufferedBytes() async throws {
@@ -142,105 +145,58 @@ final class PartialReceiveConnectionTests: XCTestCase {
     }
 }
 
-/// One-shot TCP server that accepts a single client and sends fixed bytes.
-///
-/// The detached accept thread reads immutable socket and payload state.
-/// `lock` protects the only mutable lifecycle flag shared with `stop()`.
 private final class TCPDataServer: @unchecked Sendable {
-    /// Bound TCP port in host byte order.
-    let port: UInt16
+    private let server: NIOTestServer
 
-    /// Listening socket owned by the test server.
-    private let fileDescriptor: Int32
+    var port: UInt16 {
+        server.port
+    }
 
-    /// Payload sent to the first accepted client.
-    private let data: Data
-
-    /// Protects idempotent shutdown state.
-    private let lock = NSLock()
-
-    /// Tracks whether the listening socket has already been closed.
-    private var stopped = false
-
-    /// Starts a loopback TCP server that sends `string` to the first client.
     init(data string: String) throws {
-        data = Data(string.utf8)
-        let socketFD = socket(AF_INET, testStreamSocketType, 0)
-        guard socketFD >= 0 else {
-            throw RorkDeviceError.transport(lastTestErrnoMessage("socket"))
-        }
-
-        var reuse: Int32 = 1
-        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var address = sockaddr_in()
-        #if canImport(Darwin)
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = 0
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-        let bindResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bindResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("bind"))
-        }
-        guard listen(socketFD, 1) == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("listen"))
-        }
-
-        var boundAddress = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(socketFD, $0, &length)
-            }
-        }
-        guard nameResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("getsockname"))
-        }
-
-        fileDescriptor = socketFD
-        port = UInt16(bigEndian: boundAddress.sin_port)
-
-        Thread.detachNewThread { [weak self] in
-            self?.acceptAndSend()
+        let data = Data(string.utf8)
+        server = try NIOTestServer { channel in
+            channel.pipeline.addHandler(
+                FixedDataServerHandler(data: data)
+            )
         }
     }
 
-    deinit {
-        stop()
-    }
-
-    /// Stops the listening socket. Calling this more than once is safe.
     func stop() {
-        lock.lock()
-        let shouldStop = !stopped
-        stopped = true
-        lock.unlock()
-        if shouldStop {
-            close(fileDescriptor)
-        }
-    }
-
-    /// Accepts one client connection and writes the configured payload.
-    private func acceptAndSend() {
-        let clientFD = accept(fileDescriptor, nil, nil)
-        guard clientFD >= 0 else {
-            return
-        }
-        defer { close(clientFD) }
-        sendAll(data, to: clientFD)
+        server.stop()
     }
 }
 
+private final class FixedDataServerHandler:
+    ChannelInboundHandler,
+    @unchecked Sendable
+{
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    private let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        var buffer = context.channel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        let channel = context.channel
+        context.writeAndFlush(wrapOutboundOut(buffer)).whenComplete { _ in
+            channel.close(promise: nil)
+        }
+    }
+
+    func errorCaught(
+        context: ChannelHandlerContext,
+        error _: Error
+    ) {
+        context.close(promise: nil)
+    }
+}
+
+#if !os(Windows)
 /// One-shot Unix-domain server that accepts a single client and sends fixed bytes.
 ///
 /// The detached accept thread reads immutable socket, path, and payload state.
@@ -362,6 +318,7 @@ private func sendAll(_ data: Data, to fileDescriptor: Int32) {
 private func lastTestErrnoMessage(_ operation: String) -> String {
     "\(operation) failed: \(String(cString: strerror(errno)))"
 }
+#endif
 
 /// Asserts that an error is the expected package transport failure.
 private func assertTransportError(
@@ -377,176 +334,176 @@ private func assertTransportError(
     XCTAssertEqual(message, expectedMessage, file: file, line: line)
 }
 
-/// Scripted TCP server that optionally records a request, then streams chunks.
-///
-/// The detached accept thread reads immutable script configuration. `lock`
-/// protects the recorded request and lifecycle state shared with the test task.
 private final class TCPScriptedServer: @unchecked Sendable {
-    /// Bound TCP port in host byte order.
-    let port: UInt16
+    private let server: NIOTestServer
+    private let recorder: ScriptedServerRecorder
 
-    /// Listening socket owned by the test server.
-    private let fileDescriptor: Int32
-
-    /// Number of request bytes to read and record before sending chunks.
-    private let prefixReadLength: Int
-
-    /// Ordered payload chunks streamed to the accepted client.
-    private let chunks: [Data]
-
-    /// Delay inserted before every chunk after the first.
-    private let interChunkDelayMicros: useconds_t
-
-    /// Delay inserted before closing the accepted client socket.
-    private let closeDelayMicros: useconds_t
-
-    /// Protects recorded request bytes and idempotent shutdown state.
-    private let lock = NSLock()
-
-    /// Request bytes read from the client before streaming the response.
-    private var _received = Data()
-
-    /// Tracks whether the listening socket has already been closed.
-    private var stopped = false
-
-    /// Bytes the server read from the client before streaming its chunks.
-    var receivedBytes: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return _received
+    var port: UInt16 {
+        server.port
     }
 
-    /// Starts a loopback TCP server for deterministic stream-shape tests.
-    ///
-    /// The server accepts one client. When `prefixReadLength` is greater than
-    /// zero, it first reads and records that many request bytes from the client.
-    /// It then writes each entry in `chunks` as a separate blocking send, which
-    /// lets tests verify that `receive(exactly:)` accumulates multiple inbound
-    /// chunks correctly.
-    ///
-    /// `interChunkDelayMicros` spaces out response chunks. `closeDelayMicros`
-    /// keeps the accepted socket open after all chunks are sent, which lets
-    /// explicit-close tests close the client side while a read is still pending
-    /// instead of racing the server EOF path.
+    var receivedBytes: Data {
+        recorder.receivedBytes
+    }
+
     init(
         prefixReadLength: Int = 0,
         chunks: [Data],
-        interChunkDelayMicros: useconds_t = 0,
-        closeDelayMicros: useconds_t = 0
+        interChunkDelayMicros: Int64 = 0,
+        closeDelayMicros: Int64 = 0
     ) throws {
-        self.prefixReadLength = prefixReadLength
-        self.chunks = chunks
-        self.interChunkDelayMicros = interChunkDelayMicros
-        self.closeDelayMicros = closeDelayMicros
-
-        let socketFD = socket(AF_INET, testStreamSocketType, 0)
-        guard socketFD >= 0 else {
-            throw RorkDeviceError.transport(lastTestErrnoMessage("socket"))
-        }
-
-        var reuse: Int32 = 1
-        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var address = sockaddr_in()
-        #if canImport(Darwin)
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = 0
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-        let bindResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bindResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("bind"))
-        }
-        guard listen(socketFD, 1) == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("listen"))
-        }
-
-        var boundAddress = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(socketFD, $0, &length)
-            }
-        }
-        guard nameResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport(lastTestErrnoMessage("getsockname"))
-        }
-
-        fileDescriptor = socketFD
-        port = UInt16(bigEndian: boundAddress.sin_port)
-
-        Thread.detachNewThread { [weak self] in
-            self?.acceptAndRun()
+        let recorder = ScriptedServerRecorder()
+        self.recorder = recorder
+        server = try NIOTestServer { channel in
+            channel.pipeline.addHandler(
+                ScriptedServerHandler(
+                    prefixReadLength: prefixReadLength,
+                    chunks: chunks,
+                    interChunkDelayMicros: interChunkDelayMicros,
+                    closeDelayMicros: closeDelayMicros,
+                    recorder: recorder
+                )
+            )
         }
     }
 
-    deinit {
-        stop()
-    }
-
-    /// Stops the listening socket. Calling this more than once is safe.
     func stop() {
-        lock.lock()
-        let shouldStop = !stopped
-        stopped = true
-        lock.unlock()
-        if shouldStop {
-            close(fileDescriptor)
-        }
+        server.stop()
+    }
+}
+
+private final class ScriptedServerRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var received = Data()
+
+    var receivedBytes: Data {
+        lock.withLock { received }
     }
 
-    /// Accepts one client, records the optional request, and streams chunks.
-    private func acceptAndRun() {
-        let clientFD = accept(fileDescriptor, nil, nil)
-        guard clientFD >= 0 else {
-            return
-        }
-        defer { close(clientFD) }
-
-        if prefixReadLength > 0 {
-            let request = recvExactly(prefixReadLength, from: clientFD)
-            lock.lock()
-            _received = request
-            lock.unlock()
-        }
-
-        for (index, chunk) in chunks.enumerated() {
-            if index > 0, interChunkDelayMicros > 0 {
-                usleep(interChunkDelayMicros)
-            }
-            sendAll(chunk, to: clientFD)
-        }
-        if closeDelayMicros > 0 {
-            usleep(closeDelayMicros)
+    func record(_ data: Data) {
+        lock.withLock {
+            received = data
         }
     }
 }
 
-/// Reads exactly `count` bytes from a blocking test socket, or fewer on EOF.
-private func recvExactly(_ count: Int, from fileDescriptor: Int32) -> Data {
-    var received = Data()
-    var scratch = [UInt8](repeating: 0, count: count)
-    while received.count < count {
-        let remaining = count - received.count
-        let read = scratch.withUnsafeMutableBytes { buffer -> Int in
-            guard let baseAddress = buffer.baseAddress else {
-                return 0
-            }
-            return recv(fileDescriptor, baseAddress, remaining, 0)
-        }
-        guard read > 0 else {
-            break
-        }
-        received.append(contentsOf: scratch[0 ..< read])
+private final class ScriptedServerHandler:
+    ChannelInboundHandler,
+    @unchecked Sendable
+{
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    private let prefixReadLength: Int
+    private let chunks: [Data]
+    private let interChunkDelayMicros: Int64
+    private let closeDelayMicros: Int64
+    private let recorder: ScriptedServerRecorder
+    private var pending = ByteBuffer()
+    private var started = false
+
+    init(
+        prefixReadLength: Int,
+        chunks: [Data],
+        interChunkDelayMicros: Int64,
+        closeDelayMicros: Int64,
+        recorder: ScriptedServerRecorder
+    ) {
+        self.prefixReadLength = prefixReadLength
+        self.chunks = chunks
+        self.interChunkDelayMicros = interChunkDelayMicros
+        self.closeDelayMicros = closeDelayMicros
+        self.recorder = recorder
     }
-    return received
+
+    func channelActive(context: ChannelHandlerContext) {
+        if prefixReadLength == 0 {
+            startScript(context: context)
+        }
+    }
+
+    func channelRead(
+        context: ChannelHandlerContext,
+        data: NIOAny
+    ) {
+        guard !started else {
+            return
+        }
+        var incoming = unwrapInboundIn(data)
+        pending.writeBuffer(&incoming)
+        guard pending.readableBytes >= prefixReadLength,
+            let bytes = pending.readData(length: prefixReadLength)
+        else {
+            return
+        }
+        recorder.record(bytes)
+        startScript(context: context)
+    }
+
+    private func startScript(context: ChannelHandlerContext) {
+        guard !started else {
+            return
+        }
+        started = true
+        let channel = context.channel
+        let closeDelayMicros = self.closeDelayMicros
+        let scheduleClose: @Sendable () -> Void = {
+            if closeDelayMicros > 0 {
+                channel.eventLoop.scheduleTask(
+                    in: .microseconds(closeDelayMicros)
+                ) {
+                    channel.close(promise: nil)
+                }
+            } else {
+                channel.close(promise: nil)
+            }
+        }
+        guard !chunks.isEmpty else {
+            scheduleClose()
+            return
+        }
+
+        let lastChunkIndex = chunks.index(before: chunks.endIndex)
+        var delay: Int64 = 0
+        for (index, chunk) in chunks.enumerated() {
+            if index > 0 {
+                delay += interChunkDelayMicros
+            }
+            context.eventLoop.scheduleTask(
+                in: .microseconds(delay)
+            ) {
+                guard channel.isActive else {
+                    return
+                }
+                var buffer = channel.allocator.buffer(
+                    capacity: chunk.count
+                )
+                buffer.writeBytes(chunk)
+                if index == lastChunkIndex {
+                    let writePromise = channel.eventLoop.makePromise(
+                        of: Void.self
+                    )
+                    writePromise.futureResult.whenComplete { _ in
+                        scheduleClose()
+                    }
+                    channel.writeAndFlush(
+                        buffer,
+                        promise: writePromise
+                    )
+                } else {
+                    channel.writeAndFlush(
+                        buffer,
+                        promise: nil
+                    )
+                }
+            }
+        }
+    }
+
+    func errorCaught(
+        context: ChannelHandlerContext,
+        error _: Error
+    ) {
+        context.close(promise: nil)
+    }
 }

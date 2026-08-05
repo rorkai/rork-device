@@ -181,7 +181,9 @@ public struct RemotePairingIdentity:
     /// - Throws: File-loading errors or the validation errors documented by
     ///   `init(propertyList:)`.
     public init(contentsOf url: URL) throws {
-        try self.init(propertyList: Data(contentsOf: url))
+        try self.init(
+            propertyList: makeRemotePairingIdentityStorage().read(from: url)
+        )
     }
 
     /// Loads an existing identity or creates and persists a new one.
@@ -198,32 +200,42 @@ public struct RemotePairingIdentity:
     public static func loadOrCreate(
         at url: URL
     ) throws -> RemotePairingIdentity {
-        let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: url.path) {
-            return try RemotePairingIdentity(contentsOf: url)
+        try loadOrCreate(
+            at: url,
+            storage: makeRemotePairingIdentityStorage()
+        )
+    }
+
+    /// Loads an identity or publishes one through an injectable storage backend.
+    ///
+    /// The storage contract resolves concurrent creation by returning `false`
+    /// from `createIfAbsent`. This method then reads the winning identity
+    /// instead of replacing it.
+    ///
+    /// - Parameters:
+    ///   - url: Stable property-list location for the host identity.
+    ///   - storage: Backend that provides atomic create-if-absent semantics.
+    /// - Returns: The validated existing identity or the newly persisted one.
+    static func loadOrCreate(
+        at url: URL,
+        storage: any RemotePairingIdentityStorage
+    ) throws -> RemotePairingIdentity {
+        if storage.fileExists(at: url) {
+            return try RemotePairingIdentity(
+                propertyList: storage.read(from: url)
+            )
         }
 
         let identity = RemotePairingIdentity.generate()
-        let candidateURL =
-            url
-            .deletingLastPathComponent()
-            .appendingPathComponent(
-                ".\(url.lastPathComponent).\(UUID().uuidString).candidate"
-            )
-        defer {
-            try? fileManager.removeItem(at: candidateURL)
-        }
-
-        do {
-            try identity.write(to: candidateURL)
-            try fileManager.linkItem(at: candidateURL, to: url)
+        if try storage.createIfAbsent(
+            identity.propertyList(),
+            at: url
+        ) {
             return identity
-        } catch {
-            guard fileManager.fileExists(atPath: url.path) else {
-                throw error
-            }
-            return try RemotePairingIdentity(contentsOf: url)
         }
+        return try RemotePairingIdentity(
+            propertyList: storage.read(from: url)
+        )
     }
 
     /// Serializes the complete identity as an Apple property list.
@@ -251,11 +263,11 @@ public struct RemotePairingIdentity:
         )
     }
 
-    /// Persists the complete identity with owner-only file permissions.
+    /// Persists the complete identity with current-user file protection.
     ///
-    /// The destination's parent directory must already exist. Serialization is
-    /// written to a sibling temporary file, restricted to mode `0600`, and then
-    /// moved into place so callers never observe a partially written identity.
+    /// The destination's parent directory must already exist. A sibling
+    /// temporary file is protected before credential bytes are written and then
+    /// moved into place so callers never observe a partial identity.
     ///
     /// - Parameters:
     ///   - url: Destination property-list file.
@@ -266,9 +278,13 @@ public struct RemotePairingIdentity:
         to url: URL,
         format: PropertyListSerialization.PropertyListFormat = .binary
     ) throws {
-        try write(to: url, format: format, fileManager: .default)
+        try makeRemotePairingIdentityStorage().write(
+            propertyList(format: format),
+            to: url
+        )
     }
 
+    #if !os(Windows)
     /// Persists an identity using an injectable file manager.
     ///
     /// Supplying the file manager keeps creation-mode behavior observable in
@@ -286,47 +302,14 @@ public struct RemotePairingIdentity:
         format: PropertyListSerialization.PropertyListFormat = .binary,
         fileManager: FileManager
     ) throws {
-        let data = try propertyList(format: format)
-        let temporaryURL =
-            url
-            .deletingLastPathComponent()
-            .appendingPathComponent(
-                ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
-            )
-
-        do {
-            guard
-                fileManager.createFile(
-                    atPath: temporaryURL.path,
-                    contents: nil,
-                    attributes: [
-                        .posixPermissions: NSNumber(value: 0o600)
-                    ]
-                )
-            else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            let handle = try FileHandle(forWritingTo: temporaryURL)
-            do {
-                try handle.write(contentsOf: data)
-                try handle.close()
-            } catch {
-                try? handle.close()
-                throw error
-            }
-            if fileManager.fileExists(atPath: url.path) {
-                _ = try fileManager.replaceItemAt(
-                    url,
-                    withItemAt: temporaryURL
-                )
-            } else {
-                try fileManager.moveItem(at: temporaryURL, to: url)
-            }
-        } catch {
-            try? fileManager.removeItem(at: temporaryURL)
-            throw error
-        }
+        try POSIXRemotePairingIdentityStorage(
+            fileManager: fileManager
+        ).write(
+            propertyList(format: format),
+            to: url
+        )
     }
+    #endif
 }
 
 /// Generates the fixed-width resolving key included in pair-setup metadata.

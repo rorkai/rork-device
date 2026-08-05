@@ -37,9 +37,8 @@ final class NIODeviceConnection:
 
     /// Long-lived task draining the channel's inbound async sequence.
     ///
-    /// The task is retained so `close()` can cancel the pump immediately after
-    /// marking the stream closed, instead of waiting for the channel teardown to
-    /// wake the inbound iterator.
+    /// The task retains async-channel ownership until channel teardown wakes the
+    /// inbound iterator and lets its writer finish.
     private let pumpTask: Task<Void, Never>
 
     /// Guards `closedLocally` so close is observable from any thread.
@@ -170,10 +169,14 @@ final class NIODeviceConnection:
             return
         }
 
-        channel.close(promise: nil)
-        pumpTask.cancel()
         let coordinator = self.coordinator
-        Task { await coordinator.finishClosing(with: NIODeviceConnection.closedError) }
+        let channel = self.channel
+        Task {
+            await coordinator.finishClosing(
+                with: NIODeviceConnection.closedError
+            )
+            channel.close(promise: nil)
+        }
     }
 
     deinit {
@@ -355,7 +358,7 @@ private struct ByteStreamReadDemand {
 
 /// Serializes imperative reads onto the channel's inbound async sequence.
 ///
-/// Callers enqueue read demands here; the pump's reader loop pulls one demand at
+/// Callers enqueue read demands here. The pump's reader loop pulls one demand at
 /// a time, so the single inbound iterator is consumed in order. All terminal
 /// state lives behind the actor so close, peer EOF, and transport failures
 /// resolve every outstanding and future read exactly once.
@@ -418,6 +421,11 @@ private actor InboundReadCoordinator {
         }
         parkedReader?.resume(returning: nil)
     }
+
+    /// Prefers an established local close reason over a later transport error.
+    func terminalError(or fallback: Error) -> Error {
+        closeError ?? fallback
+    }
 }
 
 /// Bridges the channel's inbound async sequence to the read coordinator.
@@ -456,7 +464,9 @@ private func runInboundReader(
                 for: demand.kind, leftover: &leftover, iterator: &iterator)
             demand.continuation.resume(returning: data)
         } catch {
-            let streamError = normalizedStreamError(error)
+            let streamError = await coordinator.terminalError(
+                or: normalizedStreamError(error)
+            )
             demand.continuation.resume(throwing: streamError)
             await coordinator.finishClosing(with: streamError)
             break

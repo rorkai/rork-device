@@ -2,6 +2,14 @@ import Foundation
 import NIOCore
 import NIOSSL
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(WinSDK)
+import WinSDK
+#endif
+
 /// Formats low-level transport errors for package-level diagnostics.
 ///
 /// Transport implementations may receive either package errors or framework
@@ -12,10 +20,23 @@ func describeTransportError(_ error: Error) -> String {
         return deviceError.description
     }
     if let ioError = error as? NIOCore.IOError {
+        #if os(Windows)
+        return "SwiftNIO IOError: \(ioError.description)"
+        #else
         return "SwiftNIO IOError errno=\(ioError.errnoCode): \(ioError.description)"
+        #endif
     }
     if let sslError = error as? NIOSSLError {
         return String(reflecting: sslError)
     }
     return error.localizedDescription
+}
+
+/// Returns whether a socket bind failed because the requested address is busy.
+func isAddressInUseError(_ error: NIOCore.IOError) -> Bool {
+    #if os(Windows)
+    error.winsockErrorCode == WSAEADDRINUSE
+    #else
+    return error.errnoCode == EADDRINUSE
+    #endif
 }

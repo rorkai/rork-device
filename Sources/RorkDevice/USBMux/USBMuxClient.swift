@@ -508,8 +508,40 @@ public enum USBMuxEndpoint: Equatable, Sendable {
     /// TCP endpoint for a forwarded or embedded usbmux-compatible peer.
     case tcp(host: String, port: UInt16)
 
-    /// Standard platform endpoint used by Apple-host tooling.
-    public static let `default` = USBMuxEndpoint.unixSocket(path: "/var/run/usbmuxd")
+    /// Standard endpoint for the current host platform.
+    public static let `default` = USBMuxEndpoint.default(
+        for: USBMuxEndpointPlatform.current
+    )
+
+    /// Returns the conventional usbmux endpoint for `platform`.
+    static func `default`(
+        for platform: USBMuxEndpointPlatform
+    ) -> USBMuxEndpoint {
+        switch platform {
+        case .windows:
+            .tcp(host: "127.0.0.1", port: 27_015)
+        case .posix:
+            .unixSocket(path: "/var/run/usbmuxd")
+        }
+    }
+}
+
+/// Host families whose conventional usbmux endpoints differ.
+enum USBMuxEndpointPlatform {
+    /// Windows exposes its Apple device service through local TCP port 27015.
+    case windows
+
+    /// POSIX hosts expose usbmux through a Unix-domain socket.
+    case posix
+
+    /// Host family selected by the current Swift target.
+    static var current: USBMuxEndpointPlatform {
+        #if os(Windows)
+        .windows
+        #else
+        .posix
+        #endif
+    }
 }
 
 /// `DeviceTransport` implementation backed by usbmux forwarding.

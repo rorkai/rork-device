@@ -48,6 +48,7 @@ final class RemotePairingIdentityTests: XCTestCase {
         }
     }
 
+    #if !os(Windows)
     func testWritesPrivateIdentityWithOwnerOnlyPermissions() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -93,6 +94,85 @@ final class RemotePairingIdentityTests: XCTestCase {
 
         XCTAssertEqual(fileManager.createdFilePermissions, 0o600)
     }
+    #endif
+
+    func testWritingReplacementPublishesOnlyTheNewIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = directory.appendingPathComponent("identity.plist")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let first = RemotePairingIdentity.generate()
+        let second = RemotePairingIdentity.generate()
+
+        try first.write(to: file)
+        try second.write(to: file)
+
+        XCTAssertEqual(try RemotePairingIdentity(contentsOf: file), second)
+    }
+
+    func testAtomicWritesCleanUpSiblingCandidates() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = directory.appendingPathComponent("identity.plist")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        try RemotePairingIdentity.generate().write(to: file)
+        try RemotePairingIdentity.generate().write(to: file)
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path),
+            ["identity.plist"]
+        )
+    }
+
+    func testLoadOrCreateLoadsWinnerOfCreationRace() throws {
+        let winner = RemotePairingIdentity.generate()
+        let storage = LosingCreationRaceIdentityStorage(
+            winnerData: try winner.propertyList()
+        )
+        let file = URL(fileURLWithPath: "/unused/identity.plist")
+
+        let loaded = try RemotePairingIdentity.loadOrCreate(
+            at: file,
+            storage: storage
+        )
+
+        XCTAssertEqual(loaded, winner)
+        XCTAssertEqual(storage.creationAttempts, 1)
+    }
+
+    #if os(Windows)
+    func testWritesIdentityWithCurrentUserProtectedAccess() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = directory.appendingPathComponent("identity.plist")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        try RemotePairingIdentity.generate().write(to: file)
+
+        XCTAssertTrue(
+            try windowsIdentityFileHasCurrentUserOnlyAccess(at: file)
+        )
+    }
+    #endif
 
     func testLoadOrCreatePersistsAndReusesOneIdentity() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -256,6 +336,7 @@ final class RemotePairingIdentityTests: XCTestCase {
 ///
 /// The real file operation still runs so the test exercises the complete
 /// atomic-write path while observing the security-sensitive creation mode.
+#if !os(Windows)
 private final class RecordingIdentityFileManager: FileManager, @unchecked Sendable {
     /// Protects the recorded creation mode from concurrent file operations.
     private let recordingLock = NSLock()
@@ -263,7 +344,7 @@ private final class RecordingIdentityFileManager: FileManager, @unchecked Sendab
     /// POSIX mode supplied for the most recently created file.
     private var recordedFilePermissions: Int?
 
-    /// POSIX mode supplied for the most recently created file.
+    /// Thread-safe snapshot of the most recently recorded POSIX mode.
     var createdFilePermissions: Int? {
         recordingLock.withLock { recordedFilePermissions }
     }
@@ -284,5 +365,37 @@ private final class RecordingIdentityFileManager: FileManager, @unchecked Sendab
             contents: data,
             attributes: attr
         )
+    }
+}
+#endif
+
+private final class LosingCreationRaceIdentityStorage:
+    RemotePairingIdentityStorage,
+    @unchecked Sendable
+{
+    private let winnerData: Data
+    private(set) var creationAttempts = 0
+
+    init(winnerData: Data) {
+        self.winnerData = winnerData
+    }
+
+    func fileExists(at _: URL) -> Bool {
+        false
+    }
+
+    func read(from _: URL) throws -> Data {
+        winnerData
+    }
+
+    func write(_ data: Data, to url: URL) throws {
+        XCTFail("Unexpected replacement write of \(data.count) bytes to \(url)")
+    }
+
+    func createIfAbsent(_ data: Data, at url: URL) throws -> Bool {
+        creationAttempts += 1
+        XCTAssertFalse(data.isEmpty)
+        XCTAssertEqual(url.lastPathComponent, "identity.plist")
+        return false
     }
 }

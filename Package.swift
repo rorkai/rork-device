@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 
 import PackageDescription
 
@@ -26,28 +26,16 @@ var products: [Product] = [
     ),
 ]
 
-// Swift 6.3 selects the WASI-capable forks used by RorkDeviceWeb. Earlier
-// toolchains retain the native package's Swift 6.0 compatibility by resolving
-// the last upstream releases whose manifests support that toolchain.
-#if compiler(>=6.3)
+// Coordinated revisions keep native Windows and WASI support on one package
+// graph.
 let swiftNIO: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio.git",
-    exact: "2.100.0-rork.1"
+    exact: "2.100.0-rork.2"
 )
 let swiftNIOSSL: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-nio-ssl.git",
-    exact: "2.37.1-rork.1"
+    exact: "2.37.2-rork.1"
 )
-#else
-let swiftNIO: Package.Dependency = .package(
-    url: "https://github.com/apple/swift-nio.git",
-    "2.97.1"..<"2.98.0"
-)
-let swiftNIOSSL: Package.Dependency = .package(
-    url: "https://github.com/apple/swift-nio-ssl.git",
-    "2.36.1"..<"2.37.0"
-)
-#endif
 
 // Swift 6.3 selects coordinated WASI forks. The Certificates fork resolves the
 // same Crypto revision directly, which keeps the combined web package graph
@@ -92,7 +80,7 @@ let bigInt: Package.Dependency = .package(
 )
 let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
-    exact: "0.8.1-rork.3"
+    exact: "0.8.1-rork.4"
 )
 
 var dependencies: [Package.Dependency] = [
@@ -106,6 +94,17 @@ var dependencies: [Package.Dependency] = [
 ]
 
 var targets: [Target] = [
+    .target(
+        name: "RorkDevicePlatform",
+        path: "Sources/RorkDevicePlatform",
+        publicHeadersPath: "include",
+        linkerSettings: [
+            .linkedLibrary(
+                "advapi32",
+                .when(platforms: [.windows])
+            ),
+        ]
+    ),
     .target(
         name: "RorkDeviceLwIP",
         path: "Sources/RorkDeviceLwIP",
@@ -139,12 +138,19 @@ var targets: [Target] = [
         cSettings: [
             .headerSearchPath("Configuration"),
             .headerSearchPath("Vendor/lwip/src/include"),
+        ],
+        linkerSettings: [
+            .linkedLibrary(
+                "bcrypt",
+                .when(platforms: [.windows])
+            ),
         ]
     ),
     .target(
         name: "RorkDevice",
         dependencies: [
             "RorkDeviceLwIP",
+            "RorkDevicePlatform",
             .product(name: "BigInt", package: "BigInt"),
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOEmbedded", package: "swift-nio"),

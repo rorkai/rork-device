@@ -5,6 +5,15 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+#endif
+
 #if defined(__linux__)
 #include <errno.h>
 #include <sys/random.h>
@@ -646,12 +655,22 @@ void rork_lwip_connection_destroy(
 
 /// Supplies entropy for lwIP sequence numbers and protocol identifiers.
 ///
-/// Apple and FreeBSD platforms provide `arc4random_buf`, while Linux uses
-/// `getrandom`. The C runtime fallback remains available for platforms without
-/// either API.
+/// Supported hosts use their operating system's secure random source.
 uint32_t rork_lwip_random(void) {
     uint32_t value = 0;
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(_WIN32)
+    if (
+        BCryptGenRandom(
+            NULL,
+            (PUCHAR)&value,
+            (ULONG)sizeof(value),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        ) != 0
+    ) {
+        abort();
+    }
+    return value;
+#elif defined(__APPLE__) || defined(__FreeBSD__)
     arc4random_buf(&value, sizeof(value));
 #elif defined(__linux__)
     size_t offset = 0;
@@ -684,12 +703,16 @@ uint32_t rork_lwip_random(void) {
 /// lwIP computes elapsed time with unsigned arithmetic, so truncation and
 /// periodic wraparound are intentional.
 u32_t sys_now(void) {
+#if defined(_WIN32)
+    return (u32_t)GetTickCount64();
+#else
     struct timespec time;
     clock_gettime(CLOCK_MONOTONIC, &time);
     return (u32_t)(
         ((uint64_t)time.tv_sec * 1000) +
         ((uint64_t)time.tv_nsec / 1000000)
     );
+#endif
 }
 
 /// Provides lwIP's scheduler tick value using the same monotonic clock.

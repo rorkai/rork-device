@@ -1,0 +1,344 @@
+name: Windows x64
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SWIFT_VERSION: 6.2.4
+  SWIFT_INSTALLER_URL: https://download.swift.org/swift-6.2.4-release/windows10/swift-6.2.4-RELEASE/swift-6.2.4-RELEASE-windows10.exe
+  SWIFT_INSTALLER_SHA256: 222501D4A0EF6EC3B2F08B3E0055140BB3A5136527542239BB925F979689F4AD
+
+jobs:
+  build-test:
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Swift
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $installer = Join-Path $env:RUNNER_TEMP "swift-installer.exe"
+          Invoke-WebRequest -Uri $env:SWIFT_INSTALLER_URL -OutFile $installer
+          $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($actualHash -ne $env:SWIFT_INSTALLER_SHA256) {
+            throw "Swift installer checksum mismatch. Expected $env:SWIFT_INSTALLER_SHA256 but received $actualHash."
+          }
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList @("/quiet", "/norestart") `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
+          if (@(0, 3010) -notcontains $process.ExitCode) {
+            throw "Swift installer exited with code $($process.ExitCode)."
+          }
+          Remove-Item $installer -Force
+
+          $machinePath = [Environment]::GetEnvironmentVariable(
+            "Path",
+            "Machine"
+          )
+          $userPath = [Environment]::GetEnvironmentVariable(
+            "Path",
+            "User"
+          )
+          $pathEntries = "$machinePath;$userPath" -split ";" |
+            Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique
+          foreach ($pathEntry in $pathEntries) {
+            Add-Content -Path $env:GITHUB_PATH -Value $pathEntry
+          }
+          $env:Path = ($pathEntries -join ";") + ";" + $env:Path
+
+          $swiftRoots = @(
+            (Join-Path $env:LOCALAPPDATA "Programs\Swift"),
+            (Join-Path $env:ProgramFiles "Swift"),
+            (Join-Path $env:SystemDrive "Library\Developer\Toolchains")
+          ) | Where-Object { Test-Path $_ }
+          $swiftExecutable = Get-Command swift.exe `
+            -ErrorAction SilentlyContinue
+          if ($null -ne $swiftExecutable) {
+            $swiftExecutable = Get-Item $swiftExecutable.Source
+          } else {
+            $swiftExecutable = $swiftRoots |
+              ForEach-Object {
+                Get-ChildItem `
+                  -Path $_ `
+                  -Filter "swift.exe" `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue
+              } |
+              Select-Object -First 1
+          }
+          if ($null -eq $swiftExecutable) {
+            throw "Swift executable was not found after installation."
+          }
+          $swiftRoot = $swiftRoots |
+            Where-Object {
+              $swiftExecutable.FullName.StartsWith(
+                $_,
+                [StringComparison]::OrdinalIgnoreCase
+              )
+            } |
+            Select-Object -First 1
+          if ($null -eq $swiftRoot) {
+            $swiftRoot = $swiftExecutable.Directory.Parent.FullName
+          }
+          $sdkRoot = [Environment]::GetEnvironmentVariable(
+            "SDKROOT",
+            "User"
+          )
+          if (-not $sdkRoot) {
+            $sdkRoot = [Environment]::GetEnvironmentVariable(
+              "SDKROOT",
+              "Machine"
+            )
+          }
+          if (-not $sdkRoot -or -not (Test-Path $sdkRoot)) {
+            $windowsSDK = Get-ChildItem `
+              -Path $swiftRoot `
+              -Directory `
+              -Filter "Windows.sdk" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($null -eq $windowsSDK) {
+              throw "The Swift Windows SDK was not found after installation."
+            }
+            $sdkRoot = $windowsSDK.FullName
+          }
+          $swiftBin = $swiftExecutable.Directory.FullName
+          Add-Content -Path $env:GITHUB_PATH -Value $swiftBin
+          Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_BIN=$swiftBin"
+          Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_INSTALL_ROOT=$swiftRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "SDKROOT=$sdkRoot"
+          $env:Path = "$swiftBin;$env:Path"
+          $env:SDKROOT = $sdkRoot
+
+          $versionOutput = (
+            & $swiftExecutable.FullName --version
+          ) -join "`n"
+          if ($versionOutput -notmatch [Regex]::Escape($env:SWIFT_VERSION)) {
+            throw "Installed Swift version does not match $env:SWIFT_VERSION."
+          }
+          $versionOutput
+
+      - name: Build release-layout executable
+        shell: pwsh
+        run: swift build --configuration release --product rorkdevice -Xswiftc -Onone
+
+      - name: Run tests
+        shell: pwsh
+        run: swift test
+
+      - name: Verify command line entry points
+        shell: pwsh
+        run: |
+          $binPath = (swift build --configuration release --show-bin-path).Trim()
+          $executable = Join-Path $binPath "rorkdevice.exe"
+          if (-not (Test-Path $executable)) {
+            throw "Release executable was not found at $executable."
+          }
+          $versionSource = Get-Content `
+            "Sources/RorkDevice/Public/RorkDevice.swift" `
+            -Raw
+          $versionMatch = [Regex]::Match(
+            $versionSource,
+            'public static let version = "([^"]+)"'
+          )
+          if (-not $versionMatch.Success) {
+            throw "The package version could not be read."
+          }
+          $version = (& $executable --version).Trim()
+          if ($version -ne $versionMatch.Groups[1].Value) {
+            throw "The executable version does not match the package version."
+          }
+          & $executable --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "rorkdevice --help failed with exit code $LASTEXITCODE."
+          }
+          "RORKDEVICE_EXE=$executable" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Inspect runtime requirements
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inspection = Join-Path $env:RUNNER_TEMP "windows-x64-inspection"
+          New-Item -ItemType Directory -Path $inspection | Out-Null
+          Copy-Item $env:RORKDEVICE_EXE $inspection
+          Copy-Item "LICENSE" $inspection
+          Copy-Item "THIRD_PARTY_NOTICES.md" $inspection
+          Copy-Item "ThirdPartyLicenses" $inspection -Recurse
+
+          $readObject = Join-Path $env:SWIFT_BIN "llvm-readobj.exe"
+          if (Test-Path $readObject) {
+            & $readObject --coff-imports $env:RORKDEVICE_EXE |
+              Out-File (Join-Path $inspection "executable-imports.txt")
+          } else {
+            "llvm-readobj.exe was not present beside swift.exe." |
+              Out-File (Join-Path $inspection "executable-imports.txt")
+          }
+
+          $swiftRoot = $env:SWIFT_INSTALL_ROOT
+          if (-not (Test-Path $swiftRoot)) {
+            throw "The official Swift installation root was not found."
+          }
+          Get-ChildItem $swiftRoot -Recurse -File |
+            Where-Object {
+              $_.Extension -eq ".dll" -or
+              $_.Name -like "LICENSE*" -or
+              $_.Name -like "NOTICE*"
+            } |
+            ForEach-Object {
+              [PSCustomObject]@{
+                Path = $_.FullName.Substring($swiftRoot.Length + 1)
+                Size = $_.Length
+                SHA256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              }
+            } |
+            ConvertTo-Json -Depth 3 |
+            Out-File (Join-Path $inspection "official-runtime-files.json")
+
+      - name: Upload runtime inspection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rorkdevice-windows-x64-runtime-inspection
+          path: ${{ runner.temp }}/windows-x64-inspection
+          if-no-files-found: error
+
+      - name: Package portable Windows executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "rorkdevice-windows-x64"
+          New-Item -ItemType Directory -Path $package -Force | Out-Null
+          $packagedExecutable = Join-Path $package "rorkdevice.exe"
+          Copy-Item $env:RORKDEVICE_EXE $packagedExecutable
+          Copy-Item "LICENSE" $package
+          Copy-Item "THIRD_PARTY_NOTICES.md" $package
+          Copy-Item "ThirdPartyLicenses" $package -Recurse
+
+          $strip = Join-Path $env:SWIFT_BIN "llvm-strip.exe"
+          if (-not (Test-Path $strip -PathType Leaf)) {
+            throw "The executable stripping tool was not found."
+          }
+          & $strip --strip-debug $packagedExecutable
+          if ($LASTEXITCODE -ne 0) {
+            throw "The packaged executable could not be stripped."
+          }
+
+          $targetInfoText = (swiftc -print-target-info) -join "`n"
+          $targetInfo = $targetInfoText | ConvertFrom-Json
+          $runtimePath = $targetInfo.paths.runtimeLibraryPaths |
+            Where-Object {
+              Test-Path (Join-Path $_ "swiftCore.dll") -PathType Leaf
+            } |
+            Select-Object -First 1
+          if (-not $runtimePath) {
+            throw "The runtime library directory was not found."
+          }
+          Copy-Item (Join-Path $runtimePath "*.dll") $package
+
+          $previousPath = $env:Path
+          try {
+            $env:Path = "$package;$env:SystemRoot\System32"
+            & $packagedExecutable --version
+            if ($LASTEXITCODE -ne 0) {
+              throw "The packaged executable failed with exit code $LASTEXITCODE."
+            }
+          } finally {
+            $env:Path = $previousPath
+          }
+
+          $checksums = Get-ChildItem $package -File -Recurse |
+            Sort-Object FullName |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              $relativePath = [IO.Path]::GetRelativePath(
+                $package,
+                $_.FullName
+              ).Replace("\", "/")
+              "$hash  $relativePath"
+            }
+          $checksums |
+            Out-File (Join-Path $package "SHA256SUMS.txt") -Encoding ascii
+          Add-Content `
+            -Path $env:GITHUB_ENV `
+            -Value "RORKDEVICE_PACKAGE=$package"
+
+      - name: Upload portable Windows executable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rorkdevice-windows-x64
+          path: ${{ env.RORKDEVICE_PACKAGE }}
+          if-no-files-found: error
+
+  publish-windows:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-test
+    runs-on: blacksmith-4vcpu-windows-2025
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download portable Windows executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "rorkdevice-windows-x64"
+          gh run download `
+            $env:GITHUB_RUN_ID `
+            --name "rorkdevice-windows-x64" `
+            --dir $package
+          if ($LASTEXITCODE -ne 0) {
+            throw "The portable Windows artifact could not be downloaded."
+          }
+          $archive = Join-Path $env:RUNNER_TEMP "rorkdevice-windows-x64.zip"
+          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $archive
+          Add-Content -Path $env:GITHUB_ENV -Value "WINDOWS_RELEASE_ARCHIVE=$archive"
+
+      - name: Publish portable Windows executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload `
+              $env:GITHUB_REF_NAME `
+              $env:WINDOWS_RELEASE_ARCHIVE `
+              --clobber
+          } else {
+            gh release create `
+              $env:GITHUB_REF_NAME `
+              $env:WINDOWS_RELEASE_ARCHIVE `
+              --verify-tag `
+              --title $env:GITHUB_REF_NAME
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "The portable Windows release asset could not be published."
+          }

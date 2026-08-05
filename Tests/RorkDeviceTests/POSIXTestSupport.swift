@@ -1,3 +1,4 @@
+#if !os(Windows)
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -16,3 +17,4 @@ let testStreamSocketType: Int32 = {
     SOCK_STREAM
     #endif
 }()
+#endif

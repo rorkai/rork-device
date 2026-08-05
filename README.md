@@ -1,6 +1,6 @@
 # rork-device
 
-[![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](Package.swift)
+[![Swift](https://img.shields.io/badge/Swift-6.1-orange.svg)](Package.swift)
 [![SwiftPM](https://img.shields.io/badge/SwiftPM-supported-brightgreen.svg)](Package.swift)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -87,7 +87,7 @@ Add `rork-device` to the package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.28"),
+    .package(url: "https://github.com/rorkai/rork-device.git", from: "0.9.29"),
 ]
 ```
 
@@ -420,12 +420,19 @@ their process and platform while reusing the same identity, trust, and
 
 ## Platform Support
 
-The native package currently targets macOS 13 or later and iOS 16 or later.
+The native package supports macOS 13 or later, iOS 16 or later, and Windows 10
+x64 or later. The manifest's `platforms` field declares Apple deployment
+minimums. Swift Package Manager does not use that field to gate Windows hosts.
+
+The native and browser targets resolve coordinated networking revisions across
+every host because Swift Package Manager constructs one dependency graph. This
+keeps Windows and WASI support available without changing APIs between
+platforms.
+
 The `RorkDeviceWeb` product targets WASI with JavaScriptKit and requires an
 embedding JavaScript environment that exposes WebUSB and Web Crypto. Lockdown
-secure-session upgrades use SwiftNIO SSL for both native SwiftNIO connections
-and transport-neutral browser streams. Remote-pairing TLS-PSK connections use
-the Apple Network.framework and Security.framework backend described below.
+secure-session upgrades use the package's TLS backend for native connections and
+transport-neutral browser streams.
 
 `RemotePairingTunnel.isSupported` reports whether the bundled remote-pairing
 transport is available in the current process. Calling `connect` when it is not
@@ -434,8 +441,9 @@ network connection.
 
 Platform-specific remote-pairing transport selection is isolated behind an
 internal boundary so a portable backend can be added later without changing
-the high-level tunnel or `DeviceSession` APIs. The current release does not
-include a Windows or Linux backend.
+the high-level tunnel or `DeviceSession` APIs. The direct
+`RemotePairingTunnel` TLS-PSK backend currently requires Apple networking and
+security frameworks, so `isSupported` remains false on Windows and Linux.
 
 ## Usage
 

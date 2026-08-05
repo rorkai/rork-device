@@ -1,12 +1,7 @@
 import Foundation
+import NIOCore
 import XCTest
 @testable import RorkDevice
-
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 final class DirectLockdownTransportTests: XCTestCase {
     func testConnectsToByteSwappedServicePortWhenDirectPortIsRefused() async throws {
@@ -16,12 +11,13 @@ final class DirectLockdownTransportTests: XCTestCase {
         let requestedPort = server.port.byteSwapped
         let transport = DirectLockdownTransport(
             host: "127.0.0.1",
-            serviceConnectionTimeout: .seconds(1),
+            serviceConnectionTimeout: .seconds(3),
             serviceConnectionRetryDelay: .zero
         )
 
         let connection = try await transport.connect(to: requestedPort)
         connection.close()
+        try await server.waitUntilAccepted()
 
         XCTAssertTrue(server.acceptedConnection)
     }
@@ -46,96 +42,88 @@ final class DirectLockdownTransportTests: XCTestCase {
     }
 }
 
-/// Thread-safe one-shot server used by direct Lockdown transport tests.
-///
-/// The detached accept thread shares the listening descriptor with `stop()`.
-/// Its only mutable result and lifecycle state are protected by `lock`.
 private final class OneShotTCPServer: @unchecked Sendable {
-    let port: UInt16
-
-    private let fd: Int32
-    private let lock = NSLock()
-    private var stopped = false
-    private var accepted = false
+    private let server: NIOTestServer
+    private let recorder: ConnectionAcceptanceRecorder
 
     var acceptedConnection: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accepted
+        recorder.acceptedConnection
+    }
+
+    var port: UInt16 {
+        server.port
     }
 
     init() throws {
-        let socketFD = socket(AF_INET, testStreamSocketType, 0)
-        guard socketFD >= 0 else {
-            throw RorkDeviceError.transport("socket failed: \(String(cString: strerror(errno)))")
+        let recorder = ConnectionAcceptanceRecorder()
+        self.recorder = recorder
+        server = try NIOTestServer { channel in
+            channel.pipeline.addHandler(
+                ConnectionAcceptanceHandler(recorder: recorder)
+            )
         }
-
-        var reuse: Int32 = 1
-        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var address = sockaddr_in()
-        #if canImport(Darwin)
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = 0
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-        let bindResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bindResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport("bind failed: \(String(cString: strerror(errno)))")
-        }
-        guard listen(socketFD, 1) == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport("listen failed: \(String(cString: strerror(errno)))")
-        }
-
-        var boundAddress = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(socketFD, $0, &length)
-            }
-        }
-        guard nameResult == 0 else {
-            close(socketFD)
-            throw RorkDeviceError.transport("getsockname failed: \(String(cString: strerror(errno)))")
-        }
-        fd = socketFD
-        port = UInt16(bigEndian: boundAddress.sin_port)
-
-        Thread.detachNewThread { [weak self] in
-            self?.acceptOne()
-        }
-    }
-
-    deinit {
-        stop()
     }
 
     func stop() {
-        lock.lock()
-        let shouldStop = !stopped
-        stopped = true
-        lock.unlock()
-        if shouldStop {
-            close(fd)
+        server.stop()
+    }
+
+    func waitUntilAccepted() async throws {
+        try await recorder.waitUntilAccepted()
+    }
+}
+
+private final class ConnectionAcceptanceRecorder:
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var accepted = false
+
+    var acceptedConnection: Bool {
+        lock.withLock { accepted }
+    }
+
+    func recordConnection() {
+        lock.withLock {
+            accepted = true
         }
     }
 
-    private func acceptOne() {
-        let clientFD = accept(fd, nil, nil)
-        guard clientFD >= 0 else {
-            return
+    func waitUntilAccepted() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !lock.withLock({ accepted }) {
+            if clock.now >= deadline {
+                throw RorkDeviceError.transport(
+                    "Timed out waiting for the test server to accept a connection."
+                )
+            }
+            try await Task.sleep(for: .milliseconds(10))
         }
-        lock.lock()
-        accepted = true
-        lock.unlock()
-        close(clientFD)
+    }
+}
+
+private final class ConnectionAcceptanceHandler:
+    ChannelInboundHandler,
+    @unchecked Sendable
+{
+    typealias InboundIn = ByteBuffer
+
+    private let recorder: ConnectionAcceptanceRecorder
+
+    init(recorder: ConnectionAcceptanceRecorder) {
+        self.recorder = recorder
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        recorder.recordConnection()
+        context.close(promise: nil)
+    }
+
+    func errorCaught(
+        context: ChannelHandlerContext,
+        error _: Error
+    ) {
+        context.close(promise: nil)
     }
 }

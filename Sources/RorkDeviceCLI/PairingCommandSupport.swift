@@ -23,7 +23,7 @@ func writePairingProgress(_ progress: DevicePairingProgress) {
     let message: String
     switch progress {
     case .waitingForUserConfirmation:
-        message = "Waiting for the iPhone to trust this Mac."
+        message = "Waiting for the iPhone to trust this computer."
     case .savingPairingRecord:
         message = "Saving the accepted pairing record."
     }

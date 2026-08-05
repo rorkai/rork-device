@@ -138,20 +138,22 @@ final class DeviceClientIntegrationTests: XCTestCase {
     func testPairingTrustTimeoutCapsLongRetryInterval() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
-        let client = DeviceClient(
-            usbmuxClient: USBMuxClient(
-                host: "127.0.0.1",
-                port: daemon.port
-            )
+        let usbmuxClient = USBMuxClient(
+            host: "127.0.0.1",
+            port: daemon.port
         )
-        let devices = try await client.discoverDevices()
-        let device = try XCTUnwrap(devices.first)
+        let client = DeviceClient(usbmuxClient: usbmuxClient)
+        let transport = USBMuxDeviceTransport(
+            deviceID: 1,
+            usbmuxClient: usbmuxClient
+        )
         let clock = ContinuousClock()
         let start = clock.now
 
         do {
             _ = try await client.pair(
-                with: device,
+                using: try testPairingRecord(),
+                over: transport,
                 trustTimeout: .milliseconds(50),
                 retryInterval: .seconds(2)
             )
