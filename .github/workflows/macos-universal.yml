@@ -112,7 +112,6 @@ jobs:
         with:
           name: rorkdevice-macos-universal
           path: ${{ env.RORKDEVICE_ARTIFACT }}
-          archive: false
           if-no-files-found: error
           retention-days: 14
 
