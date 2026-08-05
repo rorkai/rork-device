@@ -753,7 +753,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
-        /// Records one heartbeat command and returns its canned response.
+        /// Records one heartbeat command and closes the accepted channel.
         private func processHeartbeatRequest(
             context: ChannelHandlerContext
         ) -> Bool {
@@ -791,7 +791,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             return true
         }
 
-        /// Parses one usbmux packet, or returns nil while its frame is partial.
+        /// Parses one usbmux packet, or returns nil for incomplete or invalid input.
         private func readUSBMuxRequest() -> (
             packet: USBMuxPacket,
             dictionary: [String: Any]
@@ -850,7 +850,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
             ) as? [String: Any]
         }
 
-        /// Parses one AFC packet, or returns nil while its frame is partial.
+        /// Parses one AFC packet, or returns nil for incomplete or invalid input.
         private func readAFCPacket() -> FakeAFCPacket? {
             let start = inbound.readerIndex
             guard

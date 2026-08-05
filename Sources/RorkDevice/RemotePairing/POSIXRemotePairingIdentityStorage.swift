@@ -45,10 +45,9 @@ struct POSIXRemotePairingIdentityStorage:
         }
     }
 
-    /// Publishes a new identity without replacing a concurrent winner.
+    /// Publishes a new identity without replacing an existing destination.
     ///
-    /// The return value is `false` when another writer created the destination
-    /// before this candidate could be linked into place.
+    /// The return value is `false` when the destination already exists.
     func createIfAbsent(_ data: Data, at url: URL) throws -> Bool {
         let candidateURL = identitySiblingURL(
             for: url,

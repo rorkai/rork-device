@@ -64,7 +64,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     ///   - server: Bound listener channel that signals listener teardown.
     ///   - forwardingChannels: Registry that owns accepted channels until their
     ///     forwarding tasks finish.
-    ///   - waitUntilNetworkCloses: Optional monitor for the owned network.
+    ///   - waitUntilNetworkCloses: Optional monitor for network lifecycle closure.
     private init(
         host: String,
         port: UInt16,

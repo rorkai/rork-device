@@ -145,7 +145,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
     }
 }
 
-/// Loopback server that sends one fixed payload to the first client.
+/// Loopback server that sends one fixed payload to each accepted client.
 private final class TCPDataServer: @unchecked Sendable {
     /// Underlying listener and event-loop owner.
     private let server: NIOTestServer
