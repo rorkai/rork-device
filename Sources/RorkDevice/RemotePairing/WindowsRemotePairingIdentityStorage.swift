@@ -2,6 +2,7 @@
 import Foundation
 import RorkDevicePlatform
 
+/// Stores identities atomically with an owner-only Windows access-control list.
 struct WindowsRemotePairingIdentityStorage:
     RemotePairingIdentityStorage
 {
@@ -25,6 +26,7 @@ struct WindowsRemotePairingIdentityStorage:
         )
     }
 
+    /// Writes through a protected sibling and publishes it with one native move.
     private func writeAtomically(
         _ data: Data,
         to url: URL,
@@ -66,6 +68,7 @@ struct WindowsRemotePairingIdentityStorage:
     }
 }
 
+/// Returns whether the identity file grants access only to the current user.
 func windowsIdentityFileHasCurrentUserOnlyAccess(
     at url: URL
 ) throws -> Bool {

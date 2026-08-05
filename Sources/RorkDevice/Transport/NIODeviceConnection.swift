@@ -358,7 +358,7 @@ private struct ByteStreamReadDemand {
 
 /// Serializes imperative reads onto the channel's inbound async sequence.
 ///
-/// Callers enqueue read demands here; the pump's reader loop pulls one demand at
+/// Callers enqueue read demands here. The pump's reader loop pulls one demand at
 /// a time, so the single inbound iterator is consumed in order. All terminal
 /// state lives behind the actor so close, peer EOF, and transport failures
 /// resolve every outstanding and future read exactly once.

@@ -32,13 +32,10 @@ func describeTransportError(_ error: Error) -> String {
     return error.localizedDescription
 }
 
+/// Returns whether a socket bind failed because the requested address is busy.
 func isAddressInUseError(_ error: NIOCore.IOError) -> Bool {
     #if os(Windows)
-    let addressInUse = NIOCore.IOError(
-        winsock: WSAEADDRINUSE,
-        reason: "bind"
-    )
-    return error.description == addressInUse.description
+    error.winsockErrorCode == WSAEADDRINUSE
     #else
     return error.errnoCode == EADDRINUSE
     #endif

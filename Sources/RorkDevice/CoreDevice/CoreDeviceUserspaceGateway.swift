@@ -19,6 +19,9 @@ import WinSDK
 /// should normally keep the default loopback address because the preamble has
 /// no authentication and grants access to services exposed by the paired
 /// device for the lifetime of the underlying tunnel.
+///
+/// Call `close()` and then await `waitUntilClosed()` when deterministic teardown
+/// matters. Deallocation only initiates the same nonblocking close sequence.
 public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// Host address on which the gateway accepts local clients.
     public let host: String
@@ -46,7 +49,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     private let networkTermination = GatewayNetworkTermination()
 
     /// Tracks accepted channels so synchronous shutdown can close every stream.
-    private let activeChannels: GatewayActiveChannels
+    private let forwardingChannels: GatewayForwardingChannels
 
     /// Whether listener and network teardown has already begun.
     private var isClosed = false
@@ -58,7 +61,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         deviceAddress: String,
         ownedNetwork: CoreDeviceUserspaceNetwork?,
         server: any Channel,
-        activeChannels: GatewayActiveChannels,
+        forwardingChannels: GatewayForwardingChannels,
         waitUntilNetworkCloses: (@Sendable () async throws -> Void)?
     ) {
         self.host = host
@@ -66,7 +69,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         self.deviceAddress = deviceAddress
         self.ownedNetwork = ownedNetwork
         self.server = server
-        self.activeChannels = activeChannels
+        self.forwardingChannels = forwardingChannels
 
         if let waitUntilNetworkCloses {
             let networkTermination = self.networkTermination
@@ -83,7 +86,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                     }
                     networkTermination.finish(with: .failure(error))
                 }
-                activeChannels.closeAll()
+                forwardingChannels.closeAll()
                 server.close(promise: nil)
             }
         }
@@ -166,7 +169,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         }
 
         state.networkMonitor?.cancel()
-        activeChannels.closeAll()
+        forwardingChannels.closeAll()
         server.close(promise: nil)
         ownedNetwork?.close()
     }
@@ -175,7 +178,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     func closeAndWait() async {
         close()
         _ = try? await server.closeFuture.get()
-        await activeChannels.waitUntilEmpty()
+        await forwardingChannels.waitUntilEmpty()
     }
 
     /// Failure to start a gateway because its requested port is already bound.
@@ -193,10 +196,12 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
         /// Requested port that is already in use.
         public let port: UInt16
 
+        /// Human-readable description of the conflicting listener endpoint.
         public var description: String {
             "Local gateway port \(port) on \(host) is already in use."
         }
 
+        /// Localized description presented by APIs that consume `LocalizedError`.
         public var errorDescription: String? {
             description
         }
@@ -208,6 +213,13 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
     /// signal without requiring a physical tunnel or userspace TCP/IP stack. It
     /// returns after orderly shutdown and throws the failure that ended the
     /// network.
+    ///
+    /// - Parameters:
+    ///   - deviceAddress: Device IPv6 address accepted by the preamble.
+    ///   - host: Local address on which clients may connect.
+    ///   - port: Requested local port, or zero for an ephemeral port.
+    ///   - waitUntilNetworkCloses: Optional network-lifecycle signal.
+    ///   - connectionFactory: Opens the requested device-side service.
     static func start(
         deviceAddress: String,
         host: String,
@@ -240,15 +252,16 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                 "CoreDevice userspace gateway requires a valid device IPv6 address."
         )
 
-        let activeChannels = GatewayActiveChannels()
+        let forwardingChannels = GatewayForwardingChannels()
         let server: any Channel
         do {
             var bootstrap = ServerBootstrap(
                 group: NIOTransportRuntime.eventLoopGroup
             )
 
-            // Windows address reuse permits overlapping listeners. Exclusive
-            // ownership keeps gateway port conflicts deterministic.
+            // Winsock defines SO_EXCLUSIVEADDRUSE as the bitwise complement of
+            // SO_REUSEADDR. Enabling it prevents overlapping listeners and
+            // keeps gateway port conflicts deterministic.
             #if os(Windows)
             bootstrap = bootstrap.serverChannelOption(
                 .socketOption(
@@ -274,13 +287,12 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
                         >(
                             wrappingChannelSynchronously: channel
                         )
-                        guard activeChannels.insert(channel) else {
-                            channel.close(promise: nil)
+                        guard forwardingChannels.register(channel) else {
                             return
                         }
                         _ = Task {
                             defer {
-                                activeChannels.remove(channel)
+                                forwardingChannels.unregister(channel)
                             }
                             await serve(
                                 asyncChannel,
@@ -313,7 +325,7 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
             deviceAddress: deviceAddress,
             ownedNetwork: ownedNetwork,
             server: server,
-            activeChannels: activeChannels,
+            forwardingChannels: forwardingChannels,
             waitUntilNetworkCloses: waitUntilNetworkCloses
         )
     }
@@ -429,23 +441,33 @@ public final class CoreDeviceUserspaceGateway: @unchecked Sendable {
 ///
 /// Listener shutdown is synchronous. The registry closes active streams and
 /// lets callers wait until their forwarding tasks release every channel.
-private final class GatewayActiveChannels: @unchecked Sendable {
+/// Its lock protects all mutable state shared by listener and forwarding tasks.
+private final class GatewayForwardingChannels: @unchecked Sendable {
     private let lock = NSLock()
     private var channels: [ObjectIdentifier: any Channel] = [:]
     private var isClosing = false
     private var emptyWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func insert(_ channel: any Channel) -> Bool {
-        lock.withLock {
+    /// Registers a channel unless gateway shutdown has already begun.
+    ///
+    /// A channel that arrives after shutdown is closed before this method
+    /// returns `false`.
+    func register(_ channel: any Channel) -> Bool {
+        let didRegister = lock.withLock {
             guard !isClosing else {
                 return false
             }
             channels[ObjectIdentifier(channel)] = channel
             return true
         }
+        if !didRegister {
+            channel.close(promise: nil)
+        }
+        return didRegister
     }
 
-    func remove(_ channel: any Channel) {
+    /// Removes a finished channel and resumes waiters after the registry drains.
+    func unregister(_ channel: any Channel) {
         let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
             _ = channels.removeValue(forKey: ObjectIdentifier(channel))
             guard channels.isEmpty else {
@@ -460,6 +482,7 @@ private final class GatewayActiveChannels: @unchecked Sendable {
         }
     }
 
+    /// Rejects future registrations and closes every active channel.
     func closeAll() {
         let active = lock.withLock {
             isClosing = true
@@ -470,6 +493,7 @@ private final class GatewayActiveChannels: @unchecked Sendable {
         }
     }
 
+    /// Suspends until every registered forwarding task has released its channel.
     func waitUntilEmpty() async {
         await withCheckedContinuation { continuation in
             let shouldResume = lock.withLock {
@@ -491,6 +515,7 @@ private final class GatewayActiveChannels: @unchecked Sendable {
 /// The monitor publishes its result before closing the NIO listener. This lets
 /// `waitUntilClosed()` distinguish orderly network shutdown from failure and
 /// prefer that outcome over errors caused by closing the listener.
+/// Its lock protects the one-shot result shared with the waiting caller.
 private final class GatewayNetworkTermination: @unchecked Sendable {
     /// Protects terminal-result publication across monitor and waiter tasks.
     private let lock = NSLock()

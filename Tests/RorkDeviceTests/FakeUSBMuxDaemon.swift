@@ -34,7 +34,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
 
     /// usbmux result code returned after removing a pairing record.
     ///
-    /// Zero represents success; nonzero values exercise error propagation from
+    /// Zero represents success. Nonzero values exercise error propagation from
     /// the host-record cleanup stage.
     private let removePairingRecordStatus: Int
 

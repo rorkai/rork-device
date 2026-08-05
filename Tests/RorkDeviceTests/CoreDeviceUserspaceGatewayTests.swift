@@ -150,7 +150,7 @@ final class CoreDeviceUserspaceGatewayTests: XCTestCase {
         await fulfillment(of: [connectionOpened], timeout: 1)
 
         let gatewayClosed = expectation(
-            description: "Gateway accept loop stopped."
+            description: "Gateway listener stopped."
         )
         let waitTask = Task {
             defer {

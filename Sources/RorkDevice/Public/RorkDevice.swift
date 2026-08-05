@@ -20,13 +20,11 @@ private func usesUSBRoute(_ device: Device) -> Bool {
         .caseInsensitiveCompare("USB") == .orderedSame
 }
 
-/**
- * Closes one connection from a watchdog task without widening the connection
- * protocol's concurrency contract.
- *
- * Device connections guarantee that close is idempotent and may interrupt a
- * read from another task. No other operation crosses the task boundary.
- */
+/// Closes one connection from a watchdog task without widening the connection
+/// protocol's concurrency contract.
+///
+/// Device connections guarantee that close is idempotent and may interrupt a
+/// read from another task. No other operation crosses the task boundary.
 private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
     private let connection: any DeviceConnection
 
@@ -44,7 +42,7 @@ private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
 /// `DeviceClient` supports two connection routes:
 ///
 /// - authenticated Lockdown over usbmux or a direct endpoint, using an existing
-///   pairing record;
+///   pairing record.
 /// - direct connections to service ports advertised by Remote Service
 ///   Discovery after a remote-pairing tunnel has been established.
 ///
@@ -471,10 +469,9 @@ public final class DeviceClient {
     /// Reads a best-effort unauthenticated snapshot of Lockdown device state.
     ///
     /// A single `GetValue` without a session returns whatever the device exposes
-    /// to an untrusted host. Because it never opens a trusted session, it still
-    /// works when the session itself is the thing failing — the case worth
-    /// diagnosing — and any value the device withholds until trust exists is
-    /// reported as `nil` rather than raised as an error.
+    /// to an untrusted host. It remains available when trusted session setup is
+    /// itself the failing operation. Any value withheld until trust exists is
+    /// reported as `nil` instead of raised as an error.
     ///
     /// - Parameter transport: Route capable of opening Lockdown on port 62078.
     /// - Returns: The identity, clock, and lock state the device exposes.
@@ -515,8 +512,8 @@ public final class DeviceClient {
     ///
     /// The same candidate record is retried over fresh Lockdown connections
     /// while iOS waits for the Trust dialog. This method returns the completed
-    /// record containing the device-issued escrow bag but does not persist it;
-    /// the embedding application owns storage appropriate for its platform.
+    /// record containing the device-issued escrow bag but does not persist it.
+    /// The embedding application owns storage appropriate for its platform.
     ///
     /// - Parameters:
     ///   - pairingRecord: Candidate host identity without an escrow bag.

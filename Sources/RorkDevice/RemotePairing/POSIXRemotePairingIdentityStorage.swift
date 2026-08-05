@@ -1,12 +1,18 @@
 #if !os(Windows)
 import Foundation
 
+/// Stores identities in owner-readable POSIX files using atomic sibling moves.
+///
+/// The value has no mutable state outside Foundation's thread-safe file
+/// manager, which allows storage operations to cross task boundaries.
 struct POSIXRemotePairingIdentityStorage:
     RemotePairingIdentityStorage,
     @unchecked Sendable
 {
+    /// Filesystem implementation used for persistence.
     let fileManager: FileManager
 
+    /// Creates storage backed by `fileManager`.
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }

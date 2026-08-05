@@ -229,10 +229,10 @@ final class TunnelAgentRunOperationTests: XCTestCase {
 
 /// The command-output capture used by in-process runs.
 final class CommandOutputTests: XCTestCase {
-    func testWritesReachTheInstalledSinkInsteadOfStandardOutput() async throws {
+    func testWritesReachTheInstalledSinkInsteadOfStandardOutput() throws {
         let captured = LockedLines()
 
-        try await CommandOutput.$sink.withValue(captured.append) {
+        try CommandOutput.$sink.withValue(captured.append) {
             try CommandOutput.write(contentsOf: Data("line".utf8))
             CommandOutput.print("printed")
         }

@@ -513,6 +513,7 @@ public enum USBMuxEndpoint: Equatable, Sendable {
         for: USBMuxEndpointPlatform.current
     )
 
+    /// Returns the conventional usbmux endpoint for `platform`.
     static func `default`(
         for platform: USBMuxEndpointPlatform
     ) -> USBMuxEndpoint {
@@ -525,10 +526,15 @@ public enum USBMuxEndpoint: Equatable, Sendable {
     }
 }
 
+/// Host families whose conventional usbmux endpoints differ.
 enum USBMuxEndpointPlatform {
+    /// Windows exposes its Apple device service through local TCP port 27015.
     case windows
+
+    /// POSIX hosts expose usbmux through a Unix-domain socket.
     case posix
 
+    /// Host family selected by the current Swift target.
     static var current: USBMuxEndpointPlatform {
         #if os(Windows)
         .windows

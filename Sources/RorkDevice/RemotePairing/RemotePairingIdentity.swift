@@ -182,7 +182,7 @@ public struct RemotePairingIdentity:
     ///   `init(propertyList:)`.
     public init(contentsOf url: URL) throws {
         try self.init(
-            propertyList: remotePairingIdentityStorage().read(from: url)
+            propertyList: makeRemotePairingIdentityStorage().read(from: url)
         )
     }
 
@@ -202,10 +202,20 @@ public struct RemotePairingIdentity:
     ) throws -> RemotePairingIdentity {
         try loadOrCreate(
             at: url,
-            storage: remotePairingIdentityStorage()
+            storage: makeRemotePairingIdentityStorage()
         )
     }
 
+    /// Loads an identity or publishes one through an injectable storage backend.
+    ///
+    /// The storage contract resolves concurrent creation by returning `false`
+    /// from `createIfAbsent`. This method then reads the winning identity
+    /// instead of replacing it.
+    ///
+    /// - Parameters:
+    ///   - url: Stable property-list location for the host identity.
+    ///   - storage: Backend that provides atomic create-if-absent semantics.
+    /// - Returns: The validated existing identity or the newly persisted one.
     static func loadOrCreate(
         at url: URL,
         storage: any RemotePairingIdentityStorage
@@ -268,7 +278,7 @@ public struct RemotePairingIdentity:
         to url: URL,
         format: PropertyListSerialization.PropertyListFormat = .binary
     ) throws {
-        try remotePairingIdentityStorage().write(
+        try makeRemotePairingIdentityStorage().write(
             propertyList(format: format),
             to: url
         )

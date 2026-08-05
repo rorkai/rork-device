@@ -43,8 +43,8 @@ public protocol StreamingDeviceConnection: DeviceConnection, Sendable {
 
 /// Transport capable of opening device service connections by port.
 ///
-/// A transport abstracts how bytes reach the device: local usbmux forwarding,
-/// direct TCP, a tunnel, or a test double.
+/// A transport abstracts how bytes reach the device. Implementations may use
+/// local usbmux forwarding, direct TCP, a tunnel, or a test double.
 public protocol DeviceTransport {
     /// Opens a connection to a device service port.
     ///
@@ -62,8 +62,9 @@ public protocol SecureSessionUpgrader {
     /// Returns a secure connection using pairing-record credentials.
     ///
     /// The caller retains ownership of `connection` until this method succeeds.
-    /// On success, the returned connection owns or wraps the original stream; on
-    /// failure, the caller remains responsible for closing the original stream.
+    /// On success, the returned connection owns or wraps the original stream.
+    /// On failure, the caller remains responsible for closing the original
+    /// stream.
     ///
     /// - Parameters:
     ///   - connection: Plain connection that Lockdown asked to secure.

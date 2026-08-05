@@ -344,7 +344,7 @@ private final class RecordingIdentityFileManager: FileManager, @unchecked Sendab
     /// POSIX mode supplied for the most recently created file.
     private var recordedFilePermissions: Int?
 
-    /// POSIX mode supplied for the most recently created file.
+    /// Thread-safe snapshot of the most recently recorded POSIX mode.
     var createdFilePermissions: Int? {
         recordingLock.withLock { recordedFilePermissions }
     }

@@ -22,29 +22,28 @@ final class NIOTransportRuntimeLifecycleTests: XCTestCase {
     }
 }
 
-/**
- * Stops the package-wide event loop after XCTest has finished every test.
- *
- * Windows keeps native event-loop threads alive until they are explicitly
- * joined, so the test process cannot terminate while the shared runtime runs.
- * A dedicated thread avoids asking an event loop to synchronously join itself.
- * The observer has no mutable state, so callbacks may cross test executors.
- */
+/// Stops the package-wide event loop after XCTest has finished every test.
+///
+/// Windows keeps native event-loop threads alive until they are explicitly
+/// joined. XCTest invokes this observer outside the event-loop group, so the
+/// synchronous shutdown can finish before the test process exits.
 private final class NIOTransportRuntimeShutdownObserver:
     NSObject,
     XCTestObservation,
     @unchecked Sendable
 {
-    func testBundleDidFinish(_ testBundle: Bundle) {
-        Thread.detachNewThread {
-            do {
-                try NIOTransportRuntime.eventLoopGroup
-                    .syncShutdownGracefully()
-            } catch {
-                fatalError(
-                    "Failed to stop the shared event-loop runtime: \(error)"
-                )
-            }
+    func testBundleDidFinish(_: Bundle) {
+        precondition(
+            !NIOTransportRuntime.eventLoopGroup.next().inEventLoop,
+            "XCTest must not shut down the shared runtime from its event loop."
+        )
+        do {
+            try NIOTransportRuntime.eventLoopGroup
+                .syncShutdownGracefully()
+        } catch {
+            fatalError(
+                "Failed to stop the shared event-loop runtime: \(error)"
+            )
         }
     }
 }
