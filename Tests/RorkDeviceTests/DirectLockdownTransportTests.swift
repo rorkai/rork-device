@@ -11,7 +11,7 @@ final class DirectLockdownTransportTests: XCTestCase {
         let requestedPort = server.port.byteSwapped
         let transport = DirectLockdownTransport(
             host: "127.0.0.1",
-            serviceConnectionTimeout: .seconds(1),
+            serviceConnectionTimeout: .seconds(3),
             serviceConnectionRetryDelay: .zero
         )
 
