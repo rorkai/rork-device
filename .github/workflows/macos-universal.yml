@@ -103,11 +103,16 @@ jobs:
           ) > "$package/SHA256SUMS.txt"
           echo "RORKDEVICE_PACKAGE=$package" >> "$GITHUB_ENV"
 
+          artifact="$RUNNER_TEMP/rorkdevice-macos-universal.tar"
+          tar -C "$package" -cf "$artifact" .
+          echo "RORKDEVICE_ARTIFACT=$artifact" >> "$GITHUB_ENV"
+
       - name: Upload portable macOS executable
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rorkdevice-macos-universal
-          path: ${{ env.RORKDEVICE_PACKAGE }}
+          path: ${{ env.RORKDEVICE_ARTIFACT }}
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
@@ -125,11 +130,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          artifact="$RUNNER_TEMP/rorkdevice-macos-universal-artifact"
           package="$RUNNER_TEMP/rorkdevice-macos-universal"
           gh run download "$GITHUB_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
             --name "rorkdevice-macos-universal" \
-            --dir "$package"
+            --dir "$artifact"
+          mkdir -p "$package"
+          tar -C "$package" -xf "$artifact/rorkdevice-macos-universal.tar"
+          test -x "$package/rorkdevice"
           archive="$RUNNER_TEMP/rorkdevice-macos-universal.zip"
           (cd "$package" && zip -qry "$archive" .)
           echo "MACOS_RELEASE_ARCHIVE=$archive" >> "$GITHUB_ENV"
