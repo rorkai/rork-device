@@ -430,7 +430,9 @@ executable statically incorporates its Swift libraries but continues to use the
 x64 Microsoft Visual C++ runtime. Install the current Microsoft Visual C++
 Redistributable if `MSVCP140.dll` or `VCRUNTIME140.dll` is unavailable. The
 pinned Windows SDK does not provide `/MT` runtime variants, so these
-dependencies cannot be folded into the executable.
+dependencies cannot be folded into the executable. Each release publishes
+`SHA256SUMS.txt` beside its ZIP archives so downloads can be verified before
+extraction.
 
 The native and browser targets resolve coordinated networking revisions across
 every host because Swift Package Manager constructs one dependency graph. This
