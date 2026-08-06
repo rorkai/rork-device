@@ -425,12 +425,17 @@ x64 or later. The manifest's `platforms` field declares Apple deployment
 minimums. Swift Package Manager does not use that field to gate Windows hosts.
 
 The primary Windows archive, `rorkdevice-windows-x64.zip`, contains one
-`rorkdevice.exe`, `SHA256SUMS.txt`, and the accompanying legal notices. The
-executable statically incorporates its Swift libraries but continues to use the
-x64 Microsoft Visual C++ runtime. Install the current Microsoft Visual C++
-Redistributable if `MSVCP140.dll` or `VCRUNTIME140.dll` is unavailable. The
-pinned Windows SDK does not provide `/MT` runtime variants, so these
-dependencies cannot be folded into the executable.
+`rorkdevice.exe` and the accompanying legal notices. The executable statically
+incorporates its Swift libraries but continues to use the x64 Microsoft Visual
+C++ runtime. Install the current Microsoft Visual C++ Redistributable if
+`MSVCP140.dll` or `VCRUNTIME140.dll` is unavailable. The pinned Windows SDK
+does not provide `/MT` runtime variants, so these dependencies cannot be
+folded into the executable. Each release publishes `SHA256SUMS.txt` beside its
+ZIP archives so downloads can be verified before extraction.
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+```
 
 The native and browser targets resolve coordinated networking revisions across
 every host because Swift Package Manager constructs one dependency graph. This
