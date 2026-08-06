@@ -41,7 +41,12 @@ runs:
         ) | Where-Object { $_ }
 
         $installer = Join-Path $env:RUNNER_TEMP "swift-installer.exe"
-        Invoke-WebRequest -Uri $env:SWIFT_INSTALLER_URL -OutFile $installer
+        Invoke-WebRequest `
+          -Uri $env:SWIFT_INSTALLER_URL `
+          -OutFile $installer `
+          -MaximumRetryCount 3 `
+          -RetryIntervalSec 15 `
+          -OperationTimeoutSec 1800
 
         $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash
         if ($actualHash -ne $env:SWIFT_INSTALLER_SHA256) {
@@ -169,9 +174,13 @@ runs:
         Add-Content -Path $env:GITHUB_PATH -Value $swiftBin
         $env:Path = "$swiftBin;$env:Path"
         $env:SDKROOT = $sdkRoot
-        $targetInfo = (
-          (& (Join-Path $swiftBin "swiftc.exe") -print-target-info) -join "`n"
-        ) | ConvertFrom-Json
+        $targetInfoText = (
+          & (Join-Path $swiftBin "swiftc.exe") -print-target-info
+        ) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+          throw "The pinned compiler could not report its target information: $targetInfoText"
+        }
+        $targetInfo = $targetInfoText | ConvertFrom-Json
         $runtimePath = $targetInfo.paths.runtimeLibraryPaths |
           Where-Object {
             Test-Path (Join-Path $_ "swiftCore.dll") -PathType Leaf
@@ -184,8 +193,10 @@ runs:
         Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_INSTALL_ROOT=$swiftRoot"
         Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_RUNTIME_PATH=$runtimePath"
         Add-Content -Path $env:GITHUB_ENV -Value "SDKROOT=$sdkRoot"
-        Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_STATIC_SDK_ROOT=$staticSDKRoot"
-        Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_STATIC_RESOURCE_ROOT=$staticResourceRoot"
+        if ($staticSDKExists) {
+          Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_STATIC_SDK_ROOT=$staticSDKRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "SWIFT_STATIC_RESOURCE_ROOT=$staticResourceRoot"
+        }
 
         $versionOutput = (
           & $swiftExecutable.FullName --version
