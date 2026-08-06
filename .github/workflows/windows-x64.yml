@@ -375,7 +375,7 @@ jobs:
       - build-static-package
     runs-on: blacksmith-4vcpu-windows-2025
     permissions:
-      actions: read
+      actions: write
       contents: write
     defaults:
       run:
@@ -428,4 +428,16 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) {
             throw "The static Windows release asset could not be published."
+          }
+
+      - name: Queue release checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release-checksums.yml `
+            --repo $env:GITHUB_REPOSITORY `
+            --ref main `
+            -f "tag=$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) {
+            throw "The release checksum workflow could not be started."
           }
