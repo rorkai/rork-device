@@ -120,6 +120,30 @@ final class CompanionProxyClientTests: XCTestCase {
             }
         }
     }
+
+    /// Rejects malformed error fields even when the response also contains
+    /// otherwise valid registry data.
+    func testPairedDeviceIdentifiersRejectsNonStringError() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Error": 1,
+                "PairedDevicesArray": ["WATCH-1"],
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        do {
+            _ = try await client.pairedDeviceIdentifiers()
+            XCTFail("Expected malformed error rejection.")
+        } catch let error as RorkDeviceError {
+            XCTAssertEqual(
+                error,
+                .protocolViolation(
+                    "Companion proxy response contains a non-string Error field."
+                )
+            )
+        }
+    }
 }
 
 /// Decodes one captured request through the production framing implementation.

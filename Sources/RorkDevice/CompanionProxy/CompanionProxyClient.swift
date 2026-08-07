@@ -140,10 +140,16 @@ public final class CompanionProxyClient {
     private func checkServiceError(
         _ response: [String: Any]
     ) throws {
-        if let error = response.string("Error") {
+        guard let rawError = response["Error"] else {
+            return
+        }
+        guard let error = rawError as? String else {
             throw RorkDeviceError.protocolViolation(
-                "Companion proxy rejected the request: \(error)"
+                "Companion proxy response contains a non-string Error field."
             )
         }
+        throw RorkDeviceError.protocolViolation(
+            "Companion proxy rejected the request: \(error)"
+        )
     }
 }
