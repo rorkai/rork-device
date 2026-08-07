@@ -6,8 +6,8 @@ import Foundation
 /// sessions start services through an authenticated Lockdown connection, while
 /// remote sessions connect to ports advertised by Remote Service Discovery and
 /// complete the required RSD check-in. The higher-level AFC, MISAgent,
-/// heartbeat, HouseArrest, and InstallationProxy workflows are identical for
-/// both routes.
+/// heartbeat, HouseArrest, InstallationProxy, and companion proxy workflows
+/// are identical for both routes.
 ///
 /// Each operation opens the service connection it needs. Callers may therefore
 /// retain a session for a complete install workflow without managing individual
@@ -74,6 +74,52 @@ public final class DeviceSession: @unchecked Sendable {
     ///   valid device information.
     public func fetchDeviceInfo() async throws -> DeviceInfo {
         try await backend.fetchDeviceInfo()
+    }
+
+    /// Returns devices paired through the connected iPhone.
+    ///
+    /// The session opens Apple's companion proxy through either Lockdown or its
+    /// Remote Service Discovery shim. Device name and model fields are optional
+    /// because the registry may omit either value.
+    ///
+    /// - Returns: Paired companion-device identity information.
+    /// - Throws: A transport or protocol error when the service cannot return a
+    ///   valid registry.
+    public func pairedCompanionDevices() async throws
+        -> [PairedCompanionDevice]
+    {
+        let connection = try await startService(
+            named: CompanionProxyClient.serviceName
+        )
+        defer {
+            connection.close()
+        }
+        let client = CompanionProxyClient(connection: connection)
+        let identifiers = try await client.pairedDeviceIdentifiers()
+
+        var devices: [PairedCompanionDevice] = []
+        devices.reserveCapacity(identifiers.count)
+
+        // One ordered stream carries every request and response, so registry
+        // lookups must remain serial.
+        for identifier in identifiers {
+            let name = try await client.stringValue(
+                forKey: "DeviceName",
+                on: identifier
+            )
+            let modelNumber = try await client.stringValue(
+                forKey: "ModelNumber",
+                on: identifier
+            )
+            devices.append(
+                PairedCompanionDevice(
+                    udid: identifier,
+                    name: name,
+                    modelNumber: modelNumber
+                )
+            )
+        }
+        return devices
     }
 
     /// Returns whether Developer Mode is enabled on the connected device.
