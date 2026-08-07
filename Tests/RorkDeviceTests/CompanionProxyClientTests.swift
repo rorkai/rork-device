@@ -207,9 +207,17 @@ final class CompanionProxyClientTests: XCTestCase {
         async let first = client.pairedDeviceIdentifiers()
         await fulfillment(of: [firstRequestSent], timeout: 1)
         async let second = client.pairedDeviceIdentifiers()
-        try await waitForQueuedRequest(on: client)
-        let queuedRequestCount = await client.queuedRequestCount
-        XCTAssertEqual(queuedRequestCount, 1)
+        do {
+            try await waitForQueuedRequest(on: client)
+            let queuedRequestCount = await client.queuedRequestCount
+            XCTAssertEqual(queuedRequestCount, 1)
+        } catch {
+            // Scope cleanup waits for async-let children, so the scripted read
+            // must be released before the timeout can escape.
+            await connection.releaseFirstReceive()
+            _ = try? await (first, second)
+            throw error
+        }
         await connection.releaseFirstReceive()
 
         let identifiers = try await (first, second)
