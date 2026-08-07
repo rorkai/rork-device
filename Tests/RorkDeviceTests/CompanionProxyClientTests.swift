@@ -145,6 +145,42 @@ final class CompanionProxyClientTests: XCTestCase {
         }
     }
 
+    /// Prevents a failed exchange from leaving later requests on an
+    /// indeterminate frame boundary.
+    func testRejectsRequestsAfterFailedExchange() async {
+        let injectedError = RorkDeviceError.transport(
+            "Injected receive failure."
+        )
+        let connection = FakeConnection(
+            receiveFailureAfterSendCount: 1,
+            receiveFailure: injectedError
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await client.pairedDeviceIdentifiers()
+            },
+            { error in
+                XCTAssertEqual(error as? RorkDeviceError, injectedError)
+            }
+        )
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await client.pairedDeviceIdentifiers()
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .protocolViolation(
+                        "Companion proxy stream cannot continue after a failed exchange."
+                    )
+                )
+            }
+        )
+        XCTAssertEqual(connection.sent.count, 1)
+    }
+
     /// Keeps concurrent callers from interleaving requests on one ordered
     /// service stream.
     func testSerializesConcurrentRequests() async throws {
@@ -171,13 +207,31 @@ final class CompanionProxyClientTests: XCTestCase {
         async let first = client.pairedDeviceIdentifiers()
         await fulfillment(of: [firstRequestSent], timeout: 1)
         async let second = client.pairedDeviceIdentifiers()
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitForQueuedRequest(on: client)
+        let queuedRequestCount = await client.queuedRequestCount
+        XCTAssertEqual(queuedRequestCount, 1)
         await connection.releaseFirstReceive()
 
         let identifiers = try await (first, second)
 
         XCTAssertEqual(identifiers.0, ["WATCH-1"])
         XCTAssertEqual(identifiers.1, ["WATCH-2"])
+    }
+}
+
+/// Waits until the second request is blocked behind the active exchange.
+private func waitForQueuedRequest(
+    on client: CompanionProxyClient
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(1))
+    while await client.queuedRequestCount == 0 {
+        guard clock.now < deadline else {
+            throw RorkDeviceError.transport(
+                "Timed out waiting for a queued companion proxy request."
+            )
+        }
+        try await Task.sleep(for: .milliseconds(1))
     }
 }
 
@@ -192,8 +246,14 @@ private final class ExchangeCheckingConnection:
     /// Response frames returned in request order.
     private var inbound: Data
 
-    /// Number of exact reads made across all response frames.
-    private var receiveCount = 0
+    /// Whether the next exact read is the first response read.
+    private var shouldBlockFirstReceive = true
+
+    /// Payload bytes remaining after a frame's length header is read.
+    private var remainingPayloadByteCount: Int?
+
+    /// Whether any request has reached the connection.
+    private var hasSentRequest = false
 
     /// Whether a sent request still owns the next response frame.
     private var exchangeIsActive = false
@@ -230,7 +290,9 @@ private final class ExchangeCheckingConnection:
                 )
             }
             exchangeIsActive = true
-            return receiveCount == 0
+            let isFirstRequest = !hasSentRequest
+            hasSentRequest = true
+            return isFirstRequest
         }
         if isFirstRequest {
             firstRequestSent.fulfill()
@@ -240,8 +302,9 @@ private final class ExchangeCheckingConnection:
     /// Returns framed response bytes after the first read gate opens.
     func receive(exactly byteCount: Int) async throws -> Data {
         let shouldWait = lock.withLock {
-            receiveCount += 1
-            return receiveCount == 1
+            let shouldWait = shouldBlockFirstReceive
+            shouldBlockFirstReceive = false
+            return shouldWait
         }
         if shouldWait {
             await firstReceiveGate.wait()
@@ -255,8 +318,37 @@ private final class ExchangeCheckingConnection:
             }
             let bytes = Data(inbound.prefix(byteCount))
             inbound.removeFirst(byteCount)
-            if receiveCount.isMultiple(of: 2) {
-                exchangeIsActive = false
+
+            if let remainingPayloadByteCount {
+                guard byteCount <= remainingPayloadByteCount else {
+                    throw RorkDeviceError.transport(
+                        "Exchange-checking connection read beyond its response frame."
+                    )
+                }
+                let remaining = remainingPayloadByteCount - byteCount
+                self.remainingPayloadByteCount =
+                    remaining == 0 ? nil : remaining
+                if remaining == 0 {
+                    exchangeIsActive = false
+                }
+            } else {
+                guard byteCount == 4 else {
+                    throw RorkDeviceError.transport(
+                        "Exchange-checking connection expected a frame length."
+                    )
+                }
+                let payloadByteCount = try Int(
+                    bytes.bigEndianInteger(
+                        at: 0,
+                        as: UInt32.self
+                    )
+                )
+                guard payloadByteCount > 0 else {
+                    throw RorkDeviceError.transport(
+                        "Exchange-checking connection received an empty frame."
+                    )
+                }
+                remainingPayloadByteCount = payloadByteCount
             }
             return bytes
         }

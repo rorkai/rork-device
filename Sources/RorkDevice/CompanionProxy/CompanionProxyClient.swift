@@ -20,6 +20,13 @@ public final class CompanionProxyClient: @unchecked Sendable {
     /// response.
     private let requestGate = CompanionProxyRequestGate()
 
+    /// Number of requests waiting behind the active exchange.
+    var queuedRequestCount: Int {
+        get async {
+            await requestGate.waiterCount
+        }
+    }
+
     /// Creates a client over an existing companion proxy connection.
     ///
     /// The caller retains ownership of `connection`. It must remain untouched
@@ -135,7 +142,7 @@ public final class CompanionProxyClient: @unchecked Sendable {
     private func request(
         _ dictionary: [String: Any]
     ) async throws -> [String: Any] {
-        await requestGate.acquire()
+        try await requestGate.acquire()
         do {
             try await PropertyListMessageFramer.send(
                 dictionary,
@@ -144,10 +151,10 @@ public final class CompanionProxyClient: @unchecked Sendable {
             let response = try await PropertyListMessageFramer.receive(
                 from: connection
             )
-            await requestGate.release()
+            await requestGate.release(streamIsAligned: true)
             return response
         } catch {
-            await requestGate.release()
+            await requestGate.release(streamIsAligned: false)
             throw error
         }
     }
@@ -178,8 +185,19 @@ private actor CompanionProxyRequestGate {
     /// Callers waiting to acquire the stream in submission order.
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Whether an interrupted exchange may have left a partial frame.
+    private var isPoisoned = false
+
+    /// Number of callers currently waiting for the stream.
+    var waiterCount: Int {
+        waiters.count
+    }
+
     /// Waits until the caller owns the service stream.
-    func acquire() async {
+    func acquire() async throws {
+        if isPoisoned {
+            throw failedExchangeError()
+        }
         guard isHeld else {
             isHeld = true
             return
@@ -187,15 +205,29 @@ private actor CompanionProxyRequestGate {
         await withCheckedContinuation {
             waiters.append($0)
         }
+        if isPoisoned {
+            release(streamIsAligned: false)
+            throw failedExchangeError()
+        }
     }
 
-    /// Releases the stream to the next caller or marks it idle.
-    func release() {
+    /// Releases the stream and records whether another request may safely use it.
+    func release(streamIsAligned: Bool) {
         precondition(isHeld, "Companion proxy request gate was not acquired.")
+        if !streamIsAligned {
+            isPoisoned = true
+        }
         guard !waiters.isEmpty else {
             isHeld = false
             return
         }
         waiters.removeFirst().resume()
+    }
+
+    /// Creates the stable error returned after an interrupted exchange.
+    private func failedExchangeError() -> RorkDeviceError {
+        .protocolViolation(
+            "Companion proxy stream cannot continue after a failed exchange."
+        )
     }
 }
