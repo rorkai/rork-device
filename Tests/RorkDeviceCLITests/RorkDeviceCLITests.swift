@@ -22,6 +22,8 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("tunnel"))
     }
 
+    /// Protects the device-selection and machine-output options used by
+    /// noninteractive callers.
     func testCompanionsListParsesDeviceAndJSONOptions() throws {
         let command = try CompanionsList.parse([
             "--udid", "PHONE-1",
@@ -32,6 +34,8 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(command.json)
     }
 
+    /// Keeps the JSON contract stable for callers that decode companion
+    /// identity metadata.
     func testCompanionDeviceJSONUsesStableKeys() throws {
         let data = try companionDeviceListJSON([
             PairedCompanionDevice(

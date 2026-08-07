@@ -3,6 +3,8 @@ import Foundation
 import XCTest
 
 final class CompanionProxyClientTests: XCTestCase {
+    /// Protects the command and response fields required by device registry
+    /// discovery.
     func testPairedDeviceIdentifiersUsesRegistryCommand() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -18,6 +20,8 @@ final class CompanionProxyClientTests: XCTestCase {
         XCTAssertEqual(request["Command"] as? String, "GetDeviceRegistry")
     }
 
+    /// Protects the asymmetric field names required for registry value
+    /// requests.
     func testValueUsesRegistryLookupKeys() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -49,6 +53,8 @@ final class CompanionProxyClientTests: XCTestCase {
         )
     }
 
+    /// Treats an omitted key as optional metadata because registry contents
+    /// vary by device and OS version.
     func testValueReturnsNilWhenRegistryOmitsKey() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -65,6 +71,38 @@ final class CompanionProxyClientTests: XCTestCase {
         XCTAssertNil(value)
     }
 
+    /// Normalizes the service's sentinel response into an empty collection.
+    func testPairedDeviceIdentifiersReturnsEmptyForNoPairedWatches() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Error": "NoPairedWatches",
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        let identifiers = try await client.pairedDeviceIdentifiers()
+
+        XCTAssertEqual(identifiers, [])
+    }
+
+    /// Keeps unsupported optional metadata from aborting device discovery.
+    func testValueReturnsNilForUnsupportedRegistryKey() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Error": "UnsupportedWatchKey",
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        let value = try await client.value(
+            forKey: "ModelNumber",
+            on: "WATCH-1"
+        )
+
+        XCTAssertNil(value)
+    }
+
+    /// Rejects mixed registry arrays before invalid identifiers reach callers.
     func testPairedDeviceIdentifiersRejectsMalformedRegistry() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([

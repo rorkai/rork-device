@@ -2213,6 +2213,7 @@ struct CompanionsList: AsyncParsableCommand {
     @Flag(help: "Emit machine-readable JSON.")
     var json = false
 
+    /// Queries paired devices and emits the requested output representation.
     func run() async throws {
         let session = try await connection.session()
         let devices = try await session.pairedCompanionDevices()

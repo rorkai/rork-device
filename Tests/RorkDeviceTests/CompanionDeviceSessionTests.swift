@@ -3,6 +3,8 @@ import Foundation
 import XCTest
 
 final class CompanionDeviceSessionTests: XCTestCase {
+    /// Verifies that one ordered service stream supplies every device metadata
+    /// lookup and closes after completion.
     func testReadsPairedCompanionDeviceInformation() async throws {
         var inbound = Data()
         inbound.append(
@@ -49,6 +51,8 @@ final class CompanionDeviceSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Verifies that session-owned service connections close on protocol
+    /// failures.
     func testClosesCompanionProxyAfterProtocolFailure() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([:])

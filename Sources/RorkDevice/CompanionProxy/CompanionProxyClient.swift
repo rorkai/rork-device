@@ -31,6 +31,10 @@ public final class CompanionProxyClient {
         let response = try await request([
             "Command": "GetDeviceRegistry",
         ])
+        if response.string("Error") == "NoPairedWatches" {
+            return []
+        }
+        try checkServiceError(response)
         guard let values = response["PairedDevicesArray"] as? [Any] else {
             throw RorkDeviceError.protocolViolation(
                 "Companion proxy device registry response is missing PairedDevicesArray."
@@ -80,6 +84,10 @@ public final class CompanionProxyClient {
             "GetValueGizmoUDIDKey": deviceIdentifier,
             "GetValueKeyKey": key,
         ])
+        if response.string("Error") == "UnsupportedWatchKey" {
+            return nil
+        }
+        try checkServiceError(response)
         guard let values =
             response["RetrievedValueDictionary"] as? [String: Any] else {
             throw RorkDeviceError.protocolViolation(
@@ -123,14 +131,19 @@ public final class CompanionProxyClient {
             dictionary,
             to: connection
         )
-        let response = try await PropertyListMessageFramer.receive(
+        return try await PropertyListMessageFramer.receive(
             from: connection
         )
+    }
+
+    /// Rejects service errors that the calling operation did not normalize.
+    private func checkServiceError(
+        _ response: [String: Any]
+    ) throws {
         if let error = response.string("Error") {
             throw RorkDeviceError.protocolViolation(
                 "Companion proxy rejected the request: \(error)"
             )
         }
-        return response
     }
 }
