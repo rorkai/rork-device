@@ -4,18 +4,26 @@ import Foundation
 ///
 /// The service exposes devices paired through the connected iPhone and values
 /// from each paired device's registry. Create the client with a connection from
-/// `DeviceSession.startService(.companionProxy)`.
-public final class CompanionProxyClient {
+/// `DeviceSession.startService(named:)` using `serviceName`.
+///
+/// The unchecked conformance is safe because an internal gate serializes every
+/// complete request and response on the immutable connection reference. Callers
+/// must not access or close that connection while client requests are pending.
+public final class CompanionProxyClient: @unchecked Sendable {
     /// Lockdown identifier used to start the companion proxy service.
     public static let serviceName = "com.apple.companion_proxy"
 
     /// Byte stream carrying framed companion proxy property lists.
     private let connection: DeviceConnection
 
+    /// Gate that prevents concurrent callers from consuming another request's
+    /// response.
+    private let requestGate = CompanionProxyRequestGate()
+
     /// Creates a client over an existing companion proxy connection.
     ///
-    /// The caller retains ownership of `connection` and must close it after the
-    /// final request.
+    /// The caller retains ownership of `connection`. It must remain untouched
+    /// until every client request finishes and must then be closed by the caller.
     public init(connection: DeviceConnection) {
         self.connection = connection
     }
@@ -123,17 +131,25 @@ public final class CompanionProxyClient {
         return string
     }
 
-    /// Sends one service request and validates common error fields.
+    /// Performs one serialized service request and response exchange.
     private func request(
         _ dictionary: [String: Any]
     ) async throws -> [String: Any] {
-        try await PropertyListMessageFramer.send(
-            dictionary,
-            to: connection
-        )
-        return try await PropertyListMessageFramer.receive(
-            from: connection
-        )
+        await requestGate.acquire()
+        do {
+            try await PropertyListMessageFramer.send(
+                dictionary,
+                to: connection
+            )
+            let response = try await PropertyListMessageFramer.receive(
+                from: connection
+            )
+            await requestGate.release()
+            return response
+        } catch {
+            await requestGate.release()
+            throw error
+        }
     }
 
     /// Rejects service errors that the calling operation did not normalize.
@@ -151,5 +167,35 @@ public final class CompanionProxyClient {
         throw RorkDeviceError.protocolViolation(
             "Companion proxy rejected the request: \(error)"
         )
+    }
+}
+
+/// Serializes complete exchanges without blocking a cooperative executor.
+private actor CompanionProxyRequestGate {
+    /// Whether one request currently owns the service stream.
+    private var isHeld = false
+
+    /// Callers waiting to acquire the stream in submission order.
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Waits until the caller owns the service stream.
+    func acquire() async {
+        guard isHeld else {
+            isHeld = true
+            return
+        }
+        await withCheckedContinuation {
+            waiters.append($0)
+        }
+    }
+
+    /// Releases the stream to the next caller or marks it idle.
+    func release() {
+        precondition(isHeld, "Companion proxy request gate was not acquired.")
+        guard !waiters.isEmpty else {
+            isHeld = false
+            return
+        }
+        waiters.removeFirst().resume()
     }
 }
