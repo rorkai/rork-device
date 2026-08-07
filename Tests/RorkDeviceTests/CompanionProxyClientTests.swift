@@ -32,12 +32,12 @@ final class CompanionProxyClientTests: XCTestCase {
         )
         let client = CompanionProxyClient(connection: connection)
 
-        let value = try await client.value(
-            forKey: "DeviceName",
+        let value: String? = try await client.value(
+            for: .deviceName,
             on: "WATCH-1"
         )
 
-        XCTAssertEqual(value as? String, "My Watch")
+        XCTAssertEqual(value, "My Watch")
         let request = try await capturedRequest(from: connection)
         XCTAssertEqual(
             request["Command"] as? String,
@@ -53,6 +53,31 @@ final class CompanionProxyClientTests: XCTestCase {
         )
     }
 
+    /// Keeps custom keys typed while preserving their exact wire names.
+    func testValueSupportsTypedCustomKey() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [
+                    "BatteryLevel": 75,
+                ],
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+        let key: CompanionRegistryKey<Int> = "BatteryLevel"
+
+        let value = try await client.value(
+            for: key,
+            on: "WATCH-1"
+        )
+
+        XCTAssertEqual(value, 75)
+        let request = try await capturedRequest(from: connection)
+        XCTAssertEqual(
+            request["GetValueKeyKey"] as? String,
+            "BatteryLevel"
+        )
+    }
+
     /// Treats an omitted key as optional metadata because registry contents
     /// vary by device and OS version.
     func testValueReturnsNilWhenRegistryOmitsKey() async throws {
@@ -63,8 +88,8 @@ final class CompanionProxyClientTests: XCTestCase {
         )
         let client = CompanionProxyClient(connection: connection)
 
-        let value = try await client.value(
-            forKey: "ModelNumber",
+        let value: String? = try await client.value(
+            for: .modelNumber,
             on: "WATCH-1"
         )
 
@@ -94,12 +119,39 @@ final class CompanionProxyClientTests: XCTestCase {
         )
         let client = CompanionProxyClient(connection: connection)
 
-        let value = try await client.value(
-            forKey: "ModelNumber",
+        let value: String? = try await client.value(
+            for: .modelNumber,
             on: "WATCH-1"
         )
 
         XCTAssertNil(value)
+    }
+
+    /// Rejects a registry value that does not match its key's declared type.
+    func testValueRejectsUnexpectedType() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [
+                    "DeviceName": 42,
+                ],
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        do {
+            let _: String? = try await client.value(
+                for: .deviceName,
+                on: "WATCH-1"
+            )
+            XCTFail("Expected registry type rejection.")
+        } catch let error as RorkDeviceError {
+            XCTAssertEqual(
+                error,
+                .protocolViolation(
+                    "Companion proxy registry value for DeviceName does not match String."
+                )
+            )
+        }
     }
 
     /// Rejects mixed registry arrays before invalid identifiers reach callers.

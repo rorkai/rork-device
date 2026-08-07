@@ -103,12 +103,12 @@ public final class DeviceSession: @unchecked Sendable {
         // One ordered stream carries every request and response, so registry
         // lookups must remain serial.
         for identifier in identifiers {
-            let name = try await client.stringValue(
-                forKey: "DeviceName",
+            let name: String? = try await client.value(
+                for: .deviceName,
                 on: identifier
             )
-            let modelNumber = try await client.stringValue(
-                forKey: "ModelNumber",
+            let modelNumber: String? = try await client.value(
+                for: .modelNumber,
                 on: identifier
             )
             devices.append(

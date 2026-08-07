@@ -70,7 +70,10 @@ public final class CompanionProxyClient: @unchecked Sendable {
         return identifiers
     }
 
-    /// Reads a registry value from one paired companion device.
+    /// Reads a typed registry value from one paired companion device.
+    ///
+    /// The key carries the expected result type while preserving an open set of
+    /// wire names for newer or vendor-defined values.
     ///
     /// - Parameters:
     ///   - key: Registry key to read.
@@ -78,17 +81,18 @@ public final class CompanionProxyClient: @unchecked Sendable {
     ///     `pairedDeviceIdentifiers()`.
     /// - Returns: The property-list value, or `nil` when the key is absent.
     /// - Throws: An input error for an empty key or identifier, plus transport
-    ///   and protocol errors.
-    public func value(
-        forKey key: String,
+    ///   and protocol errors. A protocol violation is thrown when a present
+    ///   value does not match the key's declared type.
+    public func value<Value>(
+        for key: CompanionRegistryKey<Value>,
         on deviceIdentifier: String
-    ) async throws -> Any? {
+    ) async throws -> Value? {
         guard !deviceIdentifier.isEmpty else {
             throw RorkDeviceError.invalidInput(
                 "Companion device identifier must not be empty."
             )
         }
-        guard !key.isEmpty else {
+        guard !key.rawValue.isEmpty else {
             throw RorkDeviceError.invalidInput(
                 "Companion device registry key must not be empty."
             )
@@ -97,7 +101,7 @@ public final class CompanionProxyClient: @unchecked Sendable {
         let response = try await request([
             "Command": "GetValueFromRegistry",
             "GetValueGizmoUDIDKey": deviceIdentifier,
-            "GetValueKeyKey": key,
+            "GetValueKeyKey": key.rawValue,
         ])
         if response.string("Error") == "UnsupportedWatchKey" {
             return nil
@@ -109,33 +113,17 @@ public final class CompanionProxyClient: @unchecked Sendable {
                 "Companion proxy value response is missing RetrievedValueDictionary."
             )
         }
-        return values[key]
-    }
-
-    /// Reads an optional string from one paired device's registry.
-    ///
-    /// - Parameters:
-    ///   - key: Registry key to read.
-    ///   - deviceIdentifier: Identifier returned by
-    ///     `pairedDeviceIdentifiers()`.
-    /// - Returns: The string value, or `nil` when the key is absent.
-    /// - Throws: A protocol violation when the registry value is not a string.
-    public func stringValue(
-        forKey key: String,
-        on deviceIdentifier: String
-    ) async throws -> String? {
-        guard let value = try await value(
-            forKey: key,
-            on: deviceIdentifier
-        ) else {
+        guard let rawValue = values[key.rawValue] else {
             return nil
         }
-        guard let string = value as? String else {
-            throw RorkDeviceError.protocolViolation(
-                "Companion proxy registry value for \(key) is not a string."
-            )
+        guard let value = rawValue as? Value else {
+            let expectedType = String(describing: Value.self)
+            let message =
+                "Companion proxy registry value for \(key.rawValue) " +
+                "does not match \(expectedType)."
+            throw RorkDeviceError.protocolViolation(message)
         }
-        return string
+        return value
     }
 
     /// Performs one serialized service request and response exchange.
