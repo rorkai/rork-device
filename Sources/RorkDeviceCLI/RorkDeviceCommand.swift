@@ -16,6 +16,7 @@ struct RorkDeviceCommand: AsyncParsableCommand {
             PairingCommand.self,
             DeveloperModeCommand.self,
             ImageCommand.self,
+            Companions.self,
             Apps.self,
             Files.self,
             Install.self,
@@ -2189,6 +2190,56 @@ struct FilesMove: AsyncParsableCommand {
         let afc = try await access.afcClient()
         try await afc.movePath(from: sourcePath, to: destinationPath)
     }
+}
+
+/// Parent command for devices paired through the connected iPhone.
+struct Companions: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "companions",
+        abstract: "Inspect paired companion devices.",
+        subcommands: [CompanionsList.self]
+    )
+}
+
+/// Lists paired companion devices and their registry identity values.
+struct CompanionsList: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List paired companion devices."
+    )
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Flag(help: "Emit machine-readable JSON.")
+    var json = false
+
+    /// Queries paired devices and emits the requested output representation.
+    func run() async throws {
+        let session = try await connection.session()
+        let devices = try await session.pairedCompanionDevices()
+        if json {
+            try CommandOutput.write(
+                contentsOf: companionDeviceListJSON(devices)
+            )
+            try CommandOutput.write(contentsOf: Data([0x0a]))
+            return
+        }
+
+        for device in devices {
+            CommandOutput.print(
+                "\(device.udid)\t\(device.name ?? "-")\t\(device.modelNumber ?? "-")"
+            )
+        }
+    }
+}
+
+/// Encodes paired companion devices for machine-readable CLI consumers.
+func companionDeviceListJSON(
+    _ devices: [PairedCompanionDevice]
+) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(devices)
 }
 
 /// Parent command for installed-application operations.
