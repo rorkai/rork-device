@@ -131,6 +131,14 @@ public final class CompanionProxyClient: @unchecked Sendable {
         _ dictionary: [String: Any]
     ) async throws -> [String: Any] {
         try await requestGate.acquire()
+
+        // Cancellation observed before send cannot disturb frame alignment.
+        do {
+            try Task.checkCancellation()
+        } catch {
+            await requestGate.release(streamIsAligned: true)
+            throw error
+        }
         do {
             try await PropertyListMessageFramer.send(
                 dictionary,
@@ -183,6 +191,7 @@ private actor CompanionProxyRequestGate {
 
     /// Waits until the caller owns the service stream.
     func acquire() async throws {
+        try Task.checkCancellation()
         if isPoisoned {
             throw failedExchangeError()
         }
@@ -192,6 +201,14 @@ private actor CompanionProxyRequestGate {
         }
         await withCheckedContinuation {
             waiters.append($0)
+        }
+
+        // A canceled waiter has not touched the stream and can hand off safely.
+        do {
+            try Task.checkCancellation()
+        } catch {
+            release(streamIsAligned: true)
+            throw error
         }
         if isPoisoned {
             release(streamIsAligned: false)

@@ -233,6 +233,91 @@ final class CompanionProxyClientTests: XCTestCase {
         XCTAssertEqual(connection.sent.count, 1)
     }
 
+    /// Keeps cancellation before the first send from poisoning an aligned
+    /// service stream.
+    func testCancellationBeforeSendKeepsStreamUsable() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "PairedDevicesArray": ["WATCH-1"],
+            ])
+        )
+        let client = CompanionProxyClient(connection: connection)
+        let startGate = TestAsyncGate()
+        let canceledRequest = Task {
+            await startGate.wait()
+            return try await client.pairedDeviceIdentifiers()
+        }
+
+        canceledRequest.cancel()
+        await startGate.open()
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await canceledRequest.value
+            },
+            { error in
+                XCTAssertTrue(
+                    error is CancellationError,
+                    "Unexpected error: \(error)"
+                )
+            }
+        )
+
+        let identifiers = try await client.pairedDeviceIdentifiers()
+
+        XCTAssertEqual(identifiers, ["WATCH-1"])
+        XCTAssertEqual(connection.sent.count, 1)
+    }
+
+    /// Lets a canceled queued caller hand the still-aligned stream to the next
+    /// request.
+    func testQueuedCancellationKeepsStreamUsable() async throws {
+        var inbound = Data()
+        inbound.append(
+            try PropertyListMessageFramer.encode([
+                "PairedDevicesArray": ["WATCH-1"],
+            ])
+        )
+        inbound.append(
+            try PropertyListMessageFramer.encode([
+                "PairedDevicesArray": ["WATCH-2"],
+            ])
+        )
+        let firstRequestSent = expectation(
+            description: "The first request reached the connection."
+        )
+        let connection = ExchangeCheckingConnection(
+            inbound: inbound,
+            firstRequestSent: firstRequestSent
+        )
+        let client = CompanionProxyClient(connection: connection)
+
+        async let first = client.pairedDeviceIdentifiers()
+        await fulfillment(of: [firstRequestSent], timeout: 1)
+        let canceledRequest = Task {
+            try await client.pairedDeviceIdentifiers()
+        }
+        try await waitForQueuedRequest(on: client)
+        canceledRequest.cancel()
+        await connection.releaseFirstReceive()
+
+        let firstIdentifiers = try await first
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await canceledRequest.value
+            },
+            { error in
+                XCTAssertTrue(
+                    error is CancellationError,
+                    "Unexpected error: \(error)"
+                )
+            }
+        )
+        let nextIdentifiers = try await client.pairedDeviceIdentifiers()
+
+        XCTAssertEqual(firstIdentifiers, ["WATCH-1"])
+        XCTAssertEqual(nextIdentifiers, ["WATCH-2"])
+    }
+
     /// Keeps concurrent callers from interleaving requests on one ordered
     /// service stream.
     func testSerializesConcurrentRequests() async throws {
