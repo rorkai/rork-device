@@ -58,6 +58,8 @@ tests and clear public API boundaries.
 - **Lockdown values** - query common device identity and OS metadata through a
   typed `DeviceInfo` summary or emit the complete scalar dictionary as
   machine-readable CLI JSON.
+- **Paired companion devices** - list devices paired through an iPhone and read
+  their registry names and model numbers.
 - **AFC staging** - create `/PublicStaging` and upload IPA files or in-memory
   IPA bytes before installation.
 - **AFC file access** - list directories, read file metadata, download files,
@@ -143,6 +145,38 @@ try await session.installApplication(
     bundleIdentifier: "com.example.app"
 ) { progress in
     print(progress.status, progress.percentComplete ?? -1)
+}
+```
+
+## Paired Companion Devices
+
+`DeviceSession` returns common companion identity fields as a snapshot:
+
+```swift
+let companions = try await session.pairedCompanionDevices()
+for companion in companions {
+    print(companion.udid, companion.name ?? "Unnamed companion")
+}
+```
+
+Lower-level clients can use typed registry keys without closing the set of wire
+names. The generic argument defines the expected response type:
+
+```swift
+let connection = try await session.startService(
+    named: CompanionProxyClient.serviceName
+)
+defer { connection.close() }
+
+let proxy = CompanionProxyClient(connection: connection)
+let identifier = try await proxy.pairedDeviceIdentifiers().first
+let customKey: CompanionRegistryKey<String> = "VendorDisplayName"
+if let identifier {
+    let displayName = try await proxy.value(
+        for: customKey,
+        on: identifier
+    )
+    print(displayName ?? "No custom display name")
 }
 ```
 
@@ -477,6 +511,7 @@ rorkdevice image list --udid DEVICE-UDID --json
 rorkdevice image mount --udid DEVICE-UDID --path RestoreDirectory
 rorkdevice image auto --udid DEVICE-UDID --archive-url https://example.com/DDI.zip --sha256 HEX
 rorkdevice image unmount --udid DEVICE-UDID
+rorkdevice companions list --udid DEVICE-UDID --json
 rorkdevice info --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist
 rorkdevice files list / --pairing-record pairing.plist --json
@@ -525,6 +560,7 @@ SUBCOMMANDS:
   pairing                 Manage the host pairing used by Lockdown.
   developer-mode          Prepare Developer Mode setup on an iOS device.
   image                   Manage personalized Developer Disk Images.
+  companions              Inspect paired companion devices.
   apps                    Manage installed apps.
   files                   Manage files through AFC or HouseArrest.
   install                 Install an IPA.

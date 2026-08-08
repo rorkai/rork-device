@@ -17,8 +17,40 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertTrue(help.contains("pairing"))
         XCTAssertTrue(help.contains("developer-mode"))
         XCTAssertTrue(help.contains("image"))
+        XCTAssertTrue(help.contains("companions"))
         XCTAssertTrue(help.contains("remote-pairing"))
         XCTAssertTrue(help.contains("tunnel"))
+    }
+
+    /// Protects the device-selection and machine-output options used by
+    /// noninteractive callers.
+    func testCompanionsListParsesDeviceAndJSONOptions() throws {
+        let command = try CompanionsList.parse([
+            "--udid", "PHONE-1",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.connection.udid, "PHONE-1")
+        XCTAssertTrue(command.json)
+    }
+
+    /// Keeps the JSON contract stable for callers that decode companion
+    /// identity metadata.
+    func testCompanionDeviceJSONUsesStableKeys() throws {
+        let data = try companionDeviceListJSON([
+            PairedCompanionDevice(
+                udid: "WATCH-1",
+                name: "My Watch",
+                modelNumber: "Model-1"
+            ),
+        ])
+
+        XCTAssertEqual(
+            String(decoding: data, as: UTF8.self),
+            """
+            [{"modelNumber":"Model-1","name":"My Watch","udid":"WATCH-1"}]
+            """
+        )
     }
 
     func testImageMountCommandParsesRestorePath() throws {
