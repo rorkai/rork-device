@@ -3,6 +3,10 @@
 /// Known keys provide discoverable static members. Callers can create additional
 /// keys when newer device software exposes registry values that this package
 /// does not yet model.
+///
+/// This type remains concrete until another registry service uses the same key
+/// shape. Lockdown value keys remain separate because their identity also
+/// includes a domain.
 public struct CompanionRegistryKey<Value>:
     Hashable,
     RawRepresentable,
