@@ -57,6 +57,143 @@ final class LockdownClientTests: XCTestCase {
         XCTAssertEqual(request["Label"] as? String, "tests")
     }
 
+    /// Uses the typed key's domain and returns its declared value type.
+    func testTypedValueSendsDomainAndKey() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Value": true,
+            ])
+        )
+        let client = LockdownClient(connection: connection, label: "tests")
+
+        let enabled = try await client.value(
+            for: .developerModeStatus
+        )
+
+        XCTAssertTrue(enabled)
+        let request = try XCTUnwrap(
+            decodedSentPlist(connection.sent[0])
+        )
+        XCTAssertEqual(request["Request"] as? String, "GetValue")
+        XCTAssertEqual(
+            request["Domain"] as? String,
+            "com.apple.security.mac.amfi"
+        )
+        XCTAssertEqual(
+            request["Key"] as? String,
+            "DeveloperModeStatus"
+        )
+    }
+
+    /// Infers a custom default-domain key from the expected return type.
+    func testTypedValueSupportsStringLiteralKey() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Value": "custom",
+            ])
+        )
+        let client = LockdownClient(connection: connection)
+
+        let value: String = try await client.value(
+            for: "CustomValue"
+        )
+
+        XCTAssertEqual(value, "custom")
+        let request = try XCTUnwrap(
+            decodedSentPlist(connection.sent[0])
+        )
+        XCTAssertEqual(request["Key"] as? String, "CustomValue")
+        XCTAssertNil(request["Domain"])
+    }
+
+    /// Preserves property-list data through a typed default-domain key.
+    func testTypedValueReturnsData() async throws {
+        let expected = Data([0x01, 0x02, 0x03])
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Value": expected,
+            ])
+        )
+        let client = LockdownClient(connection: connection)
+
+        let value = try await client.value(
+            for: .devicePublicKey
+        )
+
+        XCTAssertEqual(value, expected)
+    }
+
+    /// Rejects a Lockdown response that does not match the key's declared type.
+    func testTypedValueRejectsUnexpectedType() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Value": "enabled",
+            ])
+        )
+        let client = LockdownClient(connection: connection)
+        let expectedError = RorkDeviceError.protocolViolation(
+            "Lockdown value DeveloperModeStatus in domain " +
+                "com.apple.security.mac.amfi does not match Bool."
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await client.value(
+                    for: .developerModeStatus
+                )
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    expectedError
+                )
+            }
+        )
+    }
+
+    /// Rejects an empty typed key before writing a Lockdown request.
+    func testTypedValueRejectsEmptyKey() async {
+        let connection = FakeConnection()
+        let client = LockdownClient(connection: connection)
+        let key = LockdownValueKey<String>("")
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await client.value(for: key)
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput("Lockdown value key must not be empty.")
+                )
+            }
+        )
+        XCTAssertEqual(connection.sent.count, 0)
+    }
+
+    /// Rejects an empty named domain before writing a Lockdown request.
+    func testTypedValueRejectsEmptyDomain() async {
+        let connection = FakeConnection()
+        let client = LockdownClient(connection: connection)
+        let key = LockdownValueKey<String>(
+            "CustomValue",
+            domain: ""
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await client.value(for: key)
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput("Lockdown value domain must not be empty.")
+                )
+            }
+        )
+        XCTAssertEqual(connection.sent.count, 0)
+    }
+
     func testDeveloperModeStatusReadsAMFIDomain() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -133,6 +270,34 @@ final class LockdownClientTests: XCTestCase {
         let request = try XCTUnwrap(decodedSentPlist(connection.sent[0]))
         XCTAssertEqual(request["Request"] as? String, "SetValue")
         XCTAssertEqual(request["Label"] as? String, "tests")
+        XCTAssertEqual(
+            request["Domain"] as? String,
+            "com.apple.mobile.wireless_lockdown"
+        )
+        XCTAssertEqual(
+            request["Key"] as? String,
+            "EnableWifiConnections"
+        )
+        XCTAssertEqual(request["Value"] as? Bool, true)
+    }
+
+    /// Uses one typed key for the value type, domain, and wire name.
+    func testTypedSetValueSendsDomainAndKey() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Result": "Success",
+            ])
+        )
+        let client = LockdownClient(connection: connection, label: "tests")
+
+        try await client.setValue(
+            true,
+            for: .wirelessConnectionsEnabled
+        )
+
+        let request = try XCTUnwrap(
+            decodedSentPlist(connection.sent[0])
+        )
         XCTAssertEqual(
             request["Domain"] as? String,
             "com.apple.mobile.wireless_lockdown"

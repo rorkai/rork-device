@@ -61,8 +61,8 @@ public final class LockdownClient {
     /// Queries the default Lockdown value domain.
     ///
     /// This is the common form used for device identity and OS information.
-    /// Use `value(domain:key:)` when a workflow needs a specific Lockdown
-    /// domain or key.
+    /// Use `value(for:)` when a workflow needs one typed Lockdown value and
+    /// `value(domain:key:)` when it needs a complete named domain.
     ///
     /// - Returns: The decoded top-level device information dictionary.
     public func deviceValues() async throws -> [String: Any] {
@@ -75,9 +75,10 @@ public final class LockdownClient {
 
     /// Queries a Lockdown value by optional domain and key.
     ///
-    /// Use `deviceValues()` for the default top-level device information
-    /// dictionary. Domain/key values are sent as-is here so callers can use
-    /// newer device domains without waiting for wrapper APIs.
+    /// Use `value(for:)` for typed single-key lookups and `deviceValues()` for
+    /// the default top-level device information dictionary. Domain/key values
+    /// are sent as-is here so callers can query whole domains and unusual
+    /// values without waiting for wrapper APIs.
     ///
     /// - Returns: The decoded plist value from the `Value` field.
     public func value(domain: String?, key: String?) async throws -> Any {
@@ -96,6 +97,33 @@ public final class LockdownClient {
         try checkResult(response, request: "GetValue")
         guard let value = response["Value"] else {
             throw RorkDeviceError.protocolViolation("Lockdown GetValue response is missing Value.")
+        }
+        return value
+    }
+
+    /// Queries one typed value in the key's Lockdown domain.
+    ///
+    /// - Parameter key: Open key containing the expected value type and domain.
+    /// - Returns: The decoded value after validating its declared type.
+    /// - Throws: An input error for an empty key or domain, plus Lockdown,
+    ///   transport, and protocol errors.
+    public func value<Value>(
+        for key: LockdownValueKey<Value>
+    ) async throws -> Value {
+        try validate(key)
+        let rawValue = try await value(
+            domain: key.domain,
+            key: key.rawValue
+        )
+        guard let value = rawValue as? Value else {
+            let expectedType = String(describing: Value.self)
+            let location = Self.valueLocation(
+                key: key.rawValue,
+                domain: key.domain
+            )
+            throw RorkDeviceError.protocolViolation(
+                "Lockdown value \(location) does not match \(expectedType)."
+            )
         }
         return value
     }
@@ -131,6 +159,19 @@ public final class LockdownClient {
         try checkResult(response, request: "SetValue")
     }
 
+    /// Sets one value using the type and domain carried by its key.
+    func setValue<Value>(
+        _ value: Value,
+        for key: LockdownValueKey<Value>
+    ) async throws {
+        try validate(key)
+        try await setValue(
+            value,
+            domain: key.domain,
+            key: key.rawValue
+        )
+    }
+
     /// Reads the Developer Mode state from Lockdown's AMFI domain.
     ///
     /// This is a passive query. It reads the setting but does not enable
@@ -138,9 +179,10 @@ public final class LockdownClient {
     ///
     /// - Returns: `true` only when iOS reports Developer Mode as enabled.
     public func developerModeStatus() async throws -> Bool {
+        let key = LockdownValueKey<Bool>.developerModeStatus
         let value = try await value(
-            domain: "com.apple.security.mac.amfi",
-            key: "DeveloperModeStatus"
+            domain: key.domain,
+            key: key.rawValue
         )
         guard let enabled = value as? Bool else {
             throw RorkDeviceError.protocolViolation(
@@ -148,6 +190,33 @@ public final class LockdownClient {
             )
         }
         return enabled
+    }
+
+    /// Rejects typed keys that cannot identify one concrete Lockdown value.
+    private func validate<Value>(
+        _ key: LockdownValueKey<Value>
+    ) throws {
+        guard !key.rawValue.isEmpty else {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown value key must not be empty."
+            )
+        }
+        if let domain = key.domain, domain.isEmpty {
+            throw RorkDeviceError.invalidInput(
+                "Lockdown value domain must not be empty."
+            )
+        }
+    }
+
+    /// Describes one key location for type-mismatch diagnostics.
+    private static func valueLocation(
+        key: String,
+        domain: String?
+    ) -> String {
+        guard let domain else {
+            return key
+        }
+        return "\(key) in domain \(domain)"
     }
 
     /// Requests host pairing with the connected device.

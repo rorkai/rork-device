@@ -429,35 +429,26 @@ public final class DeviceClient {
             connection.close()
         }
         let lockdown = LockdownClient(connection: connection)
-        guard
-            let deviceIdentifier = try await lockdown.value(
-                domain: nil,
-                key: "UniqueDeviceID"
-            ) as? String,
-            !deviceIdentifier.isEmpty
-        else {
+        let deviceIdentifier: String = try await lockdown.value(
+            for: .uniqueDeviceID
+        )
+        guard !deviceIdentifier.isEmpty else {
             throw RorkDeviceError.protocolViolation(
                 "Lockdown UniqueDeviceID was missing or empty."
             )
         }
-        guard
-            let devicePublicKey = try await lockdown.value(
-                domain: nil,
-                key: "DevicePublicKey"
-            ) as? Data,
-            !devicePublicKey.isEmpty
-        else {
+        let devicePublicKey: Data = try await lockdown.value(
+            for: .devicePublicKey
+        )
+        guard !devicePublicKey.isEmpty else {
             throw RorkDeviceError.protocolViolation(
                 "Lockdown DevicePublicKey was missing or empty."
             )
         }
-        guard
-            let wiFiMACAddress = try await lockdown.value(
-                domain: nil,
-                key: "WiFiAddress"
-            ) as? String,
-            !wiFiMACAddress.isEmpty
-        else {
+        let wiFiMACAddress: String = try await lockdown.value(
+            for: .wiFiAddress
+        )
+        guard !wiFiMACAddress.isEmpty else {
             throw RorkDeviceError.protocolViolation(
                 "Lockdown WiFiAddress was missing or empty."
             )

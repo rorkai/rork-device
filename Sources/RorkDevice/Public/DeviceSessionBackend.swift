@@ -96,8 +96,7 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     func enableWirelessConnections() async throws {
         try await lockdown.setValue(
             true,
-            domain: "com.apple.mobile.wireless_lockdown",
-            key: "EnableWifiConnections"
+            for: .wirelessConnectionsEnabled
         )
     }
 
