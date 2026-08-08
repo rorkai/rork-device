@@ -146,6 +146,18 @@ try await session.installApplication(
 }
 ```
 
+Low-level `LockdownClient` callers can use typed keys for individual values
+while retaining `value(domain:key:)` for whole domains and unusual payloads:
+
+```swift
+let name = try await lockdown.value(for: .deviceName)
+let customKey = LockdownValueKey<Int>(
+    "CustomCount",
+    domain: "com.example.values"
+)
+let count = try await lockdown.value(for: customKey)
+```
+
 ## WebUSB
 
 `RorkDeviceWeb` owns the Swift/WASM side of direct Apple USB communication. It
