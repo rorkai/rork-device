@@ -296,7 +296,17 @@ final class CompanionProxyClientTests: XCTestCase {
         let canceledRequest = Task {
             try await client.pairedDeviceIdentifiers()
         }
-        try await waitForQueuedRequest(on: client)
+        do {
+            try await waitForQueuedRequest(on: client)
+        } catch {
+            // Scope cleanup waits for both child operations, so a timeout must
+            // unblock and drain them before it can escape.
+            canceledRequest.cancel()
+            await connection.releaseFirstReceive()
+            _ = try? await first
+            _ = try? await canceledRequest.value
+            throw error
+        }
         canceledRequest.cancel()
         await connection.releaseFirstReceive()
 
