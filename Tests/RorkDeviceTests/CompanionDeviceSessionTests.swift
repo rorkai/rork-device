@@ -107,6 +107,52 @@ final class CompanionDeviceSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Infers integer and Boolean values from their custom key factories.
+    func testReadsCustomScalarCompanionValues() async throws {
+        let capacityConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [
+                    "BatteryCurrentCapacity": 75,
+                ],
+            ])
+        )
+        let chargingConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [
+                    "BatteryIsCharging": true,
+                ],
+            ])
+        )
+        let backend = CompanionDeviceSessionTestBackend(
+            connections: [
+                capacityConnection,
+                chargingConnection,
+            ]
+        )
+        let session = DeviceSession(backend: backend)
+
+        let capacity = try await session.companionValue(
+            for: .integer("BatteryCurrentCapacity"),
+            on: "WATCH-1"
+        )
+        let charging = try await session.companionValue(
+            for: .boolean("BatteryIsCharging"),
+            on: "WATCH-1"
+        )
+
+        XCTAssertEqual(capacity, 75)
+        XCTAssertEqual(charging, true)
+        XCTAssertEqual(
+            backend.startedServiceNames,
+            Array(
+                repeating: CompanionProxyClient.serviceName,
+                count: 2
+            )
+        )
+        XCTAssertTrue(capacityConnection.isClosed)
+        XCTAssertTrue(chargingConnection.isClosed)
+    }
+
     /// Returns nil for an absent typed value and still closes its connection.
     func testCompanionValueReturnsNilWhenAbsent() async throws {
         let connection = FakeConnection(

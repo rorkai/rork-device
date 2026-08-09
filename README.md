@@ -174,6 +174,9 @@ if let identifier = companions.first?.udid {
 }
 ```
 
+Use `.integer(...)` and `.boolean(...)` for custom scalar values with those
+response types.
+
 ## WebUSB
 
 `RorkDeviceWeb` owns the Swift/WASM side of direct Apple USB communication. It

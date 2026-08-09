@@ -54,3 +54,17 @@ public extension CompanionRegistryKey where Value == String {
         Self("ModelNumber")
     }
 }
+
+public extension CompanionRegistryKey where Value == Int {
+    /// Creates a custom integer-valued registry key.
+    static func integer(_ rawValue: String) -> Self {
+        Self(rawValue)
+    }
+}
+
+public extension CompanionRegistryKey where Value == Bool {
+    /// Creates a custom Boolean-valued registry key.
+    static func boolean(_ rawValue: String) -> Self {
+        Self(rawValue)
+    }
+}
