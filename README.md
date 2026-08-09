@@ -164,6 +164,7 @@ response type. `companionValue(for:on:)` handles the per-request service
 lifecycle required by affected iOS versions:
 
 ```swift
+let companions = try await session.pairedCompanionDevices()
 if let identifier = companions.first?.udid {
     let customKey: CompanionRegistryKey<String> = "VendorDisplayName"
     let displayName = try await session.companionValue(
