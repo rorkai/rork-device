@@ -3,32 +3,34 @@ import Foundation
 import XCTest
 
 final class CompanionDeviceSessionTests: XCTestCase {
-    /// Verifies that one ordered service stream supplies every device metadata
-    /// lookup and closes after completion.
+    /// Uses a fresh service stream for each request because some iOS versions
+    /// close CompanionProxy after one response.
     func testReadsPairedCompanionDeviceInformation() async throws {
-        var inbound = Data()
-        inbound.append(
-            try PropertyListMessageFramer.encode([
+        let registryConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
                 "PairedDevicesArray": ["WATCH-1"],
             ])
         )
-        inbound.append(
-            try PropertyListMessageFramer.encode([
+        let nameConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
                 "RetrievedValueDictionary": [
                     "DeviceName": "My Watch",
                 ],
             ])
         )
-        inbound.append(
-            try PropertyListMessageFramer.encode([
+        let modelConnection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
                 "RetrievedValueDictionary": [
                     "ModelNumber": "Model-1",
                 ],
             ])
         )
-        let connection = FakeConnection(inbound: inbound)
         let backend = CompanionDeviceSessionTestBackend(
-            connection: connection
+            connections: [
+                registryConnection,
+                nameConnection,
+                modelConnection,
+            ]
         )
         let session = DeviceSession(backend: backend)
 
@@ -46,6 +48,33 @@ final class CompanionDeviceSessionTests: XCTestCase {
         )
         XCTAssertEqual(
             backend.startedServiceNames,
+            Array(
+                repeating: CompanionProxyClient.serviceName,
+                count: 3
+            )
+        )
+        XCTAssertTrue(registryConnection.isClosed)
+        XCTAssertTrue(nameConnection.isClosed)
+        XCTAssertTrue(modelConnection.isClosed)
+    }
+
+    /// Avoids opening metadata services when the registry reports no devices.
+    func testEmptyRegistryUsesOnlyOneServiceConnection() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "PairedDevicesArray": [String](),
+            ])
+        )
+        let backend = CompanionDeviceSessionTestBackend(
+            connections: [connection]
+        )
+        let session = DeviceSession(backend: backend)
+
+        let devices = try await session.pairedCompanionDevices()
+
+        XCTAssertEqual(devices, [])
+        XCTAssertEqual(
+            backend.startedServiceNames,
             [CompanionProxyClient.serviceName]
         )
         XCTAssertTrue(connection.isClosed)
@@ -59,7 +88,7 @@ final class CompanionDeviceSessionTests: XCTestCase {
         )
         let session = DeviceSession(
             backend: CompanionDeviceSessionTestBackend(
-                connection: connection
+                connections: [connection]
             )
         )
 
@@ -82,15 +111,15 @@ final class CompanionDeviceSessionTests: XCTestCase {
 private final class CompanionDeviceSessionTestBackend:
     DeviceSessionBackend
 {
-    /// Connection returned for the companion proxy service.
-    private let connection: DeviceConnection
+    /// Connections returned in request order.
+    private var connections: [DeviceConnection]
 
     /// Service names requested through the session.
     private(set) var startedServiceNames: [String] = []
 
-    /// Creates a backend with one deterministic service connection.
-    init(connection: DeviceConnection) {
-        self.connection = connection
+    /// Creates a backend with deterministic one-request connections.
+    init(connections: [DeviceConnection]) {
+        self.connections = connections
     }
 
     /// Returns the minimal information required by the backend protocol.
@@ -103,12 +132,17 @@ private final class CompanionDeviceSessionTestBackend:
         false
     }
 
-    /// Records the requested service and returns the configured connection.
+    /// Records the requested service and returns the next connection.
     func startService(
         named serviceName: String,
         escrowBag _: Data?
     ) async throws -> DeviceConnection {
         startedServiceNames.append(serviceName)
-        return connection
+        guard !connections.isEmpty else {
+            throw RorkDeviceError.transport(
+                "No companion proxy test connection remains."
+            )
+        }
+        return connections.removeFirst()
     }
 }

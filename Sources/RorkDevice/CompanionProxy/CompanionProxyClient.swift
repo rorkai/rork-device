@@ -6,6 +6,10 @@ import Foundation
 /// from each paired device's registry. Create the client with a connection from
 /// `DeviceSession.startService(named:)` using `serviceName`.
 ///
+/// Some iOS versions close the service after one response. Direct callers
+/// should create a fresh service connection and client for each request.
+/// `DeviceSession.pairedCompanionDevices()` handles this automatically.
+///
 /// The unchecked conformance is safe because an internal gate serializes every
 /// complete request and response on the immutable connection reference. Callers
 /// must not access or close that connection while client requests are pending.

@@ -88,29 +88,26 @@ public final class DeviceSession: @unchecked Sendable {
     public func pairedCompanionDevices() async throws
         -> [PairedCompanionDevice]
     {
-        let connection = try await startService(
-            named: CompanionProxyClient.serviceName
-        )
-        defer {
-            connection.close()
+        let identifiers = try await withCompanionProxyClient {
+            try await $0.pairedDeviceIdentifiers()
         }
-        let client = CompanionProxyClient(connection: connection)
-        let identifiers = try await client.pairedDeviceIdentifiers()
 
         var devices: [PairedCompanionDevice] = []
         devices.reserveCapacity(identifiers.count)
 
-        // One ordered stream carries every request and response, so registry
-        // lookups must remain serial.
         for identifier in identifiers {
-            let name: String? = try await client.value(
-                for: .deviceName,
-                on: identifier
-            )
-            let modelNumber: String? = try await client.value(
-                for: .modelNumber,
-                on: identifier
-            )
+            let name: String? = try await withCompanionProxyClient {
+                try await $0.value(
+                    for: .deviceName,
+                    on: identifier
+                )
+            }
+            let modelNumber: String? = try await withCompanionProxyClient {
+                try await $0.value(
+                    for: .modelNumber,
+                    on: identifier
+                )
+            }
             devices.append(
                 PairedCompanionDevice(
                     udid: identifier,
@@ -120,6 +117,24 @@ public final class DeviceSession: @unchecked Sendable {
             )
         }
         return devices
+    }
+
+    /// Runs one companion proxy request on a fresh service connection.
+    ///
+    /// Some iOS versions close this service after one response, so reusing a
+    /// stream can lose later metadata even after registry discovery succeeds.
+    private func withCompanionProxyClient<Result>(
+        _ operation: (CompanionProxyClient) async throws -> Result
+    ) async throws -> Result {
+        let connection = try await startService(
+            named: CompanionProxyClient.serviceName
+        )
+        defer {
+            connection.close()
+        }
+        return try await operation(
+            CompanionProxyClient(connection: connection)
+        )
     }
 
     /// Returns whether Developer Mode is enabled on the connected device.
