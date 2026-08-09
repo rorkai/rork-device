@@ -80,6 +80,84 @@ final class CompanionDeviceSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Opens and closes one service connection for a custom typed value.
+    func testReadsCustomTypedCompanionValue() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [
+                    "BatteryLevel": 75,
+                ],
+            ])
+        )
+        let backend = CompanionDeviceSessionTestBackend(
+            connections: [connection]
+        )
+        let session = DeviceSession(backend: backend)
+        let key: CompanionRegistryKey<Int> = "BatteryLevel"
+
+        let value = try await session.companionValue(
+            for: key,
+            on: "WATCH-1"
+        )
+
+        XCTAssertEqual(value, 75)
+        XCTAssertEqual(
+            backend.startedServiceNames,
+            [CompanionProxyClient.serviceName]
+        )
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Returns nil for an absent typed value and still closes its connection.
+    func testCompanionValueReturnsNilWhenAbsent() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "RetrievedValueDictionary": [:],
+            ])
+        )
+        let session = DeviceSession(
+            backend: CompanionDeviceSessionTestBackend(
+                connections: [connection]
+            )
+        )
+
+        let value: String? = try await session.companionValue(
+            for: .deviceName,
+            on: "WATCH-1"
+        )
+
+        XCTAssertNil(value)
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Closes the scoped service connection when a typed lookup fails.
+    func testCompanionValueClosesConnectionAfterFailure() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([:])
+        )
+        let session = DeviceSession(
+            backend: CompanionDeviceSessionTestBackend(
+                connections: [connection]
+            )
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                let _: String? = try await session.companionValue(
+                    for: .deviceName,
+                    on: "WATCH-1"
+                )
+            },
+            { error in
+                guard case RorkDeviceError.protocolViolation = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+        )
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
     /// Verifies that session-owned service connections close on protocol
     /// failures.
     func testClosesCompanionProxyAfterProtocolFailure() async throws {

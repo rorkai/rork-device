@@ -76,6 +76,31 @@ public final class DeviceSession: @unchecked Sendable {
         try await backend.fetchDeviceInfo()
     }
 
+    /// Reads one typed registry value from a paired companion device.
+    ///
+    /// Each call opens a fresh companion proxy service because some iOS
+    /// versions close the service after one response.
+    ///
+    /// - Parameters:
+    ///   - key: Open registry key carrying the expected response type.
+    ///   - deviceIdentifier: Identifier returned by
+    ///     `pairedCompanionDevices()` or
+    ///     `CompanionProxyClient.pairedDeviceIdentifiers()`.
+    /// - Returns: The typed value, or `nil` when the key is absent.
+    /// - Throws: An input error for an empty key or identifier, plus transport
+    ///   and protocol errors.
+    public func companionValue<Value>(
+        for key: CompanionRegistryKey<Value>,
+        on deviceIdentifier: String
+    ) async throws -> Value? {
+        try await withCompanionProxyClient {
+            try await $0.value(
+                for: key,
+                on: deviceIdentifier
+            )
+        }
+    }
+
     /// Returns devices paired through the connected iPhone.
     ///
     /// The session opens Apple's companion proxy through either Lockdown or its
@@ -96,18 +121,14 @@ public final class DeviceSession: @unchecked Sendable {
         devices.reserveCapacity(identifiers.count)
 
         for identifier in identifiers {
-            let name: String? = try await withCompanionProxyClient {
-                try await $0.value(
-                    for: .deviceName,
-                    on: identifier
-                )
-            }
-            let modelNumber: String? = try await withCompanionProxyClient {
-                try await $0.value(
-                    for: .modelNumber,
-                    on: identifier
-                )
-            }
+            let name: String? = try await companionValue(
+                for: .deviceName,
+                on: identifier
+            )
+            let modelNumber: String? = try await companionValue(
+                for: .modelNumber,
+                on: identifier
+            )
             devices.append(
                 PairedCompanionDevice(
                     udid: identifier,

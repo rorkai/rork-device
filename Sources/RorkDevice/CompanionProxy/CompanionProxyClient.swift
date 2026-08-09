@@ -8,7 +8,8 @@ import Foundation
 ///
 /// Some iOS versions close the service after one response. Direct callers
 /// should create a fresh service connection and client for each request.
-/// `DeviceSession.pairedCompanionDevices()` handles this automatically.
+/// `DeviceSession.companionValue(for:on:)` and
+/// `DeviceSession.pairedCompanionDevices()` handle this automatically.
 ///
 /// The unchecked conformance is safe because an internal gate serializes every
 /// complete request and response on the immutable connection reference. Callers
