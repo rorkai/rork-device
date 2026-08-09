@@ -80,12 +80,12 @@ final class CompanionDeviceSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
-    /// Opens and closes one service connection for a custom typed value.
-    func testReadsCustomTypedCompanionValue() async throws {
+    /// Infers a custom string key without exposing its generic spelling.
+    func testReadsCustomStringCompanionValue() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
                 "RetrievedValueDictionary": [
-                    "BatteryLevel": 75,
+                    "VendorDisplayName": "Custom Watch",
                 ],
             ])
         )
@@ -93,14 +93,13 @@ final class CompanionDeviceSessionTests: XCTestCase {
             connections: [connection]
         )
         let session = DeviceSession(backend: backend)
-        let key: CompanionRegistryKey<Int> = "BatteryLevel"
 
         let value = try await session.companionValue(
-            for: key,
+            for: .string("VendorDisplayName"),
             on: "WATCH-1"
         )
 
-        XCTAssertEqual(value, 75)
+        XCTAssertEqual(value, "Custom Watch")
         XCTAssertEqual(
             backend.startedServiceNames,
             [CompanionProxyClient.serviceName]

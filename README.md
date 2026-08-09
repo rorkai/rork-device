@@ -166,9 +166,8 @@ lifecycle required by affected iOS versions:
 ```swift
 let companions = try await session.pairedCompanionDevices()
 if let identifier = companions.first?.udid {
-    let customKey: CompanionRegistryKey<String> = "VendorDisplayName"
     let displayName = try await session.companionValue(
-        for: customKey,
+        for: .string("VendorDisplayName"),
         on: identifier
     )
     print(displayName ?? "No custom display name")

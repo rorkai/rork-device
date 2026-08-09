@@ -39,6 +39,11 @@ public struct CompanionRegistryKey<Value>:
 }
 
 public extension CompanionRegistryKey where Value == String {
+    /// Creates a custom string-valued registry key.
+    static func string(_ rawValue: String) -> Self {
+        Self(rawValue)
+    }
+
     /// Human-readable device name.
     static var deviceName: Self {
         Self("DeviceName")
