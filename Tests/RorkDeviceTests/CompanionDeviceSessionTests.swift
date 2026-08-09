@@ -158,6 +158,57 @@ final class CompanionDeviceSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Rejects an empty companion identifier before opening a service.
+    func testCompanionValueRejectsEmptyIdentifierBeforeConnecting() async {
+        let backend = CompanionDeviceSessionTestBackend(connections: [])
+        let session = DeviceSession(backend: backend)
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                let _: String? = try await session.companionValue(
+                    for: .deviceName,
+                    on: ""
+                )
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput(
+                        "Companion device identifier must not be empty."
+                    )
+                )
+            }
+        )
+
+        XCTAssertEqual(backend.startedServiceNames, [])
+    }
+
+    /// Rejects an empty registry key before opening a service.
+    func testCompanionValueRejectsEmptyKeyBeforeConnecting() async {
+        let backend = CompanionDeviceSessionTestBackend(connections: [])
+        let session = DeviceSession(backend: backend)
+        let key = CompanionRegistryKey<String>("")
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                let _: String? = try await session.companionValue(
+                    for: key,
+                    on: "WATCH-1"
+                )
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput(
+                        "Companion device registry key must not be empty."
+                    )
+                )
+            }
+        )
+
+        XCTAssertEqual(backend.startedServiceNames, [])
+    }
+
     /// Verifies that session-owned service connections close on protocol
     /// failures.
     func testClosesCompanionProxyAfterProtocolFailure() async throws {

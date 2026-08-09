@@ -93,7 +93,11 @@ public final class DeviceSession: @unchecked Sendable {
         for key: CompanionRegistryKey<Value>,
         on deviceIdentifier: String
     ) async throws -> Value? {
-        try await withCompanionProxyClient {
+        try validateCompanionRegistryLookup(
+            key: key,
+            deviceIdentifier: deviceIdentifier
+        )
+        return try await withCompanionProxyClient {
             try await $0.value(
                 for: key,
                 on: deviceIdentifier

@@ -92,16 +92,10 @@ public final class CompanionProxyClient: @unchecked Sendable {
         for key: CompanionRegistryKey<Value>,
         on deviceIdentifier: String
     ) async throws -> Value? {
-        guard !deviceIdentifier.isEmpty else {
-            throw RorkDeviceError.invalidInput(
-                "Companion device identifier must not be empty."
-            )
-        }
-        guard !key.rawValue.isEmpty else {
-            throw RorkDeviceError.invalidInput(
-                "Companion device registry key must not be empty."
-            )
-        }
+        try validateCompanionRegistryLookup(
+            key: key,
+            deviceIdentifier: deviceIdentifier
+        )
 
         let response = try await request([
             "Command": "GetValueFromRegistry",
@@ -174,6 +168,23 @@ public final class CompanionProxyClient: @unchecked Sendable {
         }
         throw RorkDeviceError.protocolViolation(
             "Companion proxy rejected the request: \(error)"
+        )
+    }
+}
+
+/// Validates lookup inputs before a service connection is required.
+func validateCompanionRegistryLookup<Value>(
+    key: CompanionRegistryKey<Value>,
+    deviceIdentifier: String
+) throws {
+    guard !deviceIdentifier.isEmpty else {
+        throw RorkDeviceError.invalidInput(
+            "Companion device identifier must not be empty."
+        )
+    }
+    guard !key.rawValue.isEmpty else {
+        throw RorkDeviceError.invalidInput(
+            "Companion device registry key must not be empty."
         )
     }
 }
