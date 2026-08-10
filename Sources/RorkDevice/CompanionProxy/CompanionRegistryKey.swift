@@ -39,11 +39,6 @@ public struct CompanionRegistryKey<Value>:
 }
 
 public extension CompanionRegistryKey where Value == String {
-    /// Creates a custom string-valued registry key.
-    static func string(_ rawValue: String) -> Self {
-        Self(rawValue)
-    }
-
     /// Human-readable device name.
     static var deviceName: Self {
         Self("DeviceName")
@@ -52,19 +47,5 @@ public extension CompanionRegistryKey where Value == String {
     /// Hardware model number.
     static var modelNumber: Self {
         Self("ModelNumber")
-    }
-}
-
-public extension CompanionRegistryKey where Value == Int {
-    /// Creates a custom integer-valued registry key.
-    static func integer(_ rawValue: String) -> Self {
-        Self(rawValue)
-    }
-}
-
-public extension CompanionRegistryKey where Value == Bool {
-    /// Creates a custom Boolean-valued registry key.
-    static func boolean(_ rawValue: String) -> Self {
-        Self(rawValue)
     }
 }

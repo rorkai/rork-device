@@ -167,15 +167,13 @@ lifecycle required by affected iOS versions:
 let companions = try await session.pairedCompanionDevices()
 if let identifier = companions.first?.udid {
     let displayName = try await session.companionValue(
-        for: .string("VendorDisplayName"),
+        String.self,
+        forKey: "VendorDisplayName",
         on: identifier
     )
     print(displayName ?? "No custom display name")
 }
 ```
-
-Use `.integer(...)` and `.boolean(...)` for custom scalar values with those
-response types.
 
 ## WebUSB
 

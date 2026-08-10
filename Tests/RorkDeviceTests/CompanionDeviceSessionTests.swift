@@ -95,7 +95,8 @@ final class CompanionDeviceSessionTests: XCTestCase {
         let session = DeviceSession(backend: backend)
 
         let value = try await session.companionValue(
-            for: .string("VendorDisplayName"),
+            String.self,
+            forKey: "VendorDisplayName",
             on: "WATCH-1"
         )
 
@@ -132,11 +133,13 @@ final class CompanionDeviceSessionTests: XCTestCase {
         let session = DeviceSession(backend: backend)
 
         let capacity = try await session.companionValue(
-            for: .integer("BatteryCurrentCapacity"),
+            Int.self,
+            forKey: "BatteryCurrentCapacity",
             on: "WATCH-1"
         )
         let charging = try await session.companionValue(
-            for: .boolean("BatteryIsCharging"),
+            Bool.self,
+            forKey: "BatteryIsCharging",
             on: "WATCH-1"
         )
 

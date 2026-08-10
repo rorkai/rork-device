@@ -105,6 +105,31 @@ public final class DeviceSession: @unchecked Sendable {
         }
     }
 
+    /// Reads one custom registry value using an explicit response type.
+    ///
+    /// Use the typed-key overload for known or reusable keys. This overload is
+    /// the concise escape hatch for runtime key names.
+    ///
+    /// - Parameters:
+    ///   - type: Expected property-list value type.
+    ///   - key: Raw registry key name.
+    ///   - deviceIdentifier: Identifier returned by
+    ///     `pairedCompanionDevices()` or
+    ///     `CompanionProxyClient.pairedDeviceIdentifiers()`.
+    /// - Returns: The typed value, or `nil` when the key is absent.
+    /// - Throws: An input error for an empty key or identifier, plus transport
+    ///   and protocol errors.
+    public func companionValue<Value>(
+        _ type: Value.Type,
+        forKey key: String,
+        on deviceIdentifier: String
+    ) async throws -> Value? {
+        try await companionValue(
+            for: CompanionRegistryKey<Value>(key),
+            on: deviceIdentifier
+        )
+    }
+
     /// Returns devices paired through the connected iPhone.
     ///
     /// The session opens Apple's companion proxy through either Lockdown or its

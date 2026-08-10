@@ -21,18 +21,4 @@ final class CompanionRegistryKeyTests: XCTestCase {
 
         XCTAssertEqual(key.rawValue, "VendorDisplayName")
     }
-
-    /// Keeps numeric and Boolean custom keys concise while preserving type
-    /// inference.
-    func testScalarFactoriesCreateTypedKeys() {
-        let capacity = CompanionRegistryKey<Int>.integer(
-            "BatteryCurrentCapacity"
-        )
-        let charging = CompanionRegistryKey<Bool>.boolean(
-            "BatteryIsCharging"
-        )
-
-        XCTAssertEqual(capacity.rawValue, "BatteryCurrentCapacity")
-        XCTAssertEqual(charging.rawValue, "BatteryIsCharging")
-    }
 }
