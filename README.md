@@ -171,21 +171,16 @@ for companion in companions {
 }
 ```
 
-Lower-level clients can use typed registry keys without closing the set of wire
-names. The generic argument defines the expected response type:
+Typed registry keys keep the set of wire names open while declaring each
+response type. `companionValue(for:on:)` handles the per-request service
+lifecycle required by affected iOS versions:
 
 ```swift
-let connection = try await session.startService(
-    named: CompanionProxyClient.serviceName
-)
-defer { connection.close() }
-
-let proxy = CompanionProxyClient(connection: connection)
-let identifier = try await proxy.pairedDeviceIdentifiers().first
-let customKey: CompanionRegistryKey<String> = "VendorDisplayName"
-if let identifier {
-    let displayName = try await proxy.value(
-        for: customKey,
+let companions = try await session.pairedCompanionDevices()
+if let identifier = companions.first?.udid {
+    let displayName = try await session.companionValue(
+        String.self,
+        forKey: "VendorDisplayName",
         on: identifier
     )
     print(displayName ?? "No custom display name")

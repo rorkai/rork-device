@@ -76,6 +76,60 @@ public final class DeviceSession: @unchecked Sendable {
         try await backend.fetchDeviceInfo()
     }
 
+    /// Reads one typed registry value from a paired companion device.
+    ///
+    /// Each call opens a fresh companion proxy service because some iOS
+    /// versions close the service after one response.
+    ///
+    /// - Parameters:
+    ///   - key: Open registry key carrying the expected response type.
+    ///   - deviceIdentifier: Identifier returned by
+    ///     `pairedCompanionDevices()` or
+    ///     `CompanionProxyClient.pairedDeviceIdentifiers()`.
+    /// - Returns: The typed value, or `nil` when the key is absent.
+    /// - Throws: An input error for an empty key or identifier, plus transport
+    ///   and protocol errors.
+    public func companionValue<Value>(
+        for key: CompanionRegistryKey<Value>,
+        on deviceIdentifier: String
+    ) async throws -> Value? {
+        try validateCompanionRegistryLookup(
+            key: key,
+            deviceIdentifier: deviceIdentifier
+        )
+        return try await withCompanionProxyClient {
+            try await $0.value(
+                for: key,
+                on: deviceIdentifier
+            )
+        }
+    }
+
+    /// Reads one custom registry value using an explicit response type.
+    ///
+    /// Use the typed-key overload for known or reusable keys. This overload is
+    /// the concise escape hatch for runtime key names.
+    ///
+    /// - Parameters:
+    ///   - type: Expected property-list value type.
+    ///   - key: Raw registry key name.
+    ///   - deviceIdentifier: Identifier returned by
+    ///     `pairedCompanionDevices()` or
+    ///     `CompanionProxyClient.pairedDeviceIdentifiers()`.
+    /// - Returns: The typed value, or `nil` when the key is absent.
+    /// - Throws: An input error for an empty key or identifier, plus transport
+    ///   and protocol errors.
+    public func companionValue<Value>(
+        _ type: Value.Type,
+        forKey key: String,
+        on deviceIdentifier: String
+    ) async throws -> Value? {
+        try await companionValue(
+            for: CompanionRegistryKey<Value>(key),
+            on: deviceIdentifier
+        )
+    }
+
     /// Returns devices paired through the connected iPhone.
     ///
     /// The session opens Apple's companion proxy through either Lockdown or its
@@ -88,26 +142,19 @@ public final class DeviceSession: @unchecked Sendable {
     public func pairedCompanionDevices() async throws
         -> [PairedCompanionDevice]
     {
-        let connection = try await startService(
-            named: CompanionProxyClient.serviceName
-        )
-        defer {
-            connection.close()
+        let identifiers = try await withCompanionProxyClient {
+            try await $0.pairedDeviceIdentifiers()
         }
-        let client = CompanionProxyClient(connection: connection)
-        let identifiers = try await client.pairedDeviceIdentifiers()
 
         var devices: [PairedCompanionDevice] = []
         devices.reserveCapacity(identifiers.count)
 
-        // One ordered stream carries every request and response, so registry
-        // lookups must remain serial.
         for identifier in identifiers {
-            let name: String? = try await client.value(
+            let name: String? = try await companionValue(
                 for: .deviceName,
                 on: identifier
             )
-            let modelNumber: String? = try await client.value(
+            let modelNumber: String? = try await companionValue(
                 for: .modelNumber,
                 on: identifier
             )
@@ -120,6 +167,24 @@ public final class DeviceSession: @unchecked Sendable {
             )
         }
         return devices
+    }
+
+    /// Runs one companion proxy request on a fresh service connection.
+    ///
+    /// Some iOS versions close this service after one response, so reusing a
+    /// stream can lose later metadata even after registry discovery succeeds.
+    private func withCompanionProxyClient<Result>(
+        _ operation: (CompanionProxyClient) async throws -> Result
+    ) async throws -> Result {
+        let connection = try await startService(
+            named: CompanionProxyClient.serviceName
+        )
+        defer {
+            connection.close()
+        }
+        return try await operation(
+            CompanionProxyClient(connection: connection)
+        )
     }
 
     /// Returns whether Developer Mode is enabled on the connected device.

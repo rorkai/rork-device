@@ -6,6 +6,11 @@ import Foundation
 /// from each paired device's registry. Create the client with a connection from
 /// `DeviceSession.startService(named:)` using `serviceName`.
 ///
+/// Some iOS versions close the service after one response. Direct callers
+/// should create a fresh service connection and client for each request.
+/// `DeviceSession.companionValue(for:on:)` and
+/// `DeviceSession.pairedCompanionDevices()` handle this automatically.
+///
 /// The unchecked conformance is safe because an internal gate serializes every
 /// complete request and response on the immutable connection reference. Callers
 /// must not access or close that connection while client requests are pending.
@@ -87,16 +92,10 @@ public final class CompanionProxyClient: @unchecked Sendable {
         for key: CompanionRegistryKey<Value>,
         on deviceIdentifier: String
     ) async throws -> Value? {
-        guard !deviceIdentifier.isEmpty else {
-            throw RorkDeviceError.invalidInput(
-                "Companion device identifier must not be empty."
-            )
-        }
-        guard !key.rawValue.isEmpty else {
-            throw RorkDeviceError.invalidInput(
-                "Companion device registry key must not be empty."
-            )
-        }
+        try validateCompanionRegistryLookup(
+            key: key,
+            deviceIdentifier: deviceIdentifier
+        )
 
         let response = try await request([
             "Command": "GetValueFromRegistry",
@@ -169,6 +168,23 @@ public final class CompanionProxyClient: @unchecked Sendable {
         }
         throw RorkDeviceError.protocolViolation(
             "Companion proxy rejected the request: \(error)"
+        )
+    }
+}
+
+/// Validates lookup inputs before a service connection is required.
+func validateCompanionRegistryLookup<Value>(
+    key: CompanionRegistryKey<Value>,
+    deviceIdentifier: String
+) throws {
+    guard !deviceIdentifier.isEmpty else {
+        throw RorkDeviceError.invalidInput(
+            "Companion device identifier must not be empty."
+        )
+    }
+    guard !key.rawValue.isEmpty else {
+        throw RorkDeviceError.invalidInput(
+            "Companion device registry key must not be empty."
         )
     }
 }
