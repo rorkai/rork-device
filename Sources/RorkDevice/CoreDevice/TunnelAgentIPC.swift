@@ -572,21 +572,29 @@ private actor InFlightRequestRegistry {
             return
         }
         if entry.cancellationRequested {
-            writer.write(cancelledReply(id: id))
+            writer.write(
+                cancelledReply(
+                    id: id,
+                    operationMayHaveCompleted: proposedReply.ok == true
+                )
+            )
         } else {
             writer.write(proposedReply)
         }
     }
 
-    /// Reports conservative side-effect uncertainty after accepted cancellation.
-    private func cancelledReply(id: String) -> Reply {
+    /// Reports side-effect uncertainty after accepted or forced cancellation.
+    private func cancelledReply(
+        id: String,
+        operationMayHaveCompleted: Bool = true
+    ) -> Reply {
         Reply.failure(
             id: id,
             failure: TunnelAgentFailure(
                 code: .cancelled,
                 message: "The request was cancelled.",
                 details: TunnelAgentErrorDetails(
-                    operationMayHaveCompleted: true
+                    operationMayHaveCompleted: operationMayHaveCompleted
                 )
             )
         )
