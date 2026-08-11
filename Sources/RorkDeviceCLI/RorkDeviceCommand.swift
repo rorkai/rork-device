@@ -1783,14 +1783,31 @@ func tunnelStatisticsLine(
 
 /// Machine-readable event emitted once a tunnel can accept local clients.
 struct TunnelReadyEvent: Encodable {
+    /// Event discriminator consumed by supervising processes.
     let event = "ready"
+
+    /// Device-side IPv6 address reached through the tunnel.
     let address: String
+
+    /// Remote Service Discovery port exposed by the device.
     let rsdPort: UInt16
+
+    /// Device identifier associated with this tunnel cycle.
     let udid: String
+
+    /// Whether packet forwarding uses the in-process network stack.
     let userspaceTun = true
+
+    /// Host address where the packet bridge accepts local clients.
     let userspaceTunHost: String
+
+    /// Host port where the packet bridge accepts local clients.
     let userspaceTunPort: UInt16
+
+    /// Pairing identity used to establish the tunnel.
     let identityPath: String
+
+    /// Maximum packet size accepted by the negotiated tunnel.
     let mtu: UInt16
 
     /// Operations the agent's serving loop accepts on standard input, or nil
@@ -1801,12 +1818,26 @@ struct TunnelReadyEvent: Encodable {
     /// Current agent protocol version, or nil outside serving mode.
     let protocolVersion: Int?
 
-    /// Protocol versions the serving agent can negotiate.
+    /// Protocol versions accepted by the serving agent.
     let supportedProtocolVersions: [Int]?
 
     /// Native agent version paired with this protocol advertisement.
     let agentVersion: String?
 
+    /// Creates a ready event and includes protocol metadata in serving mode.
+    ///
+    /// Protocol metadata stays absent when `capabilities` is nil so existing
+    /// supervisors receive the same non-serving event shape.
+    ///
+    /// - Parameters:
+    ///   - address: Device-side IPv6 address reached through the tunnel.
+    ///   - rsdPort: Remote Service Discovery port exposed by the device.
+    ///   - udid: Device identifier associated with this tunnel cycle.
+    ///   - userspaceTunHost: Host address for the local packet bridge.
+    ///   - userspaceTunPort: Host port for the local packet bridge.
+    ///   - identityPath: Pairing identity used to establish the tunnel.
+    ///   - mtu: Maximum packet size accepted by the tunnel.
+    ///   - capabilities: Operations accepted on standard input in serving mode.
     init(
         address: String,
         rsdPort: UInt16,

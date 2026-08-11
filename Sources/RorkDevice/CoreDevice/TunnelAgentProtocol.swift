@@ -5,7 +5,7 @@ public enum TunnelAgentProtocol {
     /// Protocol version implemented by this agent.
     public static let currentVersion = 1
 
-    /// Protocol versions this agent can negotiate with a supervisor.
+    /// Protocol versions accepted when a supervisor sends `protocolVersion`.
     public static let supportedVersions = [currentVersion]
 
     /// Open failure identifier carried by unsuccessful agent replies.
@@ -121,19 +121,43 @@ public enum TunnelAgentProtocol {
 
 /// Structured fields that accompany failures whose code alone loses context.
 struct TunnelAgentErrorDetails: Encodable, Sendable {
+    /// Protocol version rejected by the agent.
     let requestedVersion: Int?
+
+    /// Protocol versions the supervisor may retry with.
     let supportedProtocolVersions: [Int]?
+
+    /// Operation name that could not be dispatched.
     let operation: String?
+
+    /// Active request the supervisor attempted to cancel.
     let targetID: String?
+
+    /// RemoteXPC stream that reset before the operation completed.
     let streamIdentifier: UInt32?
+
+    /// HTTP/2 error code reported for a RemoteXPC stream reset.
     let protocolErrorCode: UInt32?
+
+    /// AFC status returned by the device.
     let afcStatus: UInt64?
+
+    /// MISAgent status returned by the device.
     let misagentStatus: Int?
+
+    /// Stable reason that refines the top-level error code.
     let reason: String?
+
+    /// Whether cancellation left the operation's side effects uncertain.
     let operationMayHaveCompleted: Bool?
+
+    /// Failure reported by an operation after cancellation had already won.
     let operationErrorCode: TunnelAgentProtocol.ErrorCode?
+
+    /// Readable form of the failure reported after cancellation had won.
     let operationError: String?
 
+    /// Keeps Swift acronym spelling while preserving the lower-camel wire key.
     private enum CodingKeys: String, CodingKey {
         case requestedVersion
         case supportedProtocolVersions
@@ -149,6 +173,21 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         case operationError
     }
 
+    /// Creates structured details with only the context available for a failure.
+    ///
+    /// - Parameters:
+    ///   - requestedVersion: Protocol version rejected by the agent.
+    ///   - supportedProtocolVersions: Protocol versions accepted by the agent.
+    ///   - operation: Operation name that could not be dispatched.
+    ///   - targetID: Active request the supervisor attempted to cancel.
+    ///   - streamIdentifier: RemoteXPC stream that reset.
+    ///   - protocolErrorCode: HTTP/2 code reported for the stream reset.
+    ///   - afcStatus: AFC status returned by the device.
+    ///   - misagentStatus: MISAgent status returned by the device.
+    ///   - reason: Stable reason that refines the top-level error code.
+    ///   - operationMayHaveCompleted: Whether side effects remain uncertain.
+    ///   - operationErrorCode: Failure reported after cancellation had won.
+    ///   - operationError: Readable form of the concurrent operation failure.
     init(
         requestedVersion: Int? = nil,
         supportedProtocolVersions: [Int]? = nil,
@@ -180,10 +219,21 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
 
 /// One normalized wire failure before it is encoded into a reply.
 struct TunnelAgentFailure: Error, Sendable {
+    /// Stable identifier used by supervisors for control flow.
     let code: TunnelAgentProtocol.ErrorCode
+
+    /// Readable error text retained for operators and legacy supervisors.
     let message: String
+
+    /// Structured context needed to interpret the failure safely.
     let details: TunnelAgentErrorDetails?
 
+    /// Creates a failure that preserves both machine and human context.
+    ///
+    /// - Parameters:
+    ///   - code: Stable identifier used by supervisors for control flow.
+    ///   - message: Readable error text for operators and legacy supervisors.
+    ///   - details: Structured context needed to interpret the failure safely.
     init(
         code: TunnelAgentProtocol.ErrorCode,
         message: String,
@@ -195,6 +245,13 @@ struct TunnelAgentFailure: Error, Sendable {
     }
 
     /// Converts library and protocol failures into the stable wire taxonomy.
+    ///
+    /// Known failures retain their actionable values. Unknown failures use the
+    /// `internal` wire code and preserve their runtime description for
+    /// diagnostics without exposing Swift case names as protocol identifiers.
+    ///
+    /// - Parameter error: Failure raised by an operation handler.
+    /// - Returns: A failure safe to encode into a protocol reply.
     static func normalize(_ error: any Error) -> TunnelAgentFailure {
         if let failure = error as? TunnelAgentFailure {
             return failure
@@ -292,6 +349,12 @@ struct TunnelAgentFailure: Error, Sendable {
     }
 
     /// Creates a cancellation failure with explicit side-effect uncertainty.
+    ///
+    /// - Parameters:
+    ///   - operationMayHaveCompleted: Whether callers must reconcile side effects.
+    ///   - operationErrorCode: Failure reported after cancellation had won.
+    ///   - operationError: Readable form of the concurrent operation failure.
+    /// - Returns: A stable cancellation failure for the supervisor.
     static func cancelled(
         operationMayHaveCompleted: Bool,
         operationErrorCode: TunnelAgentProtocol.ErrorCode? = nil,

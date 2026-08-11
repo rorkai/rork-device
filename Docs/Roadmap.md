@@ -159,6 +159,10 @@ Current limitations:
 - Windows and Linux support still requires portable usbmux discovery and
   remote-pairing TLS backends.
 
+Releases 0.7.0 through 0.9.x shipped incrementally without separate milestones
+in this document. The roadmap resumes at 0.10.0 because it is the next planned
+public API milestone.
+
 ## 0.10.0: Node SDK
 
 This release should make every stable host-side workflow available to Node.js
