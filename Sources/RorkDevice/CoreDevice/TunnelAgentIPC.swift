@@ -192,13 +192,7 @@ public enum TunnelAgentIPC {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
             if let id, await inFlightRequests.contains(id) {
-                writer.write(
-                    Reply.failure(
-                        event: .error,
-                        id: id,
-                        failure: duplicateRequestFailure(id: id)
-                    )
-                )
+                writeDuplicateRequest(id: id, writer: writer)
                 return
             }
             writer.write(
@@ -215,13 +209,7 @@ public enum TunnelAgentIPC {
             // Duplicate detection precedes operation validation so an invalid
             // second request cannot reuse an active request's correlation id.
             if await inFlightRequests.contains(request.id) {
-                writer.write(
-                    Reply.failure(
-                        event: .error,
-                        id: request.id,
-                        failure: duplicateRequestFailure(id: request.id)
-                    )
-                )
+                writeDuplicateRequest(id: request.id, writer: writer)
                 return
             }
             if let version = request.protocolVersion,
@@ -250,13 +238,7 @@ public enum TunnelAgentIPC {
                     )
                 }
                 if !started {
-                    writer.write(
-                        Reply.failure(
-                            event: .error,
-                            id: request.id,
-                            failure: duplicateRequestFailure(id: request.id)
-                        )
-                    )
+                    writeDuplicateRequest(id: request.id, writer: writer)
                 }
                 return
             }
@@ -288,13 +270,7 @@ public enum TunnelAgentIPC {
                 }
             }
             if !started {
-                writer.write(
-                    Reply.failure(
-                        event: .error,
-                        id: request.id,
-                        failure: duplicateRequestFailure(id: request.id)
-                    )
-                )
+                writeDuplicateRequest(id: request.id, writer: writer)
             }
         }
     }
@@ -336,6 +312,20 @@ public enum TunnelAgentIPC {
             )
         }
         return Reply.success(id: request.id, payload: nil)
+    }
+
+    /// Writes the protocol error for an identifier already owned by a request.
+    private static func writeDuplicateRequest(
+        id: String,
+        writer: ReplyWriter
+    ) {
+        writer.write(
+            Reply.failure(
+                event: .error,
+                id: id,
+                failure: duplicateRequestFailure(id: id)
+            )
+        )
     }
 
     /// Describes a request id that is already owned by an active operation.
