@@ -191,7 +191,10 @@ struct TunnelAgentFailure: Error, Sendable {
         if error is CancellationError {
             return TunnelAgentFailure(
                 code: .cancelled,
-                message: "The request was cancelled."
+                message: "The request was cancelled.",
+                details: TunnelAgentErrorDetails(
+                    operationMayHaveCompleted: false
+                )
             )
         }
         if let pairingError = error as? LockdownPairingError {
