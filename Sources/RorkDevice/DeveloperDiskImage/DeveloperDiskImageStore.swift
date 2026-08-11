@@ -145,8 +145,9 @@ public struct DeveloperDiskImageStore: Sendable {
     ///
     /// - Parameter source: HTTPS archive location and expected digest.
     /// - Returns: Local directory containing `BuildManifest.plist`.
-    /// - Throws: An input error when the archive, digest, ZIP layout, or cache
-    ///   contents are invalid; a transport error when the download fails.
+    /// - Throws: An input error when the archive, digest, or ZIP layout is
+    ///   invalid, a filesystem error when cache access fails, or a transport
+    ///   error when the download fails.
     public func prepareRestoreDirectory(
         from source: DeveloperDiskImageSource
     ) async throws -> URL {
@@ -168,8 +169,9 @@ public struct DeveloperDiskImageStore: Sendable {
                 withIntermediateDirectories: true
             )
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not create Developer Disk Image cache: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: cacheDirectory.path,
+                reason: error.localizedDescription
             )
         }
 
@@ -186,8 +188,9 @@ public struct DeveloperDiskImageStore: Sendable {
                 withIntermediateDirectories: true
             )
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not prepare Developer Disk Image cache: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: operationDirectory.path,
+                reason: error.localizedDescription
             )
         }
 
@@ -246,8 +249,9 @@ public struct DeveloperDiskImageStore: Sendable {
                 withIntermediateDirectories: true
             )
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not prepare Developer Disk Image extraction: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: extractedDirectory.path,
+                reason: error.localizedDescription
             )
         }
         try extractArchive(
@@ -289,8 +293,9 @@ public struct DeveloperDiskImageStore: Sendable {
             if isCompleteRestoreDirectory(finalRestoreDirectory) {
                 return finalRestoreDirectory
             }
-            throw RorkDeviceError.invalidInput(
-                "Could not cache Developer Disk Image: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: finalDirectory.path,
+                reason: error.localizedDescription
             )
         }
         return finalRestoreDirectory
@@ -342,10 +347,17 @@ private struct URLSessionDeveloperDiskImageArchiveDownloader:
                 "Developer Disk Image archive host did not return an HTTP response."
             )
         }
-        try FileManager.default.copyItem(
-            at: temporaryURL,
-            to: destinationURL
-        )
+        do {
+            try FileManager.default.copyItem(
+                at: temporaryURL,
+                to: destinationURL
+            )
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: destinationURL.path,
+                reason: error.localizedDescription
+            )
+        }
         let expectedLength = httpResponse.expectedContentLength
         return DeveloperDiskImageArchiveHTTPResponse(
             statusCode: httpResponse.statusCode,
@@ -427,14 +439,32 @@ private struct UnavailableDeveloperDiskImageArchiveDownloader:
 
 /// Returns a lowercase streaming SHA-256 for a file.
 func sha256HexDigest(of fileURL: URL) throws -> String {
-    let handle = try FileHandle(forReadingFrom: fileURL)
+    let handle: FileHandle
+    do {
+        handle = try FileHandle(forReadingFrom: fileURL)
+    } catch {
+        throw RorkDeviceError.fileSystem(
+            path: fileURL.path,
+            reason: error.localizedDescription
+        )
+    }
     defer {
         try? handle.close()
     }
     var hasher = SHA256()
-    while let chunk = try handle.read(upToCount: 1024 * 1024),
-        !chunk.isEmpty
-    {
+    while true {
+        let chunk: Data
+        do {
+            chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: fileURL.path,
+                reason: error.localizedDescription
+            )
+        }
+        if chunk.isEmpty {
+            break
+        }
         hasher.update(data: chunk)
     }
     return hasher.finalize().map {
@@ -444,9 +474,17 @@ func sha256HexDigest(of fileURL: URL) throws -> String {
 
 /// Returns the nonzero size of a regular, non-symbolic-link archive.
 private func fileSize(at fileURL: URL) throws -> UInt64 {
-    let values = try fileURL.resourceValues(
-        forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
-    )
+    let values: URLResourceValues
+    do {
+        values = try fileURL.resourceValues(
+            forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+        )
+    } catch {
+        throw RorkDeviceError.fileSystem(
+            path: fileURL.path,
+            reason: error.localizedDescription
+        )
+    }
     guard values.isRegularFile == true,
         values.isSymbolicLink != true,
         let size = values.fileSize,

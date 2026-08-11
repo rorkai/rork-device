@@ -280,19 +280,9 @@ public final class DeviceSession: @unchecked Sendable {
         from restoreDirectory: URL
     ) async throws(RorkDeviceError) -> DeveloperDiskImageMountResult {
         try await withRorkDeviceError {
-            let image: PersonalizedDeveloperDiskImage
-            do {
-                image = try PersonalizedDeveloperDiskImage(
-                    contentsOf: restoreDirectory
-                )
-            } catch let error as RorkDeviceError {
-                throw error
-            } catch {
-                throw RorkDeviceError.fileSystem(
-                    path: restoreDirectory.path,
-                    reason: error.localizedDescription
-                )
-            }
+            let image = try PersonalizedDeveloperDiskImage(
+                contentsOf: restoreDirectory
+            )
             let ecid = try await developerDiskImageECID()
             return try await mountPersonalizedDeveloperDiskImage(
                 image,
@@ -324,19 +314,9 @@ public final class DeviceSession: @unchecked Sendable {
             let restoreDirectory = try await store.prepareRestoreDirectory(
                 from: source
             )
-            let image: PersonalizedDeveloperDiskImage
-            do {
-                image = try PersonalizedDeveloperDiskImage(
-                    contentsOf: restoreDirectory
-                )
-            } catch let error as RorkDeviceError {
-                throw error
-            } catch {
-                throw RorkDeviceError.fileSystem(
-                    path: restoreDirectory.path,
-                    reason: error.localizedDescription
-                )
-            }
+            let image = try PersonalizedDeveloperDiskImage(
+                contentsOf: restoreDirectory
+            )
             return try await mountPersonalizedDeveloperDiskImage(
                 image,
                 ecid: ecid

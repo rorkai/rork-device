@@ -522,9 +522,17 @@ public final class DeviceClient {
             defer {
                 watchdog.cancel()
             }
-            let values =
-                (try? await LockdownClient(connection: connection).deviceValues())
-                ?? [:]
+            let values: [String: Any]
+            do {
+                values = try await LockdownClient(
+                    connection: connection
+                ).deviceValues()
+            } catch {
+                if error is CancellationError || Task.isCancelled {
+                    throw RorkDeviceError.cancelled
+                }
+                values = [:]
+            }
             return DeviceEnvironment(
                 productVersion: values["ProductVersion"] as? String,
                 productType: values["ProductType"] as? String,

@@ -55,7 +55,15 @@ enum PropertyListMessageFramer {
             throw RorkDeviceError.protocolViolation("Property list message length \(length) exceeds limit \(maxPayloadLength).")
         }
         let payload = try await connection.receive(exactly: length)
-        guard let dictionary = try PropertyListCodec.decode(payload) as? [String: Any] else {
+        let decoded: Any
+        do {
+            decoded = try PropertyListCodec.decode(payload)
+        } catch {
+            throw RorkDeviceError.protocolViolation(
+                "Property list response could not be decoded: \(error.localizedDescription)"
+            )
+        }
+        guard let dictionary = decoded as? [String: Any] else {
             throw RorkDeviceError.protocolViolation("Expected property list dictionary response.")
         }
         return dictionary

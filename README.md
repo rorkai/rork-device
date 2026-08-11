@@ -148,7 +148,7 @@ try await session.installApplication(
 }
 ```
 
-High-level `DeviceClient` and `DeviceSession` operations use
+High-level throwing methods on `DeviceClient` and `DeviceSession` use
 `throws(RorkDeviceError)`. Callers therefore receive the concrete error type
 without casting from `any Error`. Pairing decisions are available through
 `.pairing`, task cancellation through `.cancelled`, and local file failures

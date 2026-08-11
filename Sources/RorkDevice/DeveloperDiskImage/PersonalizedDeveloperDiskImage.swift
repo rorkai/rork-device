@@ -67,12 +67,20 @@ struct PersonalizedDeveloperDiskImage {
         do {
             manifestData = try Data(contentsOf: manifestURL)
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not read Developer Disk Image BuildManifest.plist: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: manifestURL.path,
+                reason: error.localizedDescription
             )
         }
-        guard let manifest = try PropertyListCodec.decode(manifestData)
-            as? [String: Any],
+        let decodedManifest: Any
+        do {
+            decodedManifest = try PropertyListCodec.decode(manifestData)
+        } catch {
+            throw RorkDeviceError.invalidInput(
+                "Developer Disk Image BuildManifest.plist could not be decoded: \(error.localizedDescription)"
+            )
+        }
+        guard let manifest = decodedManifest as? [String: Any],
             let buildIdentities = manifest["BuildIdentities"]
                 as? [[String: Any]],
             !buildIdentities.isEmpty
@@ -173,9 +181,17 @@ struct PersonalizedDeveloperDiskImage {
         guard resolvedCandidate.isContained(in: resolvedRoot) else {
             throw escapedPathError(relativePath)
         }
-        let values = try resolvedCandidate.resourceValues(
-            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-        )
+        let values: URLResourceValues
+        do {
+            values = try resolvedCandidate.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: resolvedCandidate.path,
+                reason: error.localizedDescription
+            )
+        }
         guard values.isRegularFile == true,
             values.isSymbolicLink != true
         else {
@@ -244,14 +260,32 @@ private func validatedDigest(
 
 /// Hashes a file incrementally so disk images are not loaded into memory.
 func sha384Digest(of fileURL: URL) throws -> Data {
-    let handle = try FileHandle(forReadingFrom: fileURL)
+    let handle: FileHandle
+    do {
+        handle = try FileHandle(forReadingFrom: fileURL)
+    } catch {
+        throw RorkDeviceError.fileSystem(
+            path: fileURL.path,
+            reason: error.localizedDescription
+        )
+    }
     defer {
         try? handle.close()
     }
     var hasher = SHA384()
-    while let chunk = try handle.read(upToCount: 1024 * 1024),
-        !chunk.isEmpty
-    {
+    while true {
+        let chunk: Data
+        do {
+            chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: fileURL.path,
+                reason: error.localizedDescription
+            )
+        }
+        if chunk.isEmpty {
+            break
+        }
         hasher.update(data: chunk)
     }
     return Data(hasher.finalize())

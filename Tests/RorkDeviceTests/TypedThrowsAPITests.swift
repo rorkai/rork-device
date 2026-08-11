@@ -252,6 +252,25 @@ final class TypedThrowsAPITests: XCTestCase {
         }
     }
 
+    func testDeviceEnvironmentPreservesCancellation() async {
+        let client = DeviceClient()
+        let operation = Task {
+            try await client.deviceEnvironment(
+                over: TypedThrowsBlockingTransport(),
+                readTimeout: .seconds(60)
+            )
+        }
+
+        operation.cancel()
+
+        do {
+            _ = try await operation.value
+            XCTFail("Cancellation should fail the environment read.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, .cancelled)
+        }
+    }
+
     func testDeviceSessionPreservesProtocolFailure() async {
         let expectedError = RorkDeviceError.protocolViolation(
             "Deliberate protocol failure."
@@ -310,6 +329,23 @@ private struct TypedThrowsFailingTransport: DeviceTransport {
     func connect(to _: UInt16) async throws -> DeviceConnection {
         throw error
     }
+}
+
+private struct TypedThrowsBlockingTransport: DeviceTransport {
+    func connect(to _: UInt16) async throws -> DeviceConnection {
+        TypedThrowsBlockingConnection()
+    }
+}
+
+private final class TypedThrowsBlockingConnection: DeviceConnection {
+    func send(_: Data) async throws {}
+
+    func receive(exactly _: Int) async throws -> Data {
+        try await Task.sleep(for: .seconds(60))
+        return Data()
+    }
+
+    func close() {}
 }
 
 private enum TypedThrowsTestError: Error, LocalizedError {
