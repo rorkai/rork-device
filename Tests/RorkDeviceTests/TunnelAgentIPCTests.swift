@@ -448,12 +448,71 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         await gate.open()
 
         let reply = try await replies.waitForReply(id: "work")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
         let details = try XCTUnwrap(
             reply["errorDetails"] as? [String: Any]
         )
         XCTAssertEqual(
             details["operationMayHaveCompleted"] as? Bool,
             true
+        )
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+    }
+
+    func testCancellationPreservesAConcurrentOperationFailure()
+        async throws
+    {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "work": { _ in
+                await gate.wait()
+                throw RorkDeviceError.protocolViolation(
+                    "The operation failed after applying work."
+                )
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"work","op":"work"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"work"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        await gate.open()
+
+        let reply = try await replies.waitForReply(id: "work")
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+        XCTAssertEqual(
+            details["operationErrorCode"] as? String,
+            "protocol_violation"
+        )
+        XCTAssertTrue(
+            (details["operationError"] as? String ?? "")
+                .contains("after applying work")
         )
         try stdin.fileHandleForWriting.close()
         await serving.value
@@ -703,39 +762,43 @@ private final class ReplyRecorder: @unchecked Sendable {
     }
 
     func waitForReply(id: String) async throws -> [String: Any] {
-        for _ in 0..<400 {
-            if let reply = decoded().first(where: { $0["id"] as? String == id }) {
-                return reply
-            }
-            try await Task.sleep(for: .milliseconds(5))
+        try await poll(
+            failure: "No reply for request \(id)."
+        ) {
+            decoded().first { $0["id"] as? String == id }
         }
-        throw RorkDeviceError.transport("No reply for request \(id).")
     }
 
     func waitForReplies(
         id: String,
         count: Int
     ) async throws -> [[String: Any]] {
-        for _ in 0..<400 {
+        try await poll(
+            failure: "Expected \(count) replies for request \(id)."
+        ) {
             let matches = replies(id: id)
-            if matches.count >= count {
-                return matches
-            }
-            try await Task.sleep(for: .milliseconds(5))
+            return matches.count >= count ? matches : nil
         }
-        throw RorkDeviceError.transport(
-            "Expected \(count) replies for request \(id)."
-        )
     }
 
     func waitForEvent(_ event: String) async throws -> [String: Any] {
+        try await poll(failure: "No \(event) event.") {
+            decoded().first { $0["event"] as? String == event }
+        }
+    }
+
+    /// Polls recorded lines with one timeout budget for every query shape.
+    private func poll<Value>(
+        failure: String,
+        produce: () -> Value?
+    ) async throws -> Value {
         for _ in 0..<400 {
-            if let reply = decoded().first(where: { $0["event"] as? String == event }) {
-                return reply
+            if let value = produce() {
+                return value
             }
             try await Task.sleep(for: .milliseconds(5))
         }
-        throw RorkDeviceError.transport("No \(event) event.")
+        throw RorkDeviceError.transport(failure)
     }
 }
 

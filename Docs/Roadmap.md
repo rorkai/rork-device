@@ -218,7 +218,7 @@ check and return a typed unsupported error instead of failing through an
 unavailable framework or inaccessible API.
 
 The TypeScript package and native binary should use the same release version.
-Every Node client startup should verify the protocol and capability versions
-before performing work. Additive capabilities remain optional, while
-incompatible protocol changes require a new minor version during the `0.x`
-release series.
+Every Node client startup should verify that `protocolVersion` appears in
+`supportedProtocolVersions` and that every required operation name appears in
+`capabilities`. Additive capabilities remain optional. Incompatible protocol
+changes require a new minor version during the `0.x` release series.

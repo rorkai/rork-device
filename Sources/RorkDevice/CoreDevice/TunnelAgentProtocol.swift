@@ -128,6 +128,8 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
     let misagentStatus: Int?
     let reason: String?
     let operationMayHaveCompleted: Bool?
+    let operationErrorCode: TunnelAgentProtocol.ErrorCode?
+    let operationError: String?
 
     private enum CodingKeys: String, CodingKey {
         case requestedVersion
@@ -140,6 +142,8 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         case misagentStatus
         case reason
         case operationMayHaveCompleted
+        case operationErrorCode
+        case operationError
     }
 
     init(
@@ -152,7 +156,9 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         afcStatus: UInt64? = nil,
         misagentStatus: Int? = nil,
         reason: String? = nil,
-        operationMayHaveCompleted: Bool? = nil
+        operationMayHaveCompleted: Bool? = nil,
+        operationErrorCode: TunnelAgentProtocol.ErrorCode? = nil,
+        operationError: String? = nil
     ) {
         self.requestedVersion = requestedVersion
         self.supportedProtocolVersions = supportedProtocolVersions
@@ -164,6 +170,8 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         self.misagentStatus = misagentStatus
         self.reason = reason
         self.operationMayHaveCompleted = operationMayHaveCompleted
+        self.operationErrorCode = operationErrorCode
+        self.operationError = operationError
     }
 }
 
@@ -270,13 +278,17 @@ struct TunnelAgentFailure: Error, Sendable {
 
     /// Creates a cancellation failure with explicit side-effect uncertainty.
     static func cancelled(
-        operationMayHaveCompleted: Bool
+        operationMayHaveCompleted: Bool,
+        operationErrorCode: TunnelAgentProtocol.ErrorCode? = nil,
+        operationError: String? = nil
     ) -> TunnelAgentFailure {
         TunnelAgentFailure(
             code: .cancelled,
             message: "The request was cancelled.",
             details: TunnelAgentErrorDetails(
-                operationMayHaveCompleted: operationMayHaveCompleted
+                operationMayHaveCompleted: operationMayHaveCompleted,
+                operationErrorCode: operationErrorCode,
+                operationError: operationError
             )
         )
     }

@@ -404,7 +404,8 @@ private struct Reply: Encodable, Sendable {
     let errorDetails: TunnelAgentErrorDetails?
 
     /// Operation-specific fields flattened into the reply, or nil when the
-    /// envelope says everything.
+    /// envelope says everything. Payloads must not reuse the reserved keys
+    /// `event`, `id`, `ok`, `error`, `errorCode`, or `errorDetails`.
     let payload: (any Encodable & Sendable)?
 
     /// The payload has no key on purpose. It encodes through the same encoder
@@ -587,10 +588,18 @@ private actor InFlightRequestRegistry {
             return
         }
         if entry.cancellationRequested {
+            let observedCancellation =
+                proposedReply.errorCode == .cancelled
+            let operationErrorCode =
+                observedCancellation ? nil : proposedReply.errorCode
+            let operationError =
+                observedCancellation ? nil : proposedReply.error
             writer.write(
                 cancelledReply(
                     id: id,
-                    operationMayHaveCompleted: proposedReply.ok == true
+                    operationMayHaveCompleted: !observedCancellation,
+                    operationErrorCode: operationErrorCode,
+                    operationError: operationError
                 )
             )
         } else {
@@ -601,12 +610,16 @@ private actor InFlightRequestRegistry {
     /// Reports side-effect uncertainty after accepted or forced cancellation.
     private func cancelledReply(
         id: String,
-        operationMayHaveCompleted: Bool = true
+        operationMayHaveCompleted: Bool = true,
+        operationErrorCode: TunnelAgentProtocol.ErrorCode? = nil,
+        operationError: String? = nil
     ) -> Reply {
         Reply.failure(
             id: id,
             failure: TunnelAgentFailure.cancelled(
-                operationMayHaveCompleted: operationMayHaveCompleted
+                operationMayHaveCompleted: operationMayHaveCompleted,
+                operationErrorCode: operationErrorCode,
+                operationError: operationError
             )
         )
     }
