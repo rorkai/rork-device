@@ -216,19 +216,33 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
             .success
         )
         try await Task.sleep(for: .milliseconds(20))
+        let outcomeRecorder = PublicationLockOutcomeRecorder()
+        let observation = Task {
+            do {
+                _ = try await second.value
+                await outcomeRecorder.record(.acquired)
+            } catch is CancellationError {
+                await outcomeRecorder.record(.cancelled)
+            } catch {
+                await outcomeRecorder.record(
+                    .failed(String(describing: error))
+                )
+            }
+        }
 
         second.cancel()
-        releaseFirst.signal()
-
-        do {
-            _ = try await second.value
-            XCTFail("A cancelled lock waiter should not acquire the lock.")
-        } catch is CancellationError {
-            XCTAssertTrue(second.isCancelled)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
+        for _ in 0..<100 {
+            if await outcomeRecorder.outcome != nil {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
         }
+        let outcomeWhileLocked = await outcomeRecorder.outcome
+
+        releaseFirst.signal()
+        await observation.value
         try await first.value
+        XCTAssertEqual(outcomeWhileLocked, .cancelled)
     }
 
     /// Proves cancellation remains typed while a download is suspended.
@@ -638,6 +652,29 @@ private actor CancellableDeveloperDiskImageArchiveDownloader:
         throw RorkDeviceError.transport(
             "The cancellation test download unexpectedly resumed."
         )
+    }
+}
+
+/// This outcome records how a contended publication lock wait ended.
+private enum PublicationLockOutcome: Equatable, Sendable {
+    /// The waiter entered the protected operation.
+    case acquired
+
+    /// Cancellation interrupted the waiter before lock acquisition.
+    case cancelled
+
+    /// An unexpected failure ended the waiter.
+    case failed(String)
+}
+
+/// This recorder exposes a task outcome without awaiting the task indefinitely.
+private actor PublicationLockOutcomeRecorder {
+    /// The first terminal waiter outcome is retained for the assertion.
+    private(set) var outcome: PublicationLockOutcome?
+
+    /// Records one terminal waiter outcome.
+    func record(_ outcome: PublicationLockOutcome) {
+        self.outcome = outcome
     }
 }
 
