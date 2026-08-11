@@ -4,6 +4,8 @@ import Foundation
 ///
 /// Backends preserve the same service-oriented API while obtaining endpoints
 /// either from Lockdown or from a live Remote Service Discovery advertisement.
+/// Every throwing requirement exposes `RorkDeviceError`, which keeps
+/// transport-specific failures from leaking through the public session.
 protocol DeviceSessionBackend {
     /// Returns the device information available through this transport.
     func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo

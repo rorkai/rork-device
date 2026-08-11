@@ -1241,8 +1241,8 @@ final class RorkDeviceCLITests: XCTestCase {
         }
 
         // A rejected saved record surfaces as a Lockdown StartSession failure,
-        // while a failed encrypted upgrade surfaces as a secure-session failure;
-        // the two point at different causes, so they must not collapse together.
+        // while a failed encrypted upgrade surfaces as a secure-session failure.
+        // The two point at different causes, so they must not collapse together.
         XCTAssertEqual(
             category(for: RorkDeviceError.transport("connection dropped")),
             "transport"
@@ -1261,6 +1261,29 @@ final class RorkDeviceCLITests: XCTestCase {
             category(for: RorkDeviceError.secureSessionUnsupported),
             "secure-session"
         )
+
+        XCTAssertEqual(
+            category(for: RorkDeviceError.cancelled),
+            "cancelled"
+        )
+        XCTAssertEqual(
+            category(
+                for: RorkDeviceError.fileSystem(
+                    path: "/tmp/identity",
+                    reason: "unavailable"
+                )
+            ),
+            "file-system"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.invalidInput("invalid identity")),
+            "invalid-input"
+        )
+        XCTAssertEqual(
+            category(for: RorkDeviceError.protocolViolation("invalid reply")),
+            "protocol"
+        )
+
         // Trust-dialog outcomes are the most user-actionable, so each maps to a
         // distinct category instead of collapsing into "other".
         XCTAssertEqual(

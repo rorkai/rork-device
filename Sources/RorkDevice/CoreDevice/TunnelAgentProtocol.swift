@@ -67,7 +67,7 @@ public enum TunnelAgentProtocol {
             rawValue: "invalid_pairing_record"
         )
 
-        /// A local file operation failed.
+        /// A host-local file operation failed.
         public static let fileSystem = Self(rawValue: "file_system")
 
         /// A socket, tunnel, or forwarding transport failed.

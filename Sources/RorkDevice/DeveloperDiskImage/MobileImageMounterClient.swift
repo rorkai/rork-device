@@ -116,6 +116,13 @@ private struct MobileImageMounterClient {
     ///
     /// The image stays file-backed so a multi-gigabyte DDI is never retained
     /// in memory as one `Data` value.
+    ///
+    /// - Parameters:
+    ///   - imageURL: This local disk image is streamed to the device.
+    ///   - ticket: The device accepts this personalization manifest.
+    /// - Throws: The method throws `RorkDeviceError.fileSystem` when the image
+    ///   cannot be read, `CancellationError` when the caller cancels streaming,
+    ///   or another error when transport or protocol work fails.
     func uploadImage(
         at imageURL: URL,
         ticket: Data
@@ -163,6 +170,7 @@ private struct MobileImageMounterClient {
         }
 
         while true {
+            try Task.checkCancellation()
             let chunk: Data
             do {
                 chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()

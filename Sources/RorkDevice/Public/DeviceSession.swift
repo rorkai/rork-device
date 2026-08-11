@@ -23,6 +23,12 @@ import Foundation
 /// Every throwing operation exposes only `RorkDeviceError`. Service clients and
 /// backend implementations may use broader errors internally, which the
 /// session normalizes before returning to its caller.
+///
+/// Methods that return `DeviceConnection`, `AFCClient`, `DeviceHeartbeat`, or
+/// `CoreDeviceTunnel` transfer ownership of that live service to the caller.
+/// Close or stop the returned value when it is no longer needed. Operations
+/// that return ordinary values use short-lived services and close those
+/// connections before returning or throwing.
 public final class DeviceSession: @unchecked Sendable {
     /// Kept outside `LockdownServiceName` because new public enum cases break
     /// exhaustive switches in existing clients.
@@ -185,6 +191,10 @@ public final class DeviceSession: @unchecked Sendable {
     ///
     /// Some iOS versions close this service after one response, so reusing a
     /// stream can lose later metadata even after registry discovery succeeds.
+    ///
+    /// - Parameter operation: This request runs before the service is closed.
+    /// - Returns: The request produces this value.
+    /// - Throws: The method propagates the service or protocol failure.
     private func withCompanionProxyClient<Result>(
         _ operation: (CompanionProxyClient) async throws -> Result
     ) async throws -> Result {
@@ -370,6 +380,10 @@ public final class DeviceSession: @unchecked Sendable {
     }
 
     /// Validates device state before network or image-mounter work begins.
+    ///
+    /// - Returns: The hardware identifier is used for image personalization.
+    /// - Throws: The method throws `RorkDeviceError` when device state is
+    ///   incomplete, incompatible, or not enabled for developer services.
     private func developerDiskImageECID() async throws -> UInt64 {
         let deviceInfo = try await fetchDeviceInfo()
         guard let productVersion = deviceInfo.productVersion,
@@ -401,6 +415,13 @@ public final class DeviceSession: @unchecked Sendable {
     }
 
     /// Mounts a parsed image after device compatibility has been established.
+    ///
+    /// - Parameters:
+    ///   - image: This value contains validated files and build identities.
+    ///   - ecid: This hardware identifier is used for personalization.
+    /// - Returns: The result reports whether the tunnel must restart.
+    /// - Throws: The method propagates image, ticket, filesystem, or transport
+    ///   failure.
     private func mountPersonalizedDeveloperDiskImage(
         _ image: PersonalizedDeveloperDiskImage,
         ecid: UInt64
@@ -429,6 +450,12 @@ public final class DeviceSession: @unchecked Sendable {
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
+    /// - Throws: The method throws `RorkDeviceError.lockdown` when Lockdown
+    ///   rejects startup, `RorkDeviceError.secureSession` or
+    ///   `RorkDeviceError.secureSessionUnsupported` when a required upgrade
+    ///   fails, `RorkDeviceError.protocolViolation` for a malformed Lockdown or
+    ///   RSD response, `RorkDeviceError.transport` when the connection fails, or
+    ///   `RorkDeviceError.cancelled` when the caller cancels.
     public func startService(
         _ serviceName: LockdownServiceName,
         escrowBag: Data? = nil
@@ -455,9 +482,12 @@ public final class DeviceSession: @unchecked Sendable {
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
-    /// - Throws: `RorkDeviceError.protocolViolation` when the service is absent
-    ///   or its handshake is invalid, or `RorkDeviceError.transport` when the
-    ///   service connection fails.
+    /// - Throws: The method throws `RorkDeviceError.lockdown` when Lockdown
+    ///   rejects startup, `RorkDeviceError.secureSession` or
+    ///   `RorkDeviceError.secureSessionUnsupported` when a required upgrade
+    ///   fails, `RorkDeviceError.protocolViolation` for a malformed Lockdown or
+    ///   RSD response, `RorkDeviceError.transport` when the connection fails, or
+    ///   `RorkDeviceError.cancelled` when the caller cancels.
     public func startService(
         named serviceName: String,
         escrowBag: Data? = nil
@@ -529,6 +559,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// `.mobileprovision` contents, not the decoded plist payload.
     ///
     /// - Parameter profile: Raw provisioning profile data.
+    /// - Throws: `RorkDeviceError.misagentStatus` when the device rejects the
+    ///   profile, or another `RorkDeviceError` for service failure.
     public func installProvisioningProfile(
         _ profile: Data
     ) async throws(RorkDeviceError) {
@@ -548,6 +580,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// fresh MISAgent service connection for the operation.
     ///
     /// - Parameter identifier: Provisioning profile UUID to remove.
+    /// - Throws: `RorkDeviceError.misagentStatus` when the device rejects the
+    ///   request, or another `RorkDeviceError` for service failure.
     public func removeProvisioningProfile(
         identifier: String
     ) async throws(RorkDeviceError) {
@@ -571,6 +605,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// - Parameter mode: MISAgent copy command variant. Defaults to `.all`,
     ///   which is correct for iOS 9.3 and newer.
     /// - Returns: Raw `.mobileprovision` payloads installed on the device.
+    /// - Throws: `RorkDeviceError.misagentStatus` when the device rejects the
+    ///   request, or another `RorkDeviceError` for service failure.
     public func copyProvisioningProfiles(
         mode: ProvisioningProfileCopyMode = .all
     ) async throws(RorkDeviceError) -> [Data] {
@@ -592,6 +628,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// - Parameter firstMessageTimeout: Maximum time to wait for the first device
     ///   heartbeat message.
     /// - Returns: A handle that owns the heartbeat connection.
+    /// - Throws: `RorkDeviceError.heartbeat` when startup times out or returns
+    ///   malformed data, or another `RorkDeviceError` for service failure.
     public func startHeartbeat(
         firstMessageTimeout: Duration = .seconds(12)
     ) async throws(RorkDeviceError) -> DeviceHeartbeat {
@@ -620,6 +658,8 @@ public final class DeviceSession: @unchecked Sendable {
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Typed application metadata values.
+    /// - Throws: `RorkDeviceError.installationProxy` when the device rejects
+    ///   the browse request, or another `RorkDeviceError` for service failure.
     public func installedApplications(
         matching type: ApplicationType = .user
     ) async throws(RorkDeviceError) -> [InstalledApplication] {
@@ -639,6 +679,8 @@ public final class DeviceSession: @unchecked Sendable {
     ///
     /// - Parameter type: Application class to browse. Defaults to user apps.
     /// - Returns: Raw application dictionaries returned by the device.
+    /// - Throws: `RorkDeviceError.installationProxy` when the device rejects
+    ///   the browse request, or another `RorkDeviceError` for service failure.
     public func rawApplications(
         matching type: ApplicationType = .user
     ) async throws(RorkDeviceError) -> [[String: Any]] {
@@ -662,6 +704,8 @@ public final class DeviceSession: @unchecked Sendable {
     ///   - bundleIdentifier: Bundle identifier of the installed application.
     ///   - options: Arguments, environment, and existing-process behavior.
     /// - Returns: Positive process identifier assigned by iOS.
+    /// - Throws: `RorkDeviceError.invalidInput` for an empty identifier, or
+    ///   another `RorkDeviceError` when the app service cannot launch the app.
     @discardableResult
     public func launchApplication(
         bundleIdentifier: String,
@@ -698,6 +742,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// - Parameter bundleIdentifier: Bundle identifier of the installed app.
     /// - Returns: `true` when at least one matching process was terminated, or
     ///   `false` when the application was installed but not running.
+    /// - Throws: `RorkDeviceError.invalidInput` when the identifier is empty or
+    ///   the app is absent, or another `RorkDeviceError` for app-service failure.
     @discardableResult
     public func terminateApplication(
         bundleIdentifier: String
@@ -779,6 +825,8 @@ public final class DeviceSession: @unchecked Sendable {
     /// - Parameters:
     ///   - bundleIdentifier: Bundle identifier to uninstall.
     ///   - progress: Optional progress/event callback.
+    /// - Throws: `RorkDeviceError.installationProxy` when the device rejects
+    ///   the uninstall, or another `RorkDeviceError` for service failure.
     public func uninstallApplication(
         bundleIdentifier: String,
         progress: InstallationProgressHandler? = nil
@@ -806,6 +854,9 @@ public final class DeviceSession: @unchecked Sendable {
     ///   - bundleIdentifier: Expected application bundle identifier. The value
     ///     is forwarded in InstallationProxy client options when supplied.
     ///   - progress: Optional callback for InstallationProxy status events.
+    /// - Throws: `RorkDeviceError.fileSystem` when the IPA cannot be read,
+    ///   `RorkDeviceError.installationProxy` when installation is rejected, or
+    ///   another `RorkDeviceError` for AFC or service failure.
     public func installApplication(
         at fileURL: URL,
         bundleIdentifier: String,
@@ -838,6 +889,8 @@ public final class DeviceSession: @unchecked Sendable {
     ///   - bundleIdentifier: Expected application bundle identifier. The value
     ///     is forwarded in InstallationProxy client options when supplied.
     ///   - progress: Optional callback for InstallationProxy status events.
+    /// - Throws: `RorkDeviceError.installationProxy` when installation is
+    ///   rejected, or another `RorkDeviceError` for AFC or service failure.
     public func installApplication(
         _ ipaData: Data,
         bundleIdentifier: String,
@@ -866,7 +919,12 @@ public final class DeviceSession: @unchecked Sendable {
     /// example to inspect the staged path or reuse a custom
     /// `InstallationProxyClient` command.
     ///
+    /// - Parameters:
+    ///   - fileURL: This local IPA archive is uploaded.
+    ///   - bundleIdentifier: This identifier names the staged archive.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
+    /// - Throws: `RorkDeviceError.fileSystem` when the IPA cannot be read, or
+    ///   another `RorkDeviceError` for AFC or service failure.
     public func stageApplication(
         at fileURL: URL,
         bundleIdentifier: String
@@ -889,6 +947,7 @@ public final class DeviceSession: @unchecked Sendable {
     ///   - ipaData: IPA archive bytes.
     ///   - bundleIdentifier: Bundle identifier used to name the staged IPA.
     /// - Returns: Device path suitable for InstallationProxy `Install`.
+    /// - Throws: A `RorkDeviceError` when AFC staging or its service fails.
     public func stageApplication(
         _ ipaData: Data,
         bundleIdentifier: String
@@ -911,7 +970,11 @@ public final class DeviceSession: @unchecked Sendable {
     /// state. For application-specific files, prefer
     /// `openApplicationContainer(bundleIdentifier:scope:)`.
     ///
+    /// The returned client owns its service connection. Call `close()` when
+    /// device file access is complete.
+    ///
     /// - Returns: AFC client rooted at the default AFC service.
+    /// - Throws: A `RorkDeviceError` when the AFC service cannot be opened.
     public func openAFC() async throws(RorkDeviceError) -> AFCClient {
         try await withRorkDeviceError {
             let connection = try await startService(.afc)
@@ -925,10 +988,15 @@ public final class DeviceSession: @unchecked Sendable {
     /// backup-style workflows that need files from one app rather than the
     /// device-wide AFC root.
     ///
+    /// The returned client owns the vended service connection. Call `close()`
+    /// when container access is complete.
+    ///
     /// - Parameters:
     ///   - bundleIdentifier: Installed application bundle identifier.
     ///   - scope: Application area requested from HouseArrest.
     /// - Returns: AFC client rooted at the requested app area.
+    /// - Throws: `RorkDeviceError.protocolViolation` when HouseArrest rejects
+    ///   the request, or another `RorkDeviceError` for service failure.
     public func openApplicationContainer(
         bundleIdentifier: String,
         scope: HouseArrestScope = .documents
@@ -949,6 +1017,16 @@ public final class DeviceSession: @unchecked Sendable {
     }
 
     /// Closes a short-lived service after its operation returns or throws.
+    ///
+    /// This helper is reserved for operations that do not return a live client.
+    /// Returning the connection or an object that owns it would violate the
+    /// caller's ownership contract because `defer` closes it before return.
+    ///
+    /// - Parameters:
+    ///   - serviceName: This modeled service is opened for one operation.
+    ///   - operation: This work completes before the connection is closed.
+    /// - Returns: The operation produces a value that owns no live service.
+    /// - Throws: The method propagates failure after closing the connection.
     private func withTransientService<Result>(
         _ serviceName: LockdownServiceName,
         operation: (DeviceConnection) async throws -> Result
@@ -965,6 +1043,12 @@ public final class DeviceSession: @unchecked Sendable {
     /// The backend returns a raw stream because direct CoreDevice services must
     /// not receive the property-list check-in used by Lockdown-compatible shim
     /// services.
+    ///
+    /// A successful result owns the service connection. A failed RemoteXPC
+    /// handshake closes the raw stream before propagating its error.
+    ///
+    /// - Returns: The result owns a connected CoreDevice application service.
+    /// - Throws: The method propagates lookup, transport, or handshake failure.
     private func openCoreDeviceApplicationService() async throws -> CoreDeviceApplicationService {
         let connection = try await backend.startRemoteService(
             named: CoreDeviceApplicationService.serviceName

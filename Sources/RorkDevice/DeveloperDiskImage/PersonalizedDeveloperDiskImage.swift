@@ -1,63 +1,68 @@
 import Crypto
 import Foundation
 
-/// Hardware values returned by the personalized image-mounter service.
+/// This value contains hardware data returned by the image-mounter service.
 struct PersonalizationIdentifiers {
-    /// Board identifier used to select a build identity.
+    /// This board identifier selects a build identity.
     let boardID: UInt64
 
-    /// Chip identifier used to select a build identity.
+    /// This chip identifier selects a build identity.
     let chipID: UInt64
 
-    /// Apple security domain used to select a build identity.
+    /// This Apple security domain selects a build identity.
     let securityDomain: UInt64
 
-    /// Additional `Ap,` values copied into Apple TSS requests.
+    /// These additional `Ap,` values are copied into Apple TSS requests.
     let additionalTSSParameters: [String: Any]
 }
 
-/// One hardware-specific build identity from `BuildManifest.plist`.
+/// This value contains one hardware identity from `BuildManifest.plist`.
 struct DeveloperDiskImageBuildIdentity {
-    /// Board identifier represented by this build identity.
+    /// This build identity represents the board identifier.
     let boardID: UInt64
 
-    /// Chip identifier represented by this build identity.
+    /// This build identity represents the chip identifier.
     let chipID: UInt64
 
-    /// Apple security domain represented by this build identity.
+    /// This build identity represents the Apple security domain.
     let securityDomain: UInt64
 
-    /// Complete build-identity property list used to populate Apple TSS fields.
+    /// This complete property list populates Apple TSS fields.
     let propertyList: [String: Any]
 
-    /// Manifest entries eligible for the Apple TSS ticket request.
+    /// These manifest entries are eligible for the Apple TSS ticket request.
     let manifestEntries: [String: Any]
 }
 
-/// Files and manifest values selected for one connected device.
+/// This value contains files and manifest data selected for one device.
 struct PersonalizedDeveloperDiskImagePayload {
-    /// Personalized disk image selected by the build identity.
+    /// The build identity selects this personalized disk image.
     let imageURL: URL
 
-    /// Validated SHA-384 digest sent to the device and Apple TSS.
+    /// This validated SHA-384 digest is sent to the device and Apple TSS.
     let imageDigest: Data
 
-    /// Trust cache paired with the personalized disk image.
+    /// This trust cache is paired with the personalized disk image.
     let trustCacheURL: URL
 
-    /// Build identity used to request or reuse a personalization ticket.
+    /// This build identity requests or reuses a personalization ticket.
     let buildIdentity: DeveloperDiskImageBuildIdentity
 }
 
-/// Parsed iOS 17+ personalized Developer Disk Image Restore directory.
+/// This value parses an iOS 17+ personalized Restore directory.
 struct PersonalizedDeveloperDiskImage {
-    /// Root containing the build manifest and all referenced files.
+    /// This root contains the build manifest and all referenced files.
     private let restoreDirectory: URL
 
-    /// Hardware-specific identities decoded from `BuildManifest.plist`.
+    /// These hardware identities are decoded from `BuildManifest.plist`.
     private let buildIdentities: [[String: Any]]
 
     /// Parses and validates the manifest structure in a Restore directory.
+    ///
+    /// - Parameter restoreDirectory: This root contains `BuildManifest.plist`.
+    /// - Throws: The initializer throws `RorkDeviceError.fileSystem` when the
+    ///   manifest cannot be read, or `RorkDeviceError.invalidInput` when its
+    ///   structure is invalid.
     init(contentsOf restoreDirectory: URL) throws {
         let restoreDirectory = restoreDirectory.standardizedFileURL
         let manifestURL = restoreDirectory.appendingPathComponent(
@@ -95,8 +100,11 @@ struct PersonalizedDeveloperDiskImage {
 
     /// Selects and authenticates the files for the connected hardware.
     ///
-    /// - Throws: An input error when no build identity matches, a manifest
-    ///   entry is incomplete, a path escapes `Restore`, or a digest differs.
+    /// - Parameter identifiers: These hardware values select a build identity.
+    /// - Returns: The result contains a validated image, trust cache, and identity.
+    /// - Throws: The method throws an input error for mismatched identity,
+    ///   incomplete manifest data, escaped paths, or invalid digests. It throws
+    ///   a filesystem error when a referenced file cannot be inspected.
     func payload(
         matching identifiers: PersonalizationIdentifiers
     ) throws -> PersonalizedDeveloperDiskImagePayload {
@@ -155,6 +163,11 @@ struct PersonalizedDeveloperDiskImage {
     }
 
     /// Resolves one manifest path without allowing traversal or symlink escape.
+    ///
+    /// - Parameter entry: This manifest entry contains an `Info.Path` value.
+    /// - Returns: The canonical regular file remains inside the Restore directory.
+    /// - Throws: The method throws an input error for unsafe or malformed paths,
+    ///   or a filesystem error when local metadata cannot be read.
     private func fileURL(for entry: [String: Any]) throws -> URL {
         guard let info = entry["Info"] as? [String: Any],
             let relativePath = info["Path"] as? String,
@@ -204,6 +217,9 @@ struct PersonalizedDeveloperDiskImage {
     }
 
     /// Builds the consistent diagnostic used for every path-containment check.
+    ///
+    /// - Parameter path: The manifest contains this unsafe relative path.
+    /// - Returns: The stable input error retains the rejected path.
     private func escapedPathError(_ path: String) -> RorkDeviceError {
         .invalidInput(
             "Developer Disk Image manifest path escapes the Restore directory: \(path)"
@@ -212,6 +228,9 @@ struct PersonalizedDeveloperDiskImage {
 }
 
 /// Returns an exact integer from plist numbers or hexadecimal/decimal strings.
+///
+/// - Parameter value: This property-list scalar is interpreted without rounding.
+/// - Returns: The result is exact, or nil for unsupported or fractional input.
 func propertyListUInt64(_ value: Any?) -> UInt64? {
     if let value = value as? UInt64 {
         return value
@@ -233,11 +252,22 @@ func propertyListUInt64(_ value: Any?) -> UInt64? {
 }
 
 /// Produces the uppercase hexadecimal notation used in hardware diagnostics.
+///
+/// - Parameter value: This hardware identifier needs formatting.
+/// - Returns: The uppercase value includes a `0x` prefix.
 private func hexadecimal(_ value: UInt64) -> String {
     "0x\(String(value, radix: 16, uppercase: true))"
 }
 
 /// Validates one extracted payload against its SHA-384 manifest digest.
+///
+/// - Parameters:
+///   - fileURL: This extracted file needs authentication.
+///   - manifestEntry: This entry carries the expected digest.
+///   - description: Failures use this human-readable file name.
+/// - Returns: The result is the verified SHA-384 digest.
+/// - Throws: The function throws an input error for a missing or mismatched
+///   digest, or a filesystem error when the file cannot be read.
 private func validatedDigest(
     for fileURL: URL,
     manifestEntry: [String: Any],
@@ -260,6 +290,11 @@ private func validatedDigest(
 }
 
 /// Hashes a file incrementally so disk images are not loaded into memory.
+///
+/// - Parameter fileURL: This local file needs hashing.
+/// - Returns: The result contains raw SHA-384 digest bytes.
+/// - Throws: The function throws `RorkDeviceError.fileSystem` when the file
+///   cannot be read, or `CancellationError` when the caller cancels hashing.
 func sha384Digest(of fileURL: URL) throws -> Data {
     let handle: FileHandle
     do {
@@ -275,6 +310,7 @@ func sha384Digest(of fileURL: URL) throws -> Data {
     }
     var hasher = SHA384()
     while true {
+        try Task.checkCancellation()
         let chunk: Data
         do {
             chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()

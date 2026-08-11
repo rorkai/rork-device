@@ -29,7 +29,10 @@ private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
     /// Connection that the watchdog may interrupt after its deadline.
     private let connection: any DeviceConnection
 
+    /// Protects timeout attribution across the read and watchdog tasks.
     private let lock = NSLock()
+
+    /// Distinguishes a deadline close from cancellation or peer shutdown.
     private var timeoutReached = false
 
     /// Retains a connection whose close operation is safe across tasks.
@@ -376,6 +379,9 @@ public final class DeviceClient {
     ///
     /// - Parameter device: Device returned from `discoverDevices()`.
     /// - Returns: The values the device exposes without host trust.
+    /// - Throws: `RorkDeviceError.cancelled` when the caller cancels, or
+    ///   `RorkDeviceError.transport` when the connection fails or the device
+    ///   does not answer before the read deadline.
     public func deviceEnvironment(
         for device: Device
     ) async throws(RorkDeviceError) -> DeviceEnvironment {
@@ -510,6 +516,13 @@ public final class DeviceClient {
     ///
     /// - Parameter transport: Route capable of opening Lockdown on port 62078.
     /// - Returns: The identity, clock, and lock state the device exposes.
+    /// - Throws: `RorkDeviceError.cancelled` when the caller cancels, or
+    ///   `RorkDeviceError.transport` when the connection fails or the device
+    ///   does not answer before `readTimeout`.
+    ///
+    /// After a connection succeeds, non-timeout read failures produce an empty
+    /// best-effort snapshot because this API is intended to preserve whatever
+    /// unauthenticated context remains available during trust failures.
     public func deviceEnvironment(
         over transport: any DeviceTransport,
         readTimeout: Duration = .seconds(10)
@@ -641,6 +654,8 @@ public final class DeviceClient {
     /// - Parameters:
     ///   - pairingRecord: Existing host identity trusted by the device.
     ///   - transport: Route capable of opening Lockdown on port 62078.
+    /// - Throws: A `RorkDeviceError` when the transport, Lockdown request, or
+    ///   pairing record cannot complete the device-side revocation.
     public func unpair(
         using pairingRecord: PairingRecord,
         over transport: any DeviceTransport
@@ -666,6 +681,8 @@ public final class DeviceClient {
     ///   - pairingRecord: Existing pairing record for the target device.
     ///   - label: Client label sent in Lockdown requests.
     /// - Returns: A `DeviceSession` backed by direct TCP connections.
+    /// - Throws: A `RorkDeviceError` for connection, Lockdown, pairing-record,
+    ///   secure-session, or protocol failure.
     public func connect(
         to host: String,
         port: UInt16 = 62078,

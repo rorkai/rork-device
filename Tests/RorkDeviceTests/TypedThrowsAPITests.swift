@@ -219,6 +219,23 @@ final class TypedThrowsAPITests: XCTestCase {
         )
     }
 
+    /// Type-checks the authenticated source and cache preparation boundaries.
+    func testDeveloperDiskImageStoreSignatureThrowsOnlyRorkDeviceError() async {
+        let store = DeveloperDiskImageStore()
+
+        await requireRorkDeviceError(
+            try DeveloperDiskImageSource(
+                archiveURL: unavailableValue(),
+                expectedSHA256: ""
+            )
+        )
+        await requireRorkDeviceError(
+            try await store.prepareRestoreDirectory(
+                from: unavailableValue()
+            )
+        )
+    }
+
     func testDeviceClientNormalizesCancellation() async {
         let client = DeviceClient()
 
@@ -433,11 +450,24 @@ final class TypedThrowsAPITests: XCTestCase {
             )
         )
 
-        _ = try await session.openApplicationContainer(
+        let client = try await session.openApplicationContainer(
             bundleIdentifier: "com.example.app"
         )
 
         XCTAssertFalse(connection.isClosed)
+        client.close()
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Proves an abandoned AFC client still releases its owned connection.
+    func testAFCClientClosesConnectionDuringDeinitialization() {
+        let connection = FakeConnection()
+        var client: AFCClient? = AFCClient(connection: connection)
+
+        XCTAssertNotNil(client)
+        XCTAssertFalse(connection.isClosed)
+        client = nil
+        XCTAssertTrue(connection.isClosed)
     }
 }
 
@@ -453,38 +483,54 @@ private func unavailableValue<Value>() -> Value {
     fatalError("Compile-time signature checks never execute their closures.")
 }
 
+/// Injects one arbitrary implementation error at the transport boundary.
 private struct TypedThrowsFailingTransport: DeviceTransport {
+    /// This failure verifies high-level normalization.
     let error: any Error
 
+    /// Throws the injected failure without opening a connection.
     func connect(to _: UInt16) async throws -> DeviceConnection {
         throw error
     }
 }
 
+/// Opens a connection whose reads remain pending until cancellation or close.
 private struct TypedThrowsBlockingTransport: DeviceTransport {
+    /// Creates an independently controllable blocking connection.
     func connect(to _: UInt16) async throws -> DeviceConnection {
         TypedThrowsBlockingConnection()
     }
 }
 
+/// Returns one observable connection for ownership tests.
 private struct TypedThrowsConnectionTransport: DeviceTransport {
+    /// The test inspects this connection's close state.
     let connection: DeviceConnection
 
+    /// Returns the injected connection for every requested port.
     func connect(to _: UInt16) async throws -> DeviceConnection {
         connection
     }
 }
 
+/// Models a read that can be interrupted safely from cancellation or a watchdog.
 private final class TypedThrowsBlockingConnection:
     DeviceConnection,
     @unchecked Sendable
 {
+    /// Protects the continuation and terminal state across tasks.
     private let lock = NSLock()
+
+    /// This pending read resumes exactly once when the connection finishes.
     private var continuation: CheckedContinuation<Data, any Error>?
+
+    /// Prevents a later read from suspending after closure.
     private var isClosed = false
 
+    /// Accepts writes because these tests exercise only read interruption.
     func send(_: Data) async throws {}
 
+    /// Suspends until cancellation or explicit closure supplies a failure.
     func receive(exactly _: Int) async throws -> Data {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -504,12 +550,14 @@ private final class TypedThrowsBlockingConnection:
         }
     }
 
+    /// Interrupts the pending read with a transport failure.
     func close() {
         finish(
             with: RorkDeviceError.transport("Connection is closed.")
         )
     }
 
+    /// Records terminal state and resumes a pending read at most once.
     private func finish(with error: any Error) {
         let pending = lock.withLock {
             isClosed = true
@@ -521,21 +569,28 @@ private final class TypedThrowsBlockingConnection:
     }
 }
 
+/// Supplies a non-library failure with deterministic localized text.
 private enum TypedThrowsTestError: Error, LocalizedError {
+    /// This case represents a deliberate transport-layer implementation failure.
     case transport
 
+    /// This text remains after normalization erases the implementation type.
     var errorDescription: String? {
         "Deliberate transport failure."
     }
 }
 
+/// This backend can fail device information without opening a service.
 private final class TypedThrowsTestBackend: DeviceSessionBackend {
+    /// This optional typed failure is returned by `fetchDeviceInfo()`.
     private let deviceInfoError: RorkDeviceError?
 
+    /// Creates a backend with an optional device-information failure.
     init(deviceInfoError: RorkDeviceError? = nil) {
         self.deviceInfoError = deviceInfoError
     }
 
+    /// Returns empty information or the injected typed failure.
     func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         if let deviceInfoError {
             throw deviceInfoError
@@ -543,6 +598,7 @@ private final class TypedThrowsTestBackend: DeviceSessionBackend {
         return DeviceInfo(values: [:])
     }
 
+    /// Rejects unexpected service access in compile-time and error tests.
     func startService(
         named serviceName: String,
         escrowBag _: Data?
@@ -553,17 +609,22 @@ private final class TypedThrowsTestBackend: DeviceSessionBackend {
     }
 }
 
+/// This backend lends one observable connection to session operations.
 private final class TypedThrowsConnectionBackend: DeviceSessionBackend {
+    /// The test verifies this connection's ownership transitions.
     private let connection: DeviceConnection
 
+    /// Creates a backend around one observable connection.
     init(connection: DeviceConnection) {
         self.connection = connection
     }
 
+    /// Returns the minimal device information required by these tests.
     func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
+    /// Returns the injected connection for every service request.
     func startService(
         named _: String,
         escrowBag _: Data?

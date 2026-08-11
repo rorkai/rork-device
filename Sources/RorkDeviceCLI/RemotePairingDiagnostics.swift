@@ -371,18 +371,28 @@ private func remotePairingFailureCategory(of error: Error) -> String {
         return "other"
     }
     switch deviceError {
+    case .invalidInput:
+        return "invalid-input"
+    case .cancelled:
+        return "cancelled"
+    case .invalidPairingRecord:
+        return "invalid-pairing-record"
     case let .pairing(pairingError):
         return lockdownPairingFailureCategory(pairingError)
+    case .fileSystem:
+        return "file-system"
     case .transport:
         return "transport"
+    case .protocolViolation:
+        return "protocol"
     case .lockdown:
         return "lockdown-start-session"
     case .secureSession, .secureSessionUnsupported:
         return "secure-session"
     case .remoteXPCStreamReset, .remotePairing:
         return "remote-pairing"
-    default:
-        return "other"
+    case .afcStatus, .heartbeat, .installationProxy, .misagentStatus:
+        return "device-service"
     }
 }
 
