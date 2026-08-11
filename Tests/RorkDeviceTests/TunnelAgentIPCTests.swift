@@ -17,7 +17,10 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
         XCTAssertEqual(request.operation, "apps-list")
         XCTAssertNil(request.protocolVersion)
         // Handlers decode operation-specific fields from the retained line.
-        XCTAssertTrue(String(data: request.line, encoding: .utf8)!.contains(#""type":"all""#))
+        let body = try XCTUnwrap(
+            String(data: request.line, encoding: .utf8)
+        )
+        XCTAssertTrue(body.contains(#""type":"all""#))
     }
 
     func testDecodesAnOptionalProtocolVersion() {
