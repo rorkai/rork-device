@@ -234,7 +234,8 @@ public enum TunnelAgentIPC {
                             message: "Unsupported tunnel agent protocol version \(version).",
                             details: TunnelAgentErrorDetails(
                                 requestedVersion: version,
-                                supportedVersions: TunnelAgentProtocol.supportedVersions
+                                supportedProtocolVersions:
+                                    TunnelAgentProtocol.supportedVersions
                             )
                         )
                     )

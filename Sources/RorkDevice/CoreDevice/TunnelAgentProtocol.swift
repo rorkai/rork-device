@@ -122,7 +122,7 @@ public enum TunnelAgentProtocol {
 /// Structured fields that accompany failures whose code alone loses context.
 struct TunnelAgentErrorDetails: Encodable, Sendable {
     let requestedVersion: Int?
-    let supportedVersions: [Int]?
+    let supportedProtocolVersions: [Int]?
     let operation: String?
     let targetID: String?
     let streamIdentifier: UInt32?
@@ -134,7 +134,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case requestedVersion
-        case supportedVersions
+        case supportedProtocolVersions
         case operation
         case targetID = "targetId"
         case streamIdentifier
@@ -147,7 +147,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
 
     init(
         requestedVersion: Int? = nil,
-        supportedVersions: [Int]? = nil,
+        supportedProtocolVersions: [Int]? = nil,
         operation: String? = nil,
         targetID: String? = nil,
         streamIdentifier: UInt32? = nil,
@@ -158,7 +158,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         operationMayHaveCompleted: Bool? = nil
     ) {
         self.requestedVersion = requestedVersion
-        self.supportedVersions = supportedVersions
+        self.supportedProtocolVersions = supportedProtocolVersions
         self.operation = operation
         self.targetID = targetID
         self.streamIdentifier = streamIdentifier
