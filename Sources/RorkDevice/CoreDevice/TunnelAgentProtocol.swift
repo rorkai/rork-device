@@ -8,73 +8,114 @@ public enum TunnelAgentProtocol {
     /// Protocol versions this agent can negotiate with a supervisor.
     public static let supportedVersions = [currentVersion]
 
-    /// Stable failure identifiers carried by unsuccessful agent replies.
-    public enum ErrorCode: String, Codable, Sendable {
+    /// Open failure identifier carried by unsuccessful agent replies.
+    public struct ErrorCode:
+        RawRepresentable,
+        Hashable,
+        Codable,
+        Sendable
+    {
+        /// Stable lower-snake-case value carried on the wire.
+        public let rawValue: String
+
+        /// Preserves known and future protocol error codes.
+        public init(rawValue: String) {
+            self.rawValue = rawValue
+        }
+
+        /// Decodes one error-code string without rejecting future values.
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            rawValue = try container.decode(String.self)
+        }
+
+        /// Encodes the raw protocol value as one JSON string.
+        public func encode(to encoder: any Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+
         /// The input line could not be decoded as a request envelope.
-        case malformedRequest = "malformed_request"
+        public static let malformedRequest = Self(rawValue: "malformed_request")
 
         /// The supervisor requested a protocol version the agent cannot serve.
-        case unsupportedProtocolVersion = "unsupported_protocol_version"
+        public static let unsupportedProtocolVersion = Self(
+            rawValue: "unsupported_protocol_version"
+        )
 
         /// Another active operation already owns the request identifier.
-        case duplicateRequestID = "duplicate_request_id"
+        public static let duplicateRequestID = Self(
+            rawValue: "duplicate_request_id"
+        )
 
         /// No registered operation matches the requested name.
-        case unknownOperation = "unknown_operation"
+        public static let unknownOperation = Self(rawValue: "unknown_operation")
 
         /// The supervisor or agent shutdown cancelled the operation.
-        case cancelled
+        public static let cancelled = Self(rawValue: "cancelled")
 
         /// No active operation matches the requested cancellation target.
-        case cancellationTargetNotFound = "cancellation_target_not_found"
+        public static let cancellationTargetNotFound = Self(
+            rawValue: "cancellation_target_not_found"
+        )
 
         /// A request parameter or caller-supplied value was invalid.
-        case invalidInput = "invalid_input"
+        public static let invalidInput = Self(rawValue: "invalid_input")
 
         /// A pairing record was incomplete or malformed.
-        case invalidPairingRecord = "invalid_pairing_record"
+        public static let invalidPairingRecord = Self(
+            rawValue: "invalid_pairing_record"
+        )
 
         /// A local file operation failed.
-        case fileSystem = "file_system"
+        public static let fileSystem = Self(rawValue: "file_system")
 
         /// A socket, tunnel, or forwarding transport failed.
-        case transport
+        public static let transport = Self(rawValue: "transport")
 
         /// The device or peer returned malformed protocol data.
-        case protocolViolation = "protocol_violation"
+        public static let protocolViolation = Self(
+            rawValue: "protocol_violation"
+        )
 
         /// RemoteXPC reset one HTTP/2 stream.
-        case remoteXPCStreamReset = "remote_xpc_stream_reset"
+        public static let remoteXPCStreamReset = Self(
+            rawValue: "remote_xpc_stream_reset"
+        )
 
         /// Lockdown rejected an operation.
-        case lockdown
+        public static let lockdown = Self(rawValue: "lockdown")
 
         /// The build does not include the required secure-session backend.
-        case secureSessionUnsupported = "secure_session_unsupported"
+        public static let secureSessionUnsupported = Self(
+            rawValue: "secure_session_unsupported"
+        )
 
         /// Secure-session setup or encrypted I/O failed.
-        case secureSession = "secure_session"
+        public static let secureSession = Self(rawValue: "secure_session")
 
         /// The device rejected remote pairing.
-        case remotePairing = "remote_pairing"
+        public static let remotePairing = Self(rawValue: "remote_pairing")
 
         /// AFC returned a nonzero status.
-        case afcStatus = "afc_status"
+        public static let afcStatus = Self(rawValue: "afc_status")
 
         /// The heartbeat service failed or timed out.
-        case heartbeat
+        public static let heartbeat = Self(rawValue: "heartbeat")
 
         /// InstallationProxy rejected an operation.
-        case installationProxy = "installation_proxy"
+        public static let installationProxy = Self(
+            rawValue: "installation_proxy"
+        )
 
         /// MISAgent returned a nonzero status.
-        case misagentStatus = "misagent_status"
+        public static let misagentStatus = Self(rawValue: "misagent_status")
 
         /// Lockdown pairing requires user action or was rejected.
-        case pairing
+        public static let pairing = Self(rawValue: "pairing")
 
         /// An unclassified implementation failure escaped a handler.
-        case internalFailure = "internal"
+        public static let internalFailure = Self(rawValue: "internal")
     }
 }
 

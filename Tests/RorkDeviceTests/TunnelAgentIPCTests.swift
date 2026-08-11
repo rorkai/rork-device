@@ -122,6 +122,21 @@ final class TunnelAgentFailureTests: XCTestCase {
         }
     }
 
+    func testErrorCodesPreserveUnknownFutureValues() throws {
+        let code = TunnelAgentProtocol.ErrorCode(
+            rawValue: "future_error"
+        )
+
+        let encoded = try JSONEncoder().encode(code)
+        let decoded = try JSONDecoder().decode(
+            TunnelAgentProtocol.ErrorCode.self,
+            from: encoded
+        )
+
+        XCTAssertEqual(String(data: encoded, encoding: .utf8), #""future_error""#)
+        XCTAssertEqual(decoded, code)
+    }
+
     func testMapsEveryDeviceErrorCaseToAStableCode() {
         let cases: [(RorkDeviceError, TunnelAgentProtocol.ErrorCode)] = [
             (.invalidInput("input"), .invalidInput),
