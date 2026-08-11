@@ -383,7 +383,10 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 Protocol version one accepts legacy requests that omit `protocolVersion`.
 Supervisors should negotiate through `capabilities` before sending other
 operations. The serving `ready` event carries the same protocol and agent
-version fields beside its capability list.
+version fields beside its capability list. Request identifiers must remain
+unique until their terminal `op-result`. They may be reused afterward. A
+duplicate in-flight identifier receives an `op-error` without terminating the
+original operation.
 
 Device-backed operations run through one shared Remote Service Discovery
 session that the agent opens over its own tunnel when a cycle becomes ready,

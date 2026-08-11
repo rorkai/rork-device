@@ -408,11 +408,9 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let cancelled = try await replies.waitForReply(id: "slow")
         XCTAssertEqual(cancelled["ok"] as? Bool, false)
         XCTAssertEqual(cancelled["errorCode"] as? String, "cancelled")
-
-        // A second terminal write would race immediately behind the first one.
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(replies.replies(id: "slow").count, 1)
         try stdin.fileHandleForWriting.close()
+        await serving.value
+        XCTAssertEqual(replies.replies(id: "slow").count, 1)
     }
 
     func testRejectsCancellationForAnUnknownRequest() async throws {
@@ -442,7 +440,33 @@ final class TunnelAgentServeLoopTests: XCTestCase {
             "cancellation_target_not_found"
         )
         let details = try XCTUnwrap(reply["errorDetails"] as? [String: Any])
-        XCTAssertEqual(details["targetID"] as? String, "missing")
+        XCTAssertEqual(details["targetId"] as? String, "missing")
+        try stdin.fileHandleForWriting.close()
+    }
+
+    func testRejectsCancellationThatTargetsItsOwnRequest() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: [:],
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"cancel"}"#.utf8 + [0x0a]
+            )
+        )
+
+        let reply = try await replies.waitForReply(id: "cancel")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "invalid_input")
         try stdin.fileHandleForWriting.close()
     }
 
@@ -479,12 +503,27 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         )
 
         _ = try await replies.waitForReply(id: "cancel")
-        let targetReplies = try await replies.waitForReplies(id: "same", count: 2)
+        _ = try await replies.waitForReplies(id: "same", count: 2)
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+        let targetReplies = replies.replies(id: "same")
+        XCTAssertEqual(targetReplies.count, 2)
+        let duplicate = try XCTUnwrap(
+            targetReplies.first {
+                $0["errorCode"] as? String == "duplicate_request_id"
+            }
+        )
+        XCTAssertEqual(duplicate["event"] as? String, "op-error")
+        let cancelled = try XCTUnwrap(
+            targetReplies.first {
+                $0["errorCode"] as? String == "cancelled"
+            }
+        )
+        XCTAssertEqual(cancelled["event"] as? String, "op-result")
         XCTAssertEqual(
             Set(targetReplies.compactMap { $0["errorCode"] as? String }),
             ["duplicate_request_id", "cancelled"]
         )
-        try stdin.fileHandleForWriting.close()
     }
 
     func testEndOfFileCancelsInFlightRequests() async throws {
