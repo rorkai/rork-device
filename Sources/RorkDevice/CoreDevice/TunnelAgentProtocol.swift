@@ -130,6 +130,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
     let afcStatus: UInt64?
     let misagentStatus: Int?
     let reason: String?
+    let operationMayHaveCompleted: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case requestedVersion
@@ -141,6 +142,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         case afcStatus
         case misagentStatus
         case reason
+        case operationMayHaveCompleted
     }
 
     init(
@@ -152,7 +154,8 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         protocolErrorCode: UInt32? = nil,
         afcStatus: UInt64? = nil,
         misagentStatus: Int? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        operationMayHaveCompleted: Bool? = nil
     ) {
         self.requestedVersion = requestedVersion
         self.supportedVersions = supportedVersions
@@ -163,6 +166,7 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
         self.afcStatus = afcStatus
         self.misagentStatus = misagentStatus
         self.reason = reason
+        self.operationMayHaveCompleted = operationMayHaveCompleted
     }
 }
 
