@@ -418,11 +418,13 @@ does not observe Swift task cancellation. Cancelled replies include
 `errorDetails.operationMayHaveCompleted`. The value is `false` when the handler
 observed cancellation without reporting success. It is `true` when cancellation
 raced a successful completion or the shutdown grace elapsed, so callers can
-reconcile operations with side effects. The `ready` event lists the accepted
-operations in a `capabilities` field so supervisors know what they can route
-through the pipe. In serving mode, end-of-file on standard input cancels active
-requests and waits at most five seconds before returning, so the parent-death
-contract below holds without the separate flag.
+reconcile operations with side effects. When another operation failure races
+cancellation, `operationErrorCode` and `operationError` preserve that terminal
+failure. The `ready` event lists the accepted operations in a `capabilities`
+field so supervisors know what they can route through the pipe. In serving
+mode, end-of-file on standard input cancels active requests and waits at most
+five seconds before returning, so the parent-death contract below holds without
+the separate flag.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard
