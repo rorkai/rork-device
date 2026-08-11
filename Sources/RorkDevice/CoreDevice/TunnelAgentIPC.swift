@@ -191,6 +191,16 @@ public enum TunnelAgentIPC {
     ) async {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
+            if let id, await inFlightRequests.contains(id) {
+                writer.write(
+                    Reply.failure(
+                        event: .error,
+                        id: id,
+                        failure: duplicateRequestFailure(id: id)
+                    )
+                )
+                return
+            }
             writer.write(
                 Reply.failure(
                     event: .error,
@@ -594,12 +604,8 @@ private actor InFlightRequestRegistry {
     ) -> Reply {
         Reply.failure(
             id: id,
-            failure: TunnelAgentFailure(
-                code: .cancelled,
-                message: "The request was cancelled.",
-                details: TunnelAgentErrorDetails(
-                    operationMayHaveCompleted: operationMayHaveCompleted
-                )
+            failure: TunnelAgentFailure.cancelled(
+                operationMayHaveCompleted: operationMayHaveCompleted
             )
         )
     }
