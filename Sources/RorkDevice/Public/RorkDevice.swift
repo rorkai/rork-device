@@ -170,6 +170,7 @@ public final class DeviceClient {
         }
     }
 
+    #if !os(WASI)
     /// Establishes Lockdown trust and saves the accepted host pairing record.
     ///
     /// This method owns the complete USB pairing transaction: it reads the
@@ -194,7 +195,6 @@ public final class DeviceClient {
     /// - Throws: `RorkDeviceError.pairing` for user decisions and timeout,
     ///   `RorkDeviceError.invalidInput` for unsupported routes, or another
     ///   `RorkDeviceError` when transport or certificate work fails.
-    #if !os(WASI)
     public func pair(
         with device: Device,
         trustTimeout: Duration = .seconds(120),

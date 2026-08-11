@@ -107,7 +107,7 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
 
 /// Converts implementation failures into the public high-level error surface.
 func normalizedRorkDeviceError(_ error: any Error) -> RorkDeviceError {
-    if error is CancellationError || Task.isCancelled {
+    if error is CancellationError {
         return .cancelled
     }
     if let error = error as? RorkDeviceError {
@@ -115,6 +115,9 @@ func normalizedRorkDeviceError(_ error: any Error) -> RorkDeviceError {
     }
     if let error = error as? LockdownPairingError {
         return .pairing(error)
+    }
+    if Task.isCancelled {
+        return .cancelled
     }
     return .transport(error.localizedDescription)
 }

@@ -309,6 +309,50 @@ final class TypedThrowsAPITests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testTransientServiceClosesAfterSuccessfulOperation() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "CurrentAmount": 0,
+                "CurrentIndex": 0,
+                "CurrentList": [],
+                "Status": "Complete",
+            ])
+        )
+        let session = DeviceSession(
+            backend: TypedThrowsConnectionBackend(
+                connection: connection
+            )
+        )
+
+        _ = try await session.installedApplications()
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testTransientServiceClosesAfterFailedOperation() async {
+        let connection = FakeConnection(
+            inbound: Data([0, 0, 0, 0])
+        )
+        let session = DeviceSession(
+            backend: TypedThrowsConnectionBackend(
+                connection: connection
+            )
+        )
+
+        do {
+            _ = try await session.installedApplications()
+            XCTFail("The malformed service response should fail.")
+        } catch {
+            XCTAssertEqual(
+                error,
+                .protocolViolation(
+                    "Property list message length was zero."
+                )
+            )
+        }
+        XCTAssertTrue(connection.isClosed)
+    }
 }
 
 /// Type-checks an API expression without executing its operation.
@@ -377,5 +421,24 @@ private final class TypedThrowsTestBackend: DeviceSessionBackend {
         throw RorkDeviceError.protocolViolation(
             "Unexpected service request \(serviceName)."
         )
+    }
+}
+
+private final class TypedThrowsConnectionBackend: DeviceSessionBackend {
+    private let connection: DeviceConnection
+
+    init(connection: DeviceConnection) {
+        self.connection = connection
+    }
+
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
+        DeviceInfo(values: [:])
+    }
+
+    func startService(
+        named _: String,
+        escrowBag _: Data?
+    ) async throws(RorkDeviceError) -> DeviceConnection {
+        connection
     }
 }

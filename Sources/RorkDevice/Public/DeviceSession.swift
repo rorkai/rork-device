@@ -488,11 +488,16 @@ public final class DeviceSession: @unchecked Sendable {
     ) async throws(RorkDeviceError) -> CoreDeviceTunnel {
         try await withRorkDeviceError {
             let connection = try await startService(.coreDeviceProxy)
-            return try await CoreDeviceTunnel.open(
-                over: connection,
-                requestedMaximumTransmissionUnit:
-                    requestedMaximumTransmissionUnit
-            )
+            do {
+                return try await CoreDeviceTunnel.open(
+                    over: connection,
+                    requestedMaximumTransmissionUnit:
+                        requestedMaximumTransmissionUnit
+                )
+            } catch {
+                connection.close()
+                throw error
+            }
         }
     }
 
@@ -528,9 +533,11 @@ public final class DeviceSession: @unchecked Sendable {
         _ profile: Data
     ) async throws(RorkDeviceError) {
         try await withRorkDeviceError {
-            let connection = try await startService(.misagent)
-            let client = MISAgentClient(connection: connection)
-            try await client.installProvisioningProfile(profile)
+            try await withTransientService(.misagent) { connection in
+                try await MISAgentClient(
+                    connection: connection
+                ).installProvisioningProfile(profile)
+            }
         }
     }
 
@@ -545,11 +552,13 @@ public final class DeviceSession: @unchecked Sendable {
         identifier: String
     ) async throws(RorkDeviceError) {
         try await withRorkDeviceError {
-            let connection = try await startService(.misagent)
-            let client = MISAgentClient(connection: connection)
-            try await client.removeProvisioningProfile(
-                identifier: identifier
-            )
+            try await withTransientService(.misagent) { connection in
+                try await MISAgentClient(
+                    connection: connection
+                ).removeProvisioningProfile(
+                    identifier: identifier
+                )
+            }
         }
     }
 
@@ -566,9 +575,11 @@ public final class DeviceSession: @unchecked Sendable {
         mode: ProvisioningProfileCopyMode = .all
     ) async throws(RorkDeviceError) -> [Data] {
         try await withRorkDeviceError {
-            let connection = try await startService(.misagent)
-            let client = MISAgentClient(connection: connection)
-            return try await client.copyProvisioningProfiles(mode: mode)
+            try await withTransientService(.misagent) { connection in
+                try await MISAgentClient(
+                    connection: connection
+                ).copyProvisioningProfiles(mode: mode)
+            }
         }
     }
 
@@ -588,10 +599,15 @@ public final class DeviceSession: @unchecked Sendable {
             let connection = try await startService(.heartbeat)
             let client = HeartbeatClient(connection: connection)
             let heartbeat = DeviceHeartbeat(client: client)
-            try await heartbeat.start(
-                firstMessageTimeout: firstMessageTimeout
-            )
-            return heartbeat
+            do {
+                try await heartbeat.start(
+                    firstMessageTimeout: firstMessageTimeout
+                )
+                return heartbeat
+            } catch {
+                connection.close()
+                throw error
+            }
         }
     }
 
@@ -608,9 +624,11 @@ public final class DeviceSession: @unchecked Sendable {
         matching type: ApplicationType = .user
     ) async throws(RorkDeviceError) -> [InstalledApplication] {
         try await withRorkDeviceError {
-            let connection = try await startService(.installationProxy)
-            let client = InstallationProxyClient(connection: connection)
-            return try await client.applications(matching: type)
+            try await withTransientService(.installationProxy) { connection in
+                try await InstallationProxyClient(
+                    connection: connection
+                ).applications(matching: type)
+            }
         }
     }
 
@@ -625,9 +643,11 @@ public final class DeviceSession: @unchecked Sendable {
         matching type: ApplicationType = .user
     ) async throws(RorkDeviceError) -> [[String: Any]] {
         try await withRorkDeviceError {
-            let connection = try await startService(.installationProxy)
-            let client = InstallationProxyClient(connection: connection)
-            return try await client.rawApplications(matching: type)
+            try await withTransientService(.installationProxy) { connection in
+                try await InstallationProxyClient(
+                    connection: connection
+                ).rawApplications(matching: type)
+            }
         }
     }
 
@@ -764,12 +784,14 @@ public final class DeviceSession: @unchecked Sendable {
         progress: InstallationProgressHandler? = nil
     ) async throws(RorkDeviceError) {
         try await withRorkDeviceError {
-            let connection = try await startService(.installationProxy)
-            let client = InstallationProxyClient(connection: connection)
-            try await client.uninstall(
-                bundleIdentifier: bundleIdentifier,
-                progress: progress
-            )
+            try await withTransientService(.installationProxy) { connection in
+                try await InstallationProxyClient(
+                    connection: connection
+                ).uninstall(
+                    bundleIdentifier: bundleIdentifier,
+                    progress: progress
+                )
+            }
         }
     }
 
@@ -794,13 +816,15 @@ public final class DeviceSession: @unchecked Sendable {
                 at: fileURL,
                 bundleIdentifier: bundleIdentifier
             )
-            let connection = try await startService(.installationProxy)
-            let client = InstallationProxyClient(connection: connection)
-            try await client.install(
-                packagePath: stagedPath,
-                bundleIdentifier: bundleIdentifier,
-                progress: progress
-            )
+            try await withTransientService(.installationProxy) { connection in
+                try await InstallationProxyClient(
+                    connection: connection
+                ).install(
+                    packagePath: stagedPath,
+                    bundleIdentifier: bundleIdentifier,
+                    progress: progress
+                )
+            }
         }
     }
 
@@ -824,13 +848,15 @@ public final class DeviceSession: @unchecked Sendable {
                 ipaData,
                 bundleIdentifier: bundleIdentifier
             )
-            let connection = try await startService(.installationProxy)
-            let client = InstallationProxyClient(connection: connection)
-            try await client.install(
-                packagePath: stagedPath,
-                bundleIdentifier: bundleIdentifier,
-                progress: progress
-            )
+            try await withTransientService(.installationProxy) { connection in
+                try await InstallationProxyClient(
+                    connection: connection
+                ).install(
+                    packagePath: stagedPath,
+                    bundleIdentifier: bundleIdentifier,
+                    progress: progress
+                )
+            }
         }
     }
 
@@ -846,12 +872,14 @@ public final class DeviceSession: @unchecked Sendable {
         bundleIdentifier: String
     ) async throws(RorkDeviceError) -> String {
         try await withRorkDeviceError {
-            let connection = try await startService(.afc)
-            let afc = AFCClient(connection: connection)
-            return try await afc.uploadIPA(
-                at: fileURL,
-                bundleIdentifier: bundleIdentifier
-            )
+            try await withTransientService(.afc) { connection in
+                try await AFCClient(
+                    connection: connection
+                ).uploadIPA(
+                    at: fileURL,
+                    bundleIdentifier: bundleIdentifier
+                )
+            }
         }
     }
 
@@ -866,12 +894,14 @@ public final class DeviceSession: @unchecked Sendable {
         bundleIdentifier: String
     ) async throws(RorkDeviceError) -> String {
         try await withRorkDeviceError {
-            let connection = try await startService(.afc)
-            let afc = AFCClient(connection: connection)
-            return try await afc.uploadIPA(
-                ipaData,
-                bundleIdentifier: bundleIdentifier
-            )
+            try await withTransientService(.afc) { connection in
+                try await AFCClient(
+                    connection: connection
+                ).uploadIPA(
+                    ipaData,
+                    bundleIdentifier: bundleIdentifier
+                )
+            }
         }
     }
 
@@ -913,6 +943,18 @@ public final class DeviceSession: @unchecked Sendable {
         }
     }
 
+    /// Closes a short-lived service after its operation returns or throws.
+    private func withTransientService<Result>(
+        _ serviceName: LockdownServiceName,
+        operation: (DeviceConnection) async throws -> Result
+    ) async throws -> Result {
+        let connection = try await startService(serviceName)
+        defer {
+            connection.close()
+        }
+        return try await operation(connection)
+    }
+
     /// Opens CoreDevice's direct RemoteXPC app service on an RSD session.
     ///
     /// The backend returns a raw stream because direct CoreDevice services must
@@ -922,7 +964,14 @@ public final class DeviceSession: @unchecked Sendable {
         let connection = try await backend.startRemoteService(
             named: CoreDeviceApplicationService.serviceName
         )
-        return try await CoreDeviceApplicationService.open(over: connection)
+        do {
+            return try await CoreDeviceApplicationService.open(
+                over: connection
+            )
+        } catch {
+            connection.close()
+            throw error
+        }
     }
 }
 

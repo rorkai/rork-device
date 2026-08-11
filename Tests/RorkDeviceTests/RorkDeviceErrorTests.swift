@@ -45,6 +45,29 @@ final class RorkDeviceErrorTests: XCTestCase {
             .transport("example")
         )
     }
+
+    func testCancelledTaskPreservesSpecificDeviceFailure() async {
+        let expected = RorkDeviceError.protocolViolation(
+            "The peer sent malformed data."
+        )
+        let operation = Task {
+            try await withRorkDeviceError {
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+                throw expected
+            }
+        }
+
+        operation.cancel()
+
+        do {
+            _ = try await operation.value
+            XCTFail("The operation should fail.")
+        } catch {
+            XCTAssertEqual(error as? RorkDeviceError, expected)
+        }
+    }
 }
 
 private enum TestFailure: Error, LocalizedError {
