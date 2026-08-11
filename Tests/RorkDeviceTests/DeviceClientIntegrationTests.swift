@@ -143,6 +143,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
             port: daemon.port
         )
         let client = DeviceClient(usbmuxClient: usbmuxClient)
+        let pairingRecord = try testPairingRecord()
         let transport = USBMuxDeviceTransport(
             deviceID: 1,
             usbmuxClient: usbmuxClient
@@ -152,7 +153,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
 
         do {
             _ = try await client.pair(
-                using: try testPairingRecord(),
+                using: pairingRecord,
                 over: transport,
                 trustTimeout: .milliseconds(50),
                 retryInterval: .seconds(2)
@@ -160,8 +161,8 @@ final class DeviceClientIntegrationTests: XCTestCase {
             XCTFail("Pairing should time out while the Trust dialog is pending.")
         } catch {
             XCTAssertEqual(
-                error as? LockdownPairingError,
-                .timedOut
+                error,
+                .pairing(.timedOut)
             )
         }
 

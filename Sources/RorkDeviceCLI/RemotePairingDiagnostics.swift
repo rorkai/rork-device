@@ -365,25 +365,14 @@ final class RemotePairingDiagnosticRecorder: @unchecked Sendable {
 /// CoreDevice identity enrollment.
 private func remotePairingFailureCategory(of error: Error) -> String {
     if let pairingError = error as? LockdownPairingError {
-        switch pairingError {
-        case .userConfirmationRequired:
-            return "awaiting-trust"
-        case .userDenied:
-            return "trust-denied"
-        case .deviceLocked:
-            return "device-locked"
-        case .prohibited:
-            return "pairing-prohibited"
-        case .timedOut:
-            return "trust-timeout"
-        case .rejected:
-            return "pairing-rejected"
-        }
+        return lockdownPairingFailureCategory(pairingError)
     }
     guard let deviceError = error as? RorkDeviceError else {
         return "other"
     }
     switch deviceError {
+    case let .pairing(pairingError):
+        return lockdownPairingFailureCategory(pairingError)
     case .transport:
         return "transport"
     case .lockdown:
@@ -394,6 +383,26 @@ private func remotePairingFailureCategory(of error: Error) -> String {
         return "remote-pairing"
     default:
         return "other"
+    }
+}
+
+/// Preserves user-actionable pairing categories across typed error wrapping.
+private func lockdownPairingFailureCategory(
+    _ error: LockdownPairingError
+) -> String {
+    switch error {
+    case .userConfirmationRequired:
+        return "awaiting-trust"
+    case .userDenied:
+        return "trust-denied"
+    case .deviceLocked:
+        return "device-locked"
+    case .prohibited:
+        return "pairing-prohibited"
+    case .timedOut:
+        return "trust-timeout"
+    case .rejected:
+        return "pairing-rejected"
     }
 }
 

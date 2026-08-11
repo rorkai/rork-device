@@ -216,18 +216,18 @@ private final class DeveloperDiskImageSessionTestBackend:
         self.connections = connections
     }
 
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         deviceInfo
     }
 
-    func isDeveloperModeEnabled() async throws -> Bool {
+    func isDeveloperModeEnabled() async throws(RorkDeviceError) -> Bool {
         developerModeEnabled
     }
 
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         startedServiceNames.append(serviceName)
         guard !connections.isEmpty else {
             throw RorkDeviceError.transport(

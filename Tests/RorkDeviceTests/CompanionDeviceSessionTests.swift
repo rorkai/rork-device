@@ -300,12 +300,12 @@ private final class CompanionDeviceSessionTestBackend:
     }
 
     /// Returns the minimal information required by the backend protocol.
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     /// Returns a disabled status because this backend does not model AMFI.
-    func isDeveloperModeEnabled() async throws -> Bool {
+    func isDeveloperModeEnabled() async throws(RorkDeviceError) -> Bool {
         false
     }
 
@@ -313,7 +313,7 @@ private final class CompanionDeviceSessionTestBackend:
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         startedServiceNames.append(serviceName)
         guard !connections.isEmpty else {
             throw RorkDeviceError.transport(

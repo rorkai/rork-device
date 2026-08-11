@@ -1272,6 +1272,12 @@ final class RorkDeviceCLITests: XCTestCase {
             "trust-denied"
         )
         XCTAssertEqual(
+            category(
+                for: RorkDeviceError.pairing(.userDenied)
+            ),
+            "trust-denied"
+        )
+        XCTAssertEqual(
             category(for: LockdownPairingError.prohibited),
             "pairing-prohibited"
         )

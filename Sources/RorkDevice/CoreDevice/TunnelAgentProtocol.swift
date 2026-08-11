@@ -34,6 +34,9 @@ public enum TunnelAgentProtocol {
         /// A pairing record was incomplete or malformed.
         case invalidPairingRecord = "invalid_pairing_record"
 
+        /// A local file operation failed.
+        case fileSystem = "file_system"
+
         /// A socket, tunnel, or forwarding transport failed.
         case transport
 
@@ -157,8 +160,20 @@ struct TunnelAgentFailure: Error, Sendable {
         switch deviceError {
         case .invalidInput:
             return TunnelAgentFailure(code: .invalidInput, message: message)
+        case .cancelled:
+            return TunnelAgentFailure(code: .cancelled, message: message)
         case .invalidPairingRecord:
             return TunnelAgentFailure(code: .invalidPairingRecord, message: message)
+        case let .pairing(pairingError):
+            return TunnelAgentFailure(
+                code: .pairing,
+                message: message,
+                details: TunnelAgentErrorDetails(
+                    reason: pairingReason(pairingError)
+                )
+            )
+        case .fileSystem:
+            return TunnelAgentFailure(code: .fileSystem, message: message)
         case .transport:
             return TunnelAgentFailure(code: .transport, message: message)
         case .protocolViolation:

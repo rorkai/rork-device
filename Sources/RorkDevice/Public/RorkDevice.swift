@@ -52,6 +52,10 @@ private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
 /// Both routes return `DeviceSession`, so AFC staging, provisioning-profile
 /// management, heartbeat, and InstallationProxy workflows do not depend on the
 /// transport selected by the application.
+///
+/// Every throwing operation exposes only `RorkDeviceError`. Transport,
+/// protocol, pairing, cancellation, and local failures are normalized before
+/// they cross this high-level boundary.
 public final class DeviceClient {
     #if canImport(NIOPosix) && !os(WASI)
     /// Client used to discover devices and open usbmux-forwarded connections.
@@ -107,13 +111,15 @@ public final class DeviceClient {
     /// - Throws: `RorkDeviceError.transport` when the usbmux socket cannot be
     ///   opened, or `RorkDeviceError.protocolViolation` when the daemon returns
     ///   malformed plist data.
-    public func discoverDevices() async throws -> [Device] {
-        try await usbmuxClient.listDevices().map { device in
-            Device(
-                identifier: device.serialNumber,
-                connection: .usbmux(deviceID: device.deviceID),
-                properties: device.properties
-            )
+    public func discoverDevices() async throws(RorkDeviceError) -> [Device] {
+        try await withRorkDeviceError {
+            try await usbmuxClient.listDevices().map { device in
+                Device(
+                    identifier: device.serialNumber,
+                    connection: .usbmux(deviceID: device.deviceID),
+                    properties: device.properties
+                )
+            }
         }
     }
 
@@ -133,14 +139,16 @@ public final class DeviceClient {
     ///   malformed plist data.
     public func discoverDevice(
         identifier: String
-    ) async throws -> Device? {
-        let matchingDevices = try await discoverDevices().filter {
-            $0.identifier == identifier
+    ) async throws(RorkDeviceError) -> Device? {
+        try await withRorkDeviceError {
+            let matchingDevices = try await discoverDevices().filter {
+                $0.identifier == identifier
+            }
+            if let usbDevice = matchingDevices.first(where: usesUSBRoute) {
+                return usbDevice
+            }
+            return matchingDevices.first
         }
-        if let usbDevice = matchingDevices.first(where: usesUSBRoute) {
-            return usbDevice
-        }
-        return matchingDevices.first
     }
 
     /// Reads the Lockdown pairing record stored by the local usbmux daemon.
@@ -152,10 +160,14 @@ public final class DeviceClient {
     ///
     /// - Parameter deviceIdentifier: Device UDID used as the usbmux record key.
     /// - Returns: Validated pairing material for the selected device.
+    /// - Throws: A `RorkDeviceError` when usbmux cannot load or decode the
+    ///   pairing record.
     public func pairingRecord(
         for deviceIdentifier: String
-    ) async throws -> PairingRecord {
-        try await usbmuxClient.pairingRecord(for: deviceIdentifier)
+    ) async throws(RorkDeviceError) -> PairingRecord {
+        try await withRorkDeviceError {
+            try await usbmuxClient.pairingRecord(for: deviceIdentifier)
+        }
     }
 
     /// Establishes Lockdown trust and saves the accepted host pairing record.
@@ -179,57 +191,59 @@ public final class DeviceClient {
     ///   - onProgress: Optional callback for user-facing pairing state.
     /// - Returns: Completed pairing material, including the device-issued
     ///   escrow bag, after it has been saved by usbmux.
-    /// - Throws: `LockdownPairingError` for user decisions and timeout,
-    ///   `RorkDeviceError.invalidInput` for unsupported routes, or underlying
-    ///   transport and certificate errors.
+    /// - Throws: `RorkDeviceError.pairing` for user decisions and timeout,
+    ///   `RorkDeviceError.invalidInput` for unsupported routes, or another
+    ///   `RorkDeviceError` when transport or certificate work fails.
     #if !os(WASI)
     public func pair(
         with device: Device,
         trustTimeout: Duration = .seconds(120),
         retryInterval: Duration = .seconds(1),
         onProgress: (@Sendable (DevicePairingProgress) -> Void)? = nil
-    ) async throws -> PairingRecord {
-        guard trustTimeout >= .zero else {
-            throw RorkDeviceError.invalidInput(
-                "Pairing trust timeout cannot be negative."
-            )
-        }
-        guard retryInterval > .zero else {
-            throw RorkDeviceError.invalidInput(
-                "Pairing retry interval must be greater than zero."
-            )
-        }
-        guard case .usbmux(let deviceID) = device.connection else {
-            throw RorkDeviceError.invalidInput(
-                "Lockdown pairing requires a usbmux device."
-            )
-        }
+    ) async throws(RorkDeviceError) -> PairingRecord {
+        try await withRorkDeviceError {
+            guard trustTimeout >= .zero else {
+                throw RorkDeviceError.invalidInput(
+                    "Pairing trust timeout cannot be negative."
+                )
+            }
+            guard retryInterval > .zero else {
+                throw RorkDeviceError.invalidInput(
+                    "Pairing retry interval must be greater than zero."
+                )
+            }
+            guard case .usbmux(let deviceID) = device.connection else {
+                throw RorkDeviceError.invalidInput(
+                    "Lockdown pairing requires a usbmux device."
+                )
+            }
 
-        let transport = USBMuxDeviceTransport(
-            deviceID: deviceID,
-            usbmuxClient: usbmuxClient
-        )
-        let pairingInformation = try await pairingInformation(
-            over: transport
-        )
-        let candidate = try PairingRecord.candidate(
-            for: pairingInformation,
-            systemBUID: try await usbmuxClient.systemBUID()
-        )
+            let transport = USBMuxDeviceTransport(
+                deviceID: deviceID,
+                usbmuxClient: usbmuxClient
+            )
+            let pairingInformation = try await pairingInformation(
+                over: transport
+            )
+            let candidate = try PairingRecord.candidate(
+                for: pairingInformation,
+                systemBUID: try await usbmuxClient.systemBUID()
+            )
 
-        let acceptedRecord = try await pair(
-            using: candidate,
-            over: transport,
-            trustTimeout: trustTimeout,
-            retryInterval: retryInterval,
-            onProgress: onProgress
-        )
-        onProgress?(.savingPairingRecord)
-        try await usbmuxClient.savePairingRecord(
-            acceptedRecord,
-            forDeviceID: deviceID
-        )
-        return acceptedRecord
+            let acceptedRecord = try await pair(
+                using: candidate,
+                over: transport,
+                trustTimeout: trustTimeout,
+                retryInterval: retryInterval,
+                onProgress: onProgress
+            )
+            onProgress?(.savingPairingRecord)
+            try await usbmuxClient.savePairingRecord(
+                acceptedRecord,
+                forDeviceID: deviceID
+            )
+            return acceptedRecord
+        }
     }
     #endif
 
@@ -246,30 +260,33 @@ public final class DeviceClient {
     ///
     /// - Parameter device: usbmux-backed device returned by
     ///   `discoverDevices()`.
-    /// - Throws: `RorkDeviceError.invalidInput` for unsupported routes,
-    ///   pairing-record errors, Lockdown rejection, or a usbmux removal error.
+    /// - Throws: `RorkDeviceError.invalidInput` for unsupported routes, or
+    ///   another `RorkDeviceError` for pairing-record, Lockdown, or usbmux
+    ///   failure.
     public func unpair(
         from device: Device
-    ) async throws {
-        guard case .usbmux(let deviceID) = device.connection else {
-            throw RorkDeviceError.invalidInput(
-                "Lockdown unpairing requires a usbmux device."
+    ) async throws(RorkDeviceError) {
+        try await withRorkDeviceError {
+            guard case .usbmux(let deviceID) = device.connection else {
+                throw RorkDeviceError.invalidInput(
+                    "Lockdown unpairing requires a usbmux device."
+                )
+            }
+            let pairingRecord = try await usbmuxClient.pairingRecord(
+                for: device.identifier
+            )
+            let transport = USBMuxDeviceTransport(
+                deviceID: deviceID,
+                usbmuxClient: usbmuxClient
+            )
+            try await requestUnpairing(
+                pairingRecord,
+                using: transport
+            )
+            try await usbmuxClient.removePairingRecord(
+                for: device.identifier
             )
         }
-        let pairingRecord = try await usbmuxClient.pairingRecord(
-            for: device.identifier
-        )
-        let transport = USBMuxDeviceTransport(
-            deviceID: deviceID,
-            usbmuxClient: usbmuxClient
-        )
-        try await requestUnpairing(
-            pairingRecord,
-            using: transport
-        )
-        try await usbmuxClient.removePairingRecord(
-            for: device.identifier
-        )
     }
 
     /// Streams device attach and detach events from the local usbmux endpoint.
@@ -279,6 +296,9 @@ public final class DeviceClient {
     /// underlying usbmux listen socket.
     ///
     /// - Returns: Async sequence of high-level device visibility events.
+    ///
+    /// Iteration fails only with `RorkDeviceError`, although the standard
+    /// library stream type erases its failure to `Error`.
     public func deviceEvents() -> AsyncThrowingStream<DeviceEvent, Error> {
         let usbmuxClient = self.usbmuxClient
         return AsyncThrowingStream { continuation in
@@ -289,7 +309,9 @@ public final class DeviceClient {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(
+                        throwing: normalizedRorkDeviceError(error)
+                    )
                 }
             }
             continuation.onTermination = { _ in
@@ -314,22 +336,24 @@ public final class DeviceClient {
     ///   developer services.
     /// - Throws: `RorkDeviceError.invalidPairingRecord`,
     ///   `RorkDeviceError.lockdown`, `RorkDeviceError.secureSessionUnsupported`,
-    ///   or lower-level transport/protocol errors.
+    ///   `RorkDeviceError.transport`, or `RorkDeviceError.protocolViolation`.
     public func connect(
         to device: Device,
         using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
-    ) async throws -> DeviceSession {
-        switch device.connection {
-        case .usbmux(let deviceID):
-            let transport = USBMuxDeviceTransport(deviceID: deviceID, usbmuxClient: usbmuxClient)
-            return try await connect(
-                over: transport,
-                using: pairingRecord,
-                label: label
-            )
-        case .direct(let host, let port):
-            return try await connect(to: host, port: port, using: pairingRecord, label: label)
+    ) async throws(RorkDeviceError) -> DeviceSession {
+        try await withRorkDeviceError {
+            switch device.connection {
+            case .usbmux(let deviceID):
+                let transport = USBMuxDeviceTransport(deviceID: deviceID, usbmuxClient: usbmuxClient)
+                return try await connect(
+                    over: transport,
+                    using: pairingRecord,
+                    label: label
+                )
+            case .direct(let host, let port):
+                return try await connect(to: host, port: port, using: pairingRecord, label: label)
+            }
         }
     }
 
@@ -343,22 +367,24 @@ public final class DeviceClient {
     /// - Returns: The values the device exposes without host trust.
     public func deviceEnvironment(
         for device: Device
-    ) async throws -> DeviceEnvironment {
-        switch device.connection {
-        case .usbmux(let deviceID):
-            return try await deviceEnvironment(
-                over: USBMuxDeviceTransport(
-                    deviceID: deviceID,
-                    usbmuxClient: usbmuxClient
+    ) async throws(RorkDeviceError) -> DeviceEnvironment {
+        try await withRorkDeviceError {
+            switch device.connection {
+            case .usbmux(let deviceID):
+                return try await deviceEnvironment(
+                    over: USBMuxDeviceTransport(
+                        deviceID: deviceID,
+                        usbmuxClient: usbmuxClient
+                    )
                 )
-            )
-        case .direct(let host, let port):
-            return try await deviceEnvironment(
-                over: DirectLockdownTransport(
-                    host: host,
-                    lockdownPort: port
+            case .direct(let host, let port):
+                return try await deviceEnvironment(
+                    over: DirectLockdownTransport(
+                        host: host,
+                        lockdownPort: port
+                    )
                 )
-            )
+            }
         }
     }
     #endif
@@ -378,35 +404,37 @@ public final class DeviceClient {
     ///   - label: Client label sent in Lockdown requests for diagnostics.
     /// - Returns: An authenticated session whose higher-level operations are
     ///   independent of the supplied transport.
-    /// - Throws: Pairing, Lockdown, secure-session, transport, or protocol
-    ///   errors encountered while opening the session.
+    /// - Throws: A `RorkDeviceError` describing pairing, Lockdown,
+    ///   secure-session, transport, or protocol failure.
     public func connect(
         over transport: any DeviceTransport,
         using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
-    ) async throws -> DeviceSession {
-        var connection = try await transport.connect(to: 62078)
-        do {
-            let lockdown = LockdownClient(connection: connection, label: label)
-            let session = try await lockdown.startSession(using: pairingRecord)
-            if session.requiresSecureConnection {
-                connection = try await secureSessionUpgrader.upgrade(
-                    connection,
-                    pairingRecord: pairingRecord
-                )
+    ) async throws(RorkDeviceError) -> DeviceSession {
+        try await withRorkDeviceError {
+            var connection = try await transport.connect(to: 62078)
+            do {
+                let lockdown = LockdownClient(connection: connection, label: label)
+                let session = try await lockdown.startSession(using: pairingRecord)
+                if session.requiresSecureConnection {
+                    connection = try await secureSessionUpgrader.upgrade(
+                        connection,
+                        pairingRecord: pairingRecord
+                    )
+                }
+            } catch {
+                connection.close()
+                throw error
             }
-        } catch {
-            connection.close()
-            throw error
-        }
 
-        return DeviceSession(
-            transport: transport,
-            lockdown: LockdownClient(connection: connection, label: label),
-            pairingRecord: pairingRecord,
-            label: label,
-            secureSessionUpgrader: secureSessionUpgrader
-        )
+            return DeviceSession(
+                transport: transport,
+                lockdown: LockdownClient(connection: connection, label: label),
+                pairingRecord: pairingRecord,
+                label: label,
+                secureSessionUpgrader: secureSessionUpgrader
+            )
+        }
     }
 
     /// Reads the device identity fields required to create pairing material.
@@ -419,45 +447,47 @@ public final class DeviceClient {
     ///
     /// - Parameter transport: Route capable of opening Lockdown on port 62078.
     /// - Returns: Stable device identity and public pairing prerequisites.
-    /// - Throws: Transport, Lockdown, or protocol errors when required fields
-    ///   are missing or malformed.
+    /// - Throws: A `RorkDeviceError` when transport or Lockdown work fails, or
+    ///   when required fields are missing or malformed.
     public func pairingInformation(
         over transport: any DeviceTransport
-    ) async throws -> DevicePairingInformation {
-        let connection = try await transport.connect(to: 62078)
-        defer {
-            connection.close()
-        }
-        let lockdown = LockdownClient(connection: connection)
-        let deviceIdentifier: String = try await lockdown.value(
-            for: .uniqueDeviceID
-        )
-        guard !deviceIdentifier.isEmpty else {
-            throw RorkDeviceError.protocolViolation(
-                "Lockdown UniqueDeviceID was missing or empty."
+    ) async throws(RorkDeviceError) -> DevicePairingInformation {
+        try await withRorkDeviceError {
+            let connection = try await transport.connect(to: 62078)
+            defer {
+                connection.close()
+            }
+            let lockdown = LockdownClient(connection: connection)
+            let deviceIdentifier: String = try await lockdown.value(
+                for: .uniqueDeviceID
+            )
+            guard !deviceIdentifier.isEmpty else {
+                throw RorkDeviceError.protocolViolation(
+                    "Lockdown UniqueDeviceID was missing or empty."
+                )
+            }
+            let devicePublicKey: Data = try await lockdown.value(
+                for: .devicePublicKey
+            )
+            guard !devicePublicKey.isEmpty else {
+                throw RorkDeviceError.protocolViolation(
+                    "Lockdown DevicePublicKey was missing or empty."
+                )
+            }
+            let wiFiMACAddress: String = try await lockdown.value(
+                for: .wiFiAddress
+            )
+            guard !wiFiMACAddress.isEmpty else {
+                throw RorkDeviceError.protocolViolation(
+                    "Lockdown WiFiAddress was missing or empty."
+                )
+            }
+            return DevicePairingInformation(
+                deviceIdentifier: deviceIdentifier,
+                devicePublicKey: devicePublicKey,
+                wiFiMACAddress: wiFiMACAddress
             )
         }
-        let devicePublicKey: Data = try await lockdown.value(
-            for: .devicePublicKey
-        )
-        guard !devicePublicKey.isEmpty else {
-            throw RorkDeviceError.protocolViolation(
-                "Lockdown DevicePublicKey was missing or empty."
-            )
-        }
-        let wiFiMACAddress: String = try await lockdown.value(
-            for: .wiFiAddress
-        )
-        guard !wiFiMACAddress.isEmpty else {
-            throw RorkDeviceError.protocolViolation(
-                "Lockdown WiFiAddress was missing or empty."
-            )
-        }
-        return DevicePairingInformation(
-            deviceIdentifier: deviceIdentifier,
-            devicePublicKey: devicePublicKey,
-            wiFiMACAddress: wiFiMACAddress
-        )
     }
 
     /// Reads a best-effort unauthenticated snapshot of Lockdown device state.
@@ -472,34 +502,37 @@ public final class DeviceClient {
     public func deviceEnvironment(
         over transport: any DeviceTransport,
         readTimeout: Duration = .seconds(10)
-    ) async throws -> DeviceEnvironment {
-        let connection = try await transport.connect(to: 62078)
-        defer {
-            connection.close()
+    ) async throws(RorkDeviceError) -> DeviceEnvironment {
+        try await withRorkDeviceError {
+            let connection = try await transport.connect(to: 62078)
+            defer {
+                connection.close()
+            }
+
+            // A wedged device could accept the connection yet never answer the read.
+            // Closing from another task safely interrupts a stalled read, so a
+            // watchdog bounds the wait. The read completing first cancels it.
+            let watchdogCloser = DeviceConnectionWatchdogCloser(
+                connection: connection
+            )
+            let watchdog = Task {
+                try? await Task.sleep(for: readTimeout)
+                watchdogCloser.close()
+            }
+            defer {
+                watchdog.cancel()
+            }
+            let values =
+                (try? await LockdownClient(connection: connection).deviceValues())
+                ?? [:]
+            return DeviceEnvironment(
+                productVersion: values["ProductVersion"] as? String,
+                productType: values["ProductType"] as? String,
+                deviceTime: (values["TimeIntervalSince1970"] as? NSNumber)
+                    .map { Date(timeIntervalSince1970: $0.doubleValue) },
+                isPasswordProtected: values["PasswordProtected"] as? Bool
+            )
         }
-        // A wedged device could accept the connection yet never answer the read.
-        // Closing from another task safely interrupts a stalled read, so a
-        // watchdog bounds the wait. The read completing first cancels it.
-        let watchdogCloser = DeviceConnectionWatchdogCloser(
-            connection: connection
-        )
-        let watchdog = Task {
-            try? await Task.sleep(for: readTimeout)
-            watchdogCloser.close()
-        }
-        defer {
-            watchdog.cancel()
-        }
-        let values =
-            (try? await LockdownClient(connection: connection).deviceValues())
-            ?? [:]
-        return DeviceEnvironment(
-            productVersion: values["ProductVersion"] as? String,
-            productType: values["ProductType"] as? String,
-            deviceTime: (values["TimeIntervalSince1970"] as? NSNumber)
-                .map { Date(timeIntervalSince1970: $0.doubleValue) },
-            isPasswordProtected: values["PasswordProtected"] as? Bool
-        )
     }
 
     /// Establishes Lockdown trust using caller-created pairing material.
@@ -516,54 +549,57 @@ public final class DeviceClient {
     ///   - retryInterval: Delay between checks while confirmation is pending.
     ///   - onProgress: Optional callback for user-facing pairing state.
     /// - Returns: Completed pairing material ready for later sessions.
-    /// - Throws: `LockdownPairingError` for user decisions and timeout, or a
-    ///   lower-level transport, Lockdown, or pairing-record error.
+    /// - Throws: `RorkDeviceError.pairing` for user decisions and timeout, or
+    ///   another `RorkDeviceError` for transport, Lockdown, or pairing-record
+    ///   failure.
     public func pair(
         using pairingRecord: PairingRecord,
         over transport: any DeviceTransport,
         trustTimeout: Duration = .seconds(120),
         retryInterval: Duration = .seconds(1),
         onProgress: (@Sendable (DevicePairingProgress) -> Void)? = nil
-    ) async throws -> PairingRecord {
-        guard trustTimeout >= .zero else {
-            throw RorkDeviceError.invalidInput(
-                "Pairing trust timeout cannot be negative."
-            )
-        }
-        guard retryInterval > .zero else {
-            throw RorkDeviceError.invalidInput(
-                "Pairing retry interval must be greater than zero."
-            )
-        }
+    ) async throws(RorkDeviceError) -> PairingRecord {
+        try await withRorkDeviceError {
+            guard trustTimeout >= .zero else {
+                throw RorkDeviceError.invalidInput(
+                    "Pairing trust timeout cannot be negative."
+                )
+            }
+            guard retryInterval > .zero else {
+                throw RorkDeviceError.invalidInput(
+                    "Pairing retry interval must be greater than zero."
+                )
+            }
 
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: trustTimeout)
-        var reportedWaiting = false
-        while true {
-            try Task.checkCancellation()
-            do {
-                let escrowBag = try await requestPairing(
-                    pairingRecord,
-                    using: transport
-                )
-                return try pairingRecord.addingEscrowBag(
-                    escrowBag
-                )
-            } catch LockdownPairingError.userConfirmationRequired {
-                if !reportedWaiting {
-                    onProgress?(.waitingForUserConfirmation)
-                    reportedWaiting = true
-                }
-                let now = clock.now
-                guard now < deadline else {
-                    throw LockdownPairingError.timedOut
-                }
-                try await clock.sleep(
-                    for: min(
-                        retryInterval,
-                        now.duration(to: deadline)
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: trustTimeout)
+            var reportedWaiting = false
+            while true {
+                try Task.checkCancellation()
+                do {
+                    let escrowBag = try await requestPairing(
+                        pairingRecord,
+                        using: transport
                     )
-                )
+                    return try pairingRecord.addingEscrowBag(
+                        escrowBag
+                    )
+                } catch LockdownPairingError.userConfirmationRequired {
+                    if !reportedWaiting {
+                        onProgress?(.waitingForUserConfirmation)
+                        reportedWaiting = true
+                    }
+                    let now = clock.now
+                    guard now < deadline else {
+                        throw LockdownPairingError.timedOut
+                    }
+                    try await clock.sleep(
+                        for: min(
+                            retryInterval,
+                            now.duration(to: deadline)
+                        )
+                    )
+                }
             }
         }
     }
@@ -580,11 +616,13 @@ public final class DeviceClient {
     public func unpair(
         using pairingRecord: PairingRecord,
         over transport: any DeviceTransport
-    ) async throws {
-        try await requestUnpairing(
-            pairingRecord,
-            using: transport
-        )
+    ) async throws(RorkDeviceError) {
+        try await withRorkDeviceError {
+            try await requestUnpairing(
+                pairingRecord,
+                using: transport
+            )
+        }
     }
 
     #if canImport(NIOPosix) && !os(WASI)
@@ -605,13 +643,15 @@ public final class DeviceClient {
         port: UInt16 = 62078,
         using pairingRecord: PairingRecord,
         label: String = "rorkdevice"
-    ) async throws -> DeviceSession {
-        let transport = DirectLockdownTransport(host: host, lockdownPort: port)
-        return try await connect(
-            over: transport,
-            using: pairingRecord,
-            label: label
-        )
+    ) async throws(RorkDeviceError) -> DeviceSession {
+        try await withRorkDeviceError {
+            let transport = DirectLockdownTransport(host: host, lockdownPort: port)
+            return try await connect(
+                over: transport,
+                using: pairingRecord,
+                label: label
+            )
+        }
     }
 
     /// Opens a live Remote Service Discovery session through an active tunnel.
@@ -631,37 +671,39 @@ public final class DeviceClient {
     ///   - port: Remote Service Discovery port negotiated for that tunnel.
     ///   - label: Client label included in each service check-in request.
     /// - Returns: A session backed by the device's live RSD advertisement.
-    /// - Throws: Transport failures while opening the discovery endpoint, or
-    ///   `RorkDeviceError.protocolViolation` when the HTTP/2, RemoteXPC, or RSD
-    ///   handshake is malformed.
+    /// - Throws: `RorkDeviceError.transport` while opening the discovery
+    ///   endpoint, or `RorkDeviceError.protocolViolation` when the HTTP/2,
+    ///   RemoteXPC, or RSD handshake is malformed.
     public func connect(
         toRemoteServicesAt host: String,
         port: UInt16,
         label: String = "rorkdevice"
-    ) async throws -> DeviceSession {
-        let connection: DeviceConnection
-        do {
-            connection = try await TCPDeviceConnection.connect(
-                to: host,
-                port: port
+    ) async throws(RorkDeviceError) -> DeviceSession {
+        try await withRorkDeviceError {
+            let connection: DeviceConnection
+            do {
+                connection = try await TCPDeviceConnection.connect(
+                    to: host,
+                    port: port
+                )
+            } catch {
+                throw RorkDeviceError.transport(
+                    "Failed to connect Remote Service Discovery on \(host):\(port): \(describeDeviceSessionError(error))"
+                )
+            }
+
+            let discoverySession = try await RemoteServiceDiscoverySession.open(
+                over: connection
             )
-        } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect Remote Service Discovery on \(host):\(port): \(describeDeviceSessionError(error))"
+            return DeviceSession(
+                backend: RemoteServiceSessionBackend(
+                    host: host,
+                    directory: discoverySession.directory,
+                    label: label,
+                    retaining: discoverySession
+                )
             )
         }
-
-        let discoverySession = try await RemoteServiceDiscoverySession.open(
-            over: connection
-        )
-        return DeviceSession(
-            backend: RemoteServiceSessionBackend(
-                host: host,
-                directory: discoverySession.directory,
-                label: label,
-                retaining: discoverySession
-            )
-        )
     }
     #endif
 
@@ -684,41 +726,44 @@ public final class DeviceClient {
     ///     active tunnel.
     ///   - label: Client label included in each service check-in request.
     /// - Returns: A session backed by the device's live RSD advertisement.
-    /// - Throws: Transport failures while opening discovery or advertised
-    ///   services, plus malformed HTTP/2, RemoteXPC, or RSD protocol errors.
+    /// - Throws: A `RorkDeviceError` for transport failure while opening
+    ///   discovery or advertised services, or for malformed HTTP/2, RemoteXPC,
+    ///   or RSD protocol data.
     public func connect(
         toRemoteServicesUsing transport: any DeviceTransport,
         discoveryPort: UInt16,
         label: String = "rorkdevice"
-    ) async throws -> DeviceSession {
-        guard discoveryPort > 0 else {
-            throw RorkDeviceError.invalidInput(
-                "Remote Service Discovery requires a nonzero port."
+    ) async throws(RorkDeviceError) -> DeviceSession {
+        try await withRorkDeviceError {
+            guard discoveryPort > 0 else {
+                throw RorkDeviceError.invalidInput(
+                    "Remote Service Discovery requires a nonzero port."
+                )
+            }
+
+            let connection: DeviceConnection
+            do {
+                connection = try await transport.connect(
+                    to: discoveryPort
+                )
+            } catch {
+                throw RorkDeviceError.transport(
+                    "Failed to connect Remote Service Discovery through the supplied transport on port \(discoveryPort): \(describeDeviceSessionError(error))"
+                )
+            }
+
+            let discoverySession = try await RemoteServiceDiscoverySession.open(
+                over: connection
+            )
+            return DeviceSession(
+                backend: RemoteServiceSessionBackend(
+                    transport: transport,
+                    directory: discoverySession.directory,
+                    label: label,
+                    retaining: discoverySession
+                )
             )
         }
-
-        let connection: DeviceConnection
-        do {
-            connection = try await transport.connect(
-                to: discoveryPort
-            )
-        } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect Remote Service Discovery through the supplied transport on port \(discoveryPort): \(describeDeviceSessionError(error))"
-            )
-        }
-
-        let discoverySession = try await RemoteServiceDiscoverySession.open(
-            over: connection
-        )
-        return DeviceSession(
-            backend: RemoteServiceSessionBackend(
-                transport: transport,
-                directory: discoverySession.directory,
-                label: label,
-                retaining: discoverySession
-            )
-        )
     }
 
     /// Performs one Pair request over a disposable Lockdown connection.

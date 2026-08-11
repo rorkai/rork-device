@@ -67,7 +67,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     }
 
     /// Returns the device identifier supplied by the discovery handshake.
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         var values: [String: Any] = [:]
         if let deviceIdentifier = directory.deviceIdentifier {
             values["UniqueDeviceID"] = deviceIdentifier
@@ -82,47 +82,53 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
     /// `.shim.remote` services would corrupt that protocol stream.
     func startRemoteService(
         named serviceName: String
-    ) async throws -> DeviceConnection {
-        guard let port = directory.services[serviceName] else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote service directory does not advertise \(serviceName)."
+    ) async throws(RorkDeviceError) -> DeviceConnection {
+        try await withRorkDeviceError {
+            guard let port = directory.services[serviceName] else {
+                throw RorkDeviceError.protocolViolation(
+                    "Remote service directory does not advertise \(serviceName)."
+                )
+            }
+            return try await connect(
+                to: serviceName,
+                port: port
             )
         }
-        return try await connect(
-            to: serviceName,
-            port: port
-        )
     }
 
     /// Connects to an advertised service and completes its two-message RSD check-in.
-    func startService(named serviceName: String, escrowBag _: Data?) async throws
-        -> DeviceConnection
+    func startService(
+        named serviceName: String,
+        escrowBag _: Data?
+    ) async throws(RorkDeviceError) -> DeviceConnection
     {
-        let advertisedName =
-            directory.services[serviceName] == nil
-            ? "\(serviceName).shim.remote"
-            : serviceName
-        guard let port = directory.port(for: serviceName) else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote service directory does not advertise \(advertisedName)."
-            )
-        }
+        try await withRorkDeviceError {
+            let advertisedName =
+                directory.services[serviceName] == nil
+                ? "\(serviceName).shim.remote"
+                : serviceName
+            guard let port = directory.port(for: serviceName) else {
+                throw RorkDeviceError.protocolViolation(
+                    "Remote service directory does not advertise \(advertisedName)."
+                )
+            }
 
-        let connection = try await connect(
-            to: advertisedName,
-            port: port
-        )
-
-        do {
-            try await performCheckIn(
-                over: connection,
-                serviceName: advertisedName,
-                endpoint: endpointDescription(port)
+            let connection = try await connect(
+                to: advertisedName,
+                port: port
             )
-            return connection
-        } catch {
-            connection.close()
-            throw error
+
+            do {
+                try await performCheckIn(
+                    over: connection,
+                    serviceName: advertisedName,
+                    endpoint: endpointDescription(port)
+                )
+                return connection
+            } catch {
+                connection.close()
+                throw error
+            }
         }
     }
 

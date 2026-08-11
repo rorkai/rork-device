@@ -196,10 +196,29 @@ public final class AFCClient {
     public func uploadFile(at fileURL: URL, to destinationPath: String) async throws {
         let handle = try await openFile(destinationPath, mode: .writeOnly)
         do {
-            let file = try FileHandle(forReadingFrom: fileURL)
+            let file: FileHandle
+            do {
+                file = try FileHandle(forReadingFrom: fileURL)
+            } catch {
+                throw RorkDeviceError.fileSystem(
+                    path: fileURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             defer { try? file.close() }
             while true {
-                let chunk = try file.read(upToCount: AFCStaging.writeChunkSize) ?? Data()
+                let chunk: Data
+                do {
+                    chunk =
+                        try file.read(
+                            upToCount: AFCStaging.writeChunkSize
+                        ) ?? Data()
+                } catch {
+                    throw RorkDeviceError.fileSystem(
+                        path: fileURL.path,
+                        reason: error.localizedDescription
+                    )
+                }
                 if chunk.isEmpty {
                     break
                 }

@@ -148,6 +148,13 @@ try await session.installApplication(
 }
 ```
 
+High-level `DeviceClient` and `DeviceSession` operations use
+`throws(RorkDeviceError)`. Callers therefore receive the concrete error type
+without casting from `any Error`. Pairing decisions are available through
+`.pairing`, task cancellation through `.cancelled`, and local file failures
+through `.fileSystem`. Low-level transport protocols retain untyped throws so
+custom backends can preserve their own implementation errors.
+
 Low-level `LockdownClient` callers can use typed keys for individual values
 while retaining `value(domain:key:)` for whole domains and unusual payloads:
 

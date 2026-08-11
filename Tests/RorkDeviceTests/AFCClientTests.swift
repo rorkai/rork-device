@@ -161,6 +161,32 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
 
+    func testUploadFileMapsLocalReadFailureToFileSystemError() async throws {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        var inbound = Data()
+        inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
+        inbound.append(afcStatusResponse(packetNumber: 2, status: 0))
+        let connection = FakeConnection(inbound: inbound)
+        let client = AFCClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.uploadFile(
+                at: missingURL,
+                to: "/PublicStaging/App.ipa"
+            )
+        }) { error in
+            guard case let .fileSystem(path, reason) =
+                error as? RorkDeviceError
+            else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(path, missingURL.path)
+            XCTAssertFalse(reason.isEmpty)
+        }
+        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 20])
+    }
+
     func testUploadFileCanUseInMemoryData() async throws {
         var inbound = Data()
         inbound.append(afcFileOpenResponse(packetNumber: 1, handle: 99))
