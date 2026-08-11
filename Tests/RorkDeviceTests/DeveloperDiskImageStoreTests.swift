@@ -218,6 +218,7 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(20))
 
         second.cancel()
+        releaseFirst.signal()
 
         do {
             _ = try await second.value
@@ -227,7 +228,6 @@ final class DeveloperDiskImageStoreTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
-        releaseFirst.signal()
         try await first.value
     }
 
