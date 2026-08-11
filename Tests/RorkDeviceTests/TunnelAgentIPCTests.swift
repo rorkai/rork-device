@@ -433,6 +433,9 @@ final class TunnelAgentServeLoopTests: XCTestCase {
                 send: replies.record
             )
         }
+        defer {
+            serving.cancel()
+        }
         try stdin.fileHandleForWriting.write(
             contentsOf: Data(#"{"id":"work","op":"work"}"#.utf8 + [0x0a])
         )
@@ -569,6 +572,48 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         )
     }
 
+    func testMalformedRequestCannotReuseAnInFlightIdentifier() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "slow": { _ in
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same"}"#.utf8 + [0x0a])
+        )
+
+        let duplicate = try await replies.waitForEvent("op-error")
+        XCTAssertEqual(
+            duplicate["errorCode"] as? String,
+            "duplicate_request_id"
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"same"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+    }
+
     func testEndOfFileCancelsInFlightRequests() async throws {
         let stdin = Pipe()
         let replies = ReplyRecorder()
@@ -621,6 +666,7 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         try stdin.fileHandleForWriting.close()
 
         await serving.value
+        await gate.open()
         let reply = try await replies.waitForReply(id: "blocked")
         XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
         let details = try XCTUnwrap(
@@ -630,7 +676,6 @@ final class TunnelAgentServeLoopTests: XCTestCase {
             details["operationMayHaveCompleted"] as? Bool,
             true
         )
-        await gate.open()
     }
 }
 

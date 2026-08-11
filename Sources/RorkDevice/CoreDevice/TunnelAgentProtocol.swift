@@ -189,13 +189,7 @@ struct TunnelAgentFailure: Error, Sendable {
             return failure
         }
         if error is CancellationError {
-            return TunnelAgentFailure(
-                code: .cancelled,
-                message: "The request was cancelled.",
-                details: TunnelAgentErrorDetails(
-                    operationMayHaveCompleted: false
-                )
-            )
+            return cancelled(operationMayHaveCompleted: false)
         }
         if let pairingError = error as? LockdownPairingError {
             return TunnelAgentFailure(
@@ -272,6 +266,19 @@ struct TunnelAgentFailure: Error, Sendable {
                 details: TunnelAgentErrorDetails(misagentStatus: status)
             )
         }
+    }
+
+    /// Creates a cancellation failure with explicit side-effect uncertainty.
+    static func cancelled(
+        operationMayHaveCompleted: Bool
+    ) -> TunnelAgentFailure {
+        TunnelAgentFailure(
+            code: .cancelled,
+            message: "The request was cancelled.",
+            details: TunnelAgentErrorDetails(
+                operationMayHaveCompleted: operationMayHaveCompleted
+            )
+        )
     }
 }
 
