@@ -174,21 +174,14 @@ struct PersonalizedDeveloperDiskImage {
             throw escapedPathError(relativePath)
         }
 
-        // Standardizing removes `..`, while resolving symlinks prevents a
-        // manifest-controlled link inside Restore from reaching another tree.
-        let resolvedRoot = restoreDirectory.resolvingSymlinksInPath()
-        let resolvedCandidate = candidate.resolvingSymlinksInPath()
-        guard resolvedCandidate.isContained(in: resolvedRoot) else {
-            throw escapedPathError(relativePath)
-        }
         let values: URLResourceValues
         do {
-            values = try resolvedCandidate.resourceValues(
+            values = try candidate.resourceValues(
                 forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
             )
         } catch {
             throw RorkDeviceError.fileSystem(
-                path: resolvedCandidate.path,
+                path: candidate.path,
                 reason: error.localizedDescription
             )
         }
@@ -198,6 +191,14 @@ struct PersonalizedDeveloperDiskImage {
             throw RorkDeviceError.invalidInput(
                 "Developer Disk Image manifest file is missing or is not a regular file: \(relativePath)"
             )
+        }
+
+        // Standardizing removes `..`, while resolving parent symlinks prevents
+        // a regular file inside a linked directory from reaching another tree.
+        let resolvedRoot = restoreDirectory.resolvingSymlinksInPath()
+        let resolvedCandidate = candidate.resolvingSymlinksInPath()
+        guard resolvedCandidate.isContained(in: resolvedRoot) else {
+            throw escapedPathError(relativePath)
         }
         return resolvedCandidate
     }
