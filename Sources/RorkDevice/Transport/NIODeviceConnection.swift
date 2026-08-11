@@ -522,7 +522,7 @@ private func compact(_ buffer: inout ByteBuffer) {
 /// Converts framework-level stream failures into the package transport error surface.
 private func normalizedStreamError(_ error: Error) -> Error {
     if error is CancellationError {
-        return error
+        return NIODeviceConnection.closedError
     }
     if let channelError = error as? ChannelError {
         switch channelError {

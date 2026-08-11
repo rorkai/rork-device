@@ -29,14 +29,25 @@ private final class DeviceConnectionWatchdogCloser: @unchecked Sendable {
     /// Connection that the watchdog may interrupt after its deadline.
     private let connection: any DeviceConnection
 
+    private let lock = NSLock()
+    private var timeoutReached = false
+
     /// Retains a connection whose close operation is safe across tasks.
     init(connection: any DeviceConnection) {
         self.connection = connection
     }
 
-    /// Interrupts the watched connection through its idempotent close boundary.
-    func close() {
+    /// Records the expired deadline before interrupting the pending read.
+    func closeAfterTimeout() {
+        lock.withLock {
+            timeoutReached = true
+        }
         self.connection.close()
+    }
+
+    /// Returns whether the deadline closed the connection.
+    var didTimeOut: Bool {
+        lock.withLock { timeoutReached }
     }
 }
 
@@ -516,8 +527,12 @@ public final class DeviceClient {
                 connection: connection
             )
             let watchdog = Task {
-                try? await Task.sleep(for: readTimeout)
-                watchdogCloser.close()
+                do {
+                    try await Task.sleep(for: readTimeout)
+                } catch {
+                    return
+                }
+                watchdogCloser.closeAfterTimeout()
             }
             defer {
                 watchdog.cancel()
@@ -530,6 +545,11 @@ public final class DeviceClient {
             } catch {
                 if error is CancellationError || Task.isCancelled {
                     throw RorkDeviceError.cancelled
+                }
+                if watchdogCloser.didTimeOut {
+                    throw RorkDeviceError.transport(
+                        "Lockdown did not answer device values within \(readTimeout)."
+                    )
                 }
                 values = [:]
             }

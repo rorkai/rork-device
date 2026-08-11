@@ -194,18 +194,19 @@ public final class AFCClient {
     ///   - fileURL: Local file to stream into AFC.
     ///   - destinationPath: Destination path in the AFC service root.
     public func uploadFile(at fileURL: URL, to destinationPath: String) async throws {
+        let file: FileHandle
+        do {
+            file = try FileHandle(forReadingFrom: fileURL)
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: fileURL.path,
+                reason: error.localizedDescription
+            )
+        }
+        defer { try? file.close() }
+
         let handle = try await openFile(destinationPath, mode: .writeOnly)
         do {
-            let file: FileHandle
-            do {
-                file = try FileHandle(forReadingFrom: fileURL)
-            } catch {
-                throw RorkDeviceError.fileSystem(
-                    path: fileURL.path,
-                    reason: error.localizedDescription
-                )
-            }
-            defer { try? file.close() }
             while true {
                 let chunk: Data
                 do {

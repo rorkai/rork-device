@@ -271,6 +271,24 @@ final class TypedThrowsAPITests: XCTestCase {
         }
     }
 
+    func testDeviceEnvironmentReportsReadTimeout() async {
+        let client = DeviceClient()
+
+        do {
+            _ = try await client.deviceEnvironment(
+                over: TypedThrowsBlockingTransport(),
+                readTimeout: .milliseconds(20)
+            )
+            XCTFail("The environment read should time out.")
+        } catch let .transport(message) {
+            XCTAssertTrue(
+                message.contains("Lockdown did not answer device values within")
+            )
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testDeviceSessionPreservesProtocolFailure() async {
         let expectedError = RorkDeviceError.protocolViolation(
             "Deliberate protocol failure."
@@ -353,6 +371,35 @@ final class TypedThrowsAPITests: XCTestCase {
         }
         XCTAssertTrue(connection.isClosed)
     }
+
+    func testHouseArrestConnectionClosesWhenVendingFails() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Error": "ApplicationLookupFailed",
+                "ErrorDescription": "No such application",
+            ])
+        )
+        let session = DeviceSession(
+            backend: TypedThrowsConnectionBackend(
+                connection: connection
+            )
+        )
+
+        do {
+            _ = try await session.openApplicationContainer(
+                bundleIdentifier: "com.missing.app"
+            )
+            XCTFail("The container request should fail.")
+        } catch {
+            XCTAssertEqual(
+                error,
+                .protocolViolation(
+                    "HouseArrest failed: ApplicationLookupFailed: No such application"
+                )
+            )
+        }
+        XCTAssertTrue(connection.isClosed)
+    }
 }
 
 /// Type-checks an API expression without executing its operation.
@@ -381,15 +428,50 @@ private struct TypedThrowsBlockingTransport: DeviceTransport {
     }
 }
 
-private final class TypedThrowsBlockingConnection: DeviceConnection {
+private final class TypedThrowsBlockingConnection:
+    DeviceConnection,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, any Error>?
+    private var isClosed = false
+
     func send(_: Data) async throws {}
 
     func receive(exactly _: Int) async throws -> Data {
-        try await Task.sleep(for: .seconds(60))
-        return Data()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let shouldCancel = lock.withLock {
+                    if isClosed || Task.isCancelled {
+                        return true
+                    }
+                    self.continuation = continuation
+                    return false
+                }
+                if shouldCancel {
+                    continuation.resume(throwing: CancellationError())
+                }
+            }
+        } onCancel: {
+            finish(with: CancellationError())
+        }
     }
 
-    func close() {}
+    func close() {
+        finish(
+            with: RorkDeviceError.transport("Connection is closed.")
+        )
+    }
+
+    private func finish(with error: any Error) {
+        let pending = lock.withLock {
+            isClosed = true
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        pending?.resume(throwing: error)
+    }
 }
 
 private enum TypedThrowsTestError: Error, LocalizedError {

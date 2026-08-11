@@ -184,7 +184,7 @@ final class AFCClientTests: XCTestCase {
             XCTAssertEqual(path, missingURL.path)
             XCTAssertFalse(reason.isEmpty)
         }
-        XCTAssertEqual(try connection.sent.map(afcOperation), [13, 20])
+        XCTAssertEqual(connection.sent, [])
     }
 
     func testUploadFileCanUseInMemoryData() async throws {

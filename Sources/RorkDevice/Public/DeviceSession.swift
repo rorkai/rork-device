@@ -936,10 +936,15 @@ public final class DeviceSession: @unchecked Sendable {
         try await withRorkDeviceError {
             let connection = try await startService(.houseArrest)
             let client = HouseArrestClient(connection: connection)
-            return try await client.openApplicationContainer(
-                bundleIdentifier: bundleIdentifier,
-                scope: scope
-            )
+            do {
+                return try await client.openApplicationContainer(
+                    bundleIdentifier: bundleIdentifier,
+                    scope: scope
+                )
+            } catch {
+                connection.close()
+                throw error
+            }
         }
     }
 
