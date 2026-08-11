@@ -248,7 +248,7 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         XCTAssertEqual(reply["errorCode"] as? String, "unsupported_protocol_version")
         let details = try XCTUnwrap(reply["errorDetails"] as? [String: Any])
         XCTAssertEqual(details["requestedVersion"] as? Int, 99)
-        XCTAssertEqual(details["supportedVersions"] as? [Int], [1])
+        XCTAssertEqual(details["supportedProtocolVersions"] as? [Int], [1])
         try stdin.fileHandleForWriting.close()
     }
 
