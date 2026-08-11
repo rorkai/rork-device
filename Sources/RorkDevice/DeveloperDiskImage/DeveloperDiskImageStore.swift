@@ -507,7 +507,7 @@ final class DeveloperDiskImagePublicationFileLock: @unchecked Sendable {
                 nil
             )
         }
-        guard handle != INVALID_HANDLE_VALUE else {
+        guard let handle, handle != INVALID_HANDLE_VALUE else {
             throw RorkDeviceError.fileSystem(
                 path: fileURL.path,
                 reason: "Windows could not open the publication lock. Error \(GetLastError())."
