@@ -215,7 +215,7 @@ struct TunnelAgentFailure: Error, Sendable {
         case .invalidInput:
             return TunnelAgentFailure(code: .invalidInput, message: message)
         case .cancelled:
-            return TunnelAgentFailure(code: .cancelled, message: message)
+            return cancelled(operationMayHaveCompleted: false)
         case .invalidPairingRecord:
             return TunnelAgentFailure(code: .invalidPairingRecord, message: message)
         case let .pairing(pairingError):

@@ -204,6 +204,15 @@ final class TunnelAgentFailureTests: XCTestCase {
             cancellation.details?.operationMayHaveCompleted,
             false
         )
+
+        let typedCancellation = TunnelAgentFailure.normalize(
+            RorkDeviceError.cancelled
+        )
+        XCTAssertEqual(typedCancellation.code, .cancelled)
+        XCTAssertEqual(
+            typedCancellation.details?.operationMayHaveCompleted,
+            false
+        )
     }
 }
 
