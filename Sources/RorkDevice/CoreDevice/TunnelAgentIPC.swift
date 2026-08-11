@@ -186,6 +186,7 @@ public enum TunnelAgentIPC {
             if await inFlightRequests.contains(request.id) {
                 writer.write(
                     Reply.failure(
+                        event: "op-error",
                         id: request.id,
                         failure: duplicateRequestFailure(id: request.id)
                     )
@@ -210,11 +211,21 @@ public enum TunnelAgentIPC {
                 return
             }
             if request.operation == "cancel" {
-                await cancel(
-                    request: request,
-                    inFlightRequests: inFlightRequests,
-                    writer: writer
-                )
+                let started = await inFlightRequests.start(id: request.id) {
+                    await cancellationReply(
+                        request: request,
+                        inFlightRequests: inFlightRequests
+                    )
+                }
+                if !started {
+                    writer.write(
+                        Reply.failure(
+                            event: "op-error",
+                            id: request.id,
+                            failure: duplicateRequestFailure(id: request.id)
+                        )
+                    )
+                }
                 return
             }
             guard let handler = handlers[request.operation] else {
@@ -247,6 +258,7 @@ public enum TunnelAgentIPC {
             if !started {
                 writer.write(
                     Reply.failure(
+                        event: "op-error",
                         id: request.id,
                         failure: duplicateRequestFailure(id: request.id)
                     )
@@ -255,41 +267,43 @@ public enum TunnelAgentIPC {
         }
     }
 
-    /// Cancels one request selected by its supervisor-chosen identifier.
-    private static func cancel(
+    /// Builds the reply for cancelling one supervisor-selected request.
+    private static func cancellationReply(
         request: Request,
-        inFlightRequests: InFlightRequestRegistry,
-        writer: ReplyWriter
-    ) async {
+        inFlightRequests: InFlightRequestRegistry
+    ) async -> Reply {
         let parameters: CancelParameters
         do {
             parameters = try request.parameters()
         } catch {
-            writer.write(
-                Reply.failure(
-                    id: request.id,
-                    failure: TunnelAgentFailure.normalize(error)
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure.normalize(error)
+            )
+        }
+        guard parameters.targetId != request.id else {
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure(
+                    code: .invalidInput,
+                    message: "A cancel request cannot target its own id."
                 )
             )
-            return
         }
 
         guard await inFlightRequests.cancel(parameters.targetId) else {
-            writer.write(
-                Reply.failure(
-                    id: request.id,
-                    failure: TunnelAgentFailure(
-                        code: .cancellationTargetNotFound,
-                        message: "No in-flight request has id \(parameters.targetId).",
-                        details: TunnelAgentErrorDetails(
-                            targetID: parameters.targetId
-                        )
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure(
+                    code: .cancellationTargetNotFound,
+                    message: "No in-flight request has id \(parameters.targetId).",
+                    details: TunnelAgentErrorDetails(
+                        targetID: parameters.targetId
                     )
                 )
             )
-            return
         }
-        writer.write(Reply.success(id: request.id, payload: nil))
+        return Reply.success(id: request.id, payload: nil)
     }
 
     /// Describes a request id that is already owned by an active operation.
@@ -442,7 +456,7 @@ private final class ReplyWriter: @unchecked Sendable {
 private actor InFlightRequestRegistry {
     /// One task and whether a supervisor cancellation won its completion race.
     private struct Entry {
-        let task: Task<Void, Never>
+        var task: Task<Void, Never>?
         var cancellationRequested: Bool
     }
 
@@ -466,14 +480,25 @@ private actor InFlightRequestRegistry {
         guard entries[id] == nil else {
             return false
         }
+
+        // The identifier is reserved first so a fast task always finds an entry.
+        entries[id] = Entry(
+            task: nil,
+            cancellationRequested: false
+        )
         let task = Task { [weak self] in
             let reply = await operation()
             await self?.finish(id: id, proposedReply: reply)
         }
-        entries[id] = Entry(
-            task: task,
-            cancellationRequested: false
-        )
+        guard var entry = entries[id] else {
+            task.cancel()
+            return true
+        }
+        entry.task = task
+        entries[id] = entry
+        if entry.cancellationRequested {
+            task.cancel()
+        }
         return true
     }
 
@@ -484,7 +509,7 @@ private actor InFlightRequestRegistry {
         }
         entry.cancellationRequested = true
         entries[id] = entry
-        entry.task.cancel()
+        entry.task?.cancel()
         return true
     }
 
@@ -497,8 +522,10 @@ private actor InFlightRequestRegistry {
             }
             entry.cancellationRequested = true
             entries[id] = entry
-            entry.task.cancel()
-            tasks.append(entry.task)
+            entry.task?.cancel()
+            if let task = entry.task {
+                tasks.append(task)
+            }
         }
         return tasks
     }

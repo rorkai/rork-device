@@ -1798,7 +1798,7 @@ struct TunnelReadyEvent: Encodable {
     /// only when it is listed here.
     let capabilities: [String]?
 
-    /// Negotiated agent protocol version, or nil outside serving mode.
+    /// Current agent protocol version, or nil outside serving mode.
     let protocolVersion: Int?
 
     /// Protocol versions the serving agent can negotiate.

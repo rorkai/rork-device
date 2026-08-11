@@ -87,6 +87,18 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
     let misagentStatus: Int?
     let reason: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case requestedVersion
+        case supportedVersions
+        case operation
+        case targetID = "targetId"
+        case streamIdentifier
+        case protocolErrorCode
+        case afcStatus
+        case misagentStatus
+        case reason
+    }
+
     init(
         requestedVersion: Int? = nil,
         supportedVersions: [Int]? = nil,
