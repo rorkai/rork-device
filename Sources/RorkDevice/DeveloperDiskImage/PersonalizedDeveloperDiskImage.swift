@@ -294,9 +294,8 @@ func sha384Digest(of fileURL: URL) throws -> Data {
 private extension URL {
     /// Checks path containment on component boundaries after standardization.
     func isContained(in directory: URL) -> Bool {
-        let directoryPath = directory.standardizedFileURL.path
-        let candidatePath = standardizedFileURL.path
-        return candidatePath == directoryPath
-            || candidatePath.hasPrefix(directoryPath + "/")
+        standardizedFileURL.pathComponents.starts(
+            with: directory.standardizedFileURL.pathComponents
+        )
     }
 }
