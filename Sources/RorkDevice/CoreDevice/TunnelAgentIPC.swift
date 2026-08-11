@@ -32,6 +32,10 @@ public enum TunnelAgentIPC {
         /// contract stays local to the code that implements it. A decoding
         /// failure names the operation, which becomes the `ok: false` reply
         /// the supervisor sees.
+        ///
+        /// - Parameter type: Parameter type owned by the operation handler.
+        /// - Returns: Parameters decoded from the complete request envelope.
+        /// - Throws: ``RorkDeviceError/invalidInput(_:)`` when decoding fails.
         public func parameters<Parameters: Decodable>(
             _ type: Parameters.Type = Parameters.self
         ) throws -> Parameters {
@@ -60,31 +64,44 @@ public enum TunnelAgentIPC {
     /// The payload's fields are merged into the top level of the `op-result`
     /// reply. Return nil when the result carries no fields beyond the
     /// envelope. The dispatcher owns the `id`, `event`, and `ok` fields.
-    /// Throwing produces an `ok: false` result carrying the error's
-    /// description.
+    /// Throwing produces an unsuccessful result with readable text, a stable
+    /// error code, and structured details when the failure carries them.
     public typealias Handler = @Sendable (Request) async throws -> (any Encodable & Sendable)?
 
     /// The wire shape of a request envelope.
     private struct RequestEnvelope: Decodable {
+        /// Supervisor-chosen value used to correlate the reply.
         let id: String
+
+        /// Wire operation name selected by the supervisor.
         let op: String
+
+        /// Explicit protocol version, or nil for an implicit version-one request.
         let protocolVersion: Int?
     }
 
     /// Salvages a correlation id from a line that failed envelope decoding.
     private struct RequestIdProbe: Decodable {
+        /// Correlation value retained when the rest of the envelope is invalid.
         let id: String?
     }
 
     /// The payload for the `capabilities` operation.
     private struct CapabilitiesPayload: Encodable {
+        /// Operation names accepted by this serving agent.
         let capabilities: [String]
+
+        /// Current protocol version advertised by the agent.
         let protocolVersion = TunnelAgentProtocol.currentVersion
+
+        /// Protocol versions accepted in request envelopes.
         let supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
+
+        /// Native agent version that implements the advertised contract.
         let agentVersion = RorkDevice.version
     }
 
-    /// Built-ins whose dispatch needs serving-loop state.
+    /// Built-ins dispatched by the serving loop because they need request state.
     static let statefulBuiltInOperationNames = ["cancel"]
 
     /// Operations implemented by the protocol layer rather than a device handler.
@@ -133,8 +150,10 @@ public enum TunnelAgentIPC {
     ///
     /// Every request runs as its own task, so a slow operation never blocks
     /// the read loop or other operations. Replies are serialized through
-    /// `send`, one complete line per call. The method returns when the input
-    /// reaches end-of-file, which means the supervisor is gone.
+    /// `send`, one complete line per call. End-of-file cancels active work and
+    /// waits up to `shutdownGracePeriod`. Requests that do not stop before the
+    /// deadline receive conservative cancellation replies before this method
+    /// returns.
     ///
     /// - Parameters:
     ///   - input: Request stream whose end-of-file signals supervisor exit.
@@ -289,7 +308,7 @@ public enum TunnelAgentIPC {
                 failure: TunnelAgentFailure.normalize(error)
             )
         }
-        guard parameters.targetId != request.id else {
+        guard parameters.targetID != request.id else {
             return Reply.failure(
                 id: request.id,
                 failure: TunnelAgentFailure(
@@ -299,14 +318,14 @@ public enum TunnelAgentIPC {
             )
         }
 
-        guard await inFlightRequests.cancel(parameters.targetId) else {
+        guard await inFlightRequests.cancel(parameters.targetID) else {
             return Reply.failure(
                 id: request.id,
                 failure: TunnelAgentFailure(
                     code: .cancellationTargetNotFound,
-                    message: "No in-flight request has id \(parameters.targetId).",
+                    message: "No in-flight request has id \(parameters.targetID).",
                     details: TunnelAgentErrorDetails(
-                        targetID: parameters.targetId
+                        targetID: parameters.targetID
                     )
                 )
             )
@@ -356,13 +375,22 @@ public enum TunnelAgentIPC {
 
     /// Parameters accepted by the protocol-level cancel operation.
     private struct CancelParameters: Decodable {
-        let targetId: String
+        /// Request identifier whose operation should observe cancellation.
+        let targetID: String
+
+        /// Preserves the protocol's lower-camel spelling on the wire.
+        private enum CodingKeys: String, CodingKey {
+            case targetID = "targetId"
+        }
     }
 }
 
 /// Reply kinds supported by the protocol envelope.
 private enum ReplyEvent: String, Sendable {
+    /// A request reached a handler or protocol-level operation.
     case result = "op-result"
+
+    /// A line could not be dispatched as a unique request.
     case error = "op-error"
 }
 
@@ -442,6 +470,7 @@ private struct Reply: Encodable, Sendable {
         )
     }
 
+    /// Encodes the envelope and payload into the same JSON object.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(event.rawValue, forKey: .event)
@@ -456,11 +485,13 @@ private struct Reply: Encodable, Sendable {
 
 /// Serializes reply lines so concurrent handlers cannot interleave output.
 private final class ReplyWriter: @unchecked Sendable {
+    /// Protects reply ordering while handler tasks write concurrently.
     private let lock = NSLock()
 
     /// Receives one encoded reply line per call, never a partial line.
     private let send: @Sendable (Data) -> Void
 
+    /// Creates a writer around one complete-line output sink.
     init(send: @escaping @Sendable (Data) -> Void) {
         self.send = send
     }
@@ -485,13 +516,20 @@ private final class ReplyWriter: @unchecked Sendable {
 private actor InFlightRequestRegistry {
     /// One task and whether a supervisor cancellation won its completion race.
     private struct Entry {
+        /// Handler task, or nil during the atomic identifier reservation.
         var task: Task<Void, Never>?
+
+        /// Whether a cancellation reply must take precedence at completion.
         var cancellationRequested: Bool
     }
 
+    /// Active requests keyed by their supervisor-selected identifiers.
     private var entries: [String: Entry] = [:]
+
+    /// Serialized sink used when this actor chooses a terminal reply.
     private let writer: ReplyWriter
 
+    /// Creates a registry that emits terminal replies through one writer.
     init(writer: ReplyWriter) {
         self.writer = writer
     }

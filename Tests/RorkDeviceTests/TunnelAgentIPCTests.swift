@@ -170,6 +170,11 @@ final class TunnelAgentFailureTests: XCTestCase {
             cancellation.details?.operationMayHaveCompleted,
             false
         )
+
+        let internalFailure = TunnelAgentFailure.normalize(
+            NSError(domain: "TunnelAgentTests", code: 1)
+        )
+        XCTAssertEqual(internalFailure.code, .internalFailure)
     }
 }
 
@@ -501,6 +506,7 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         await gate.open()
 
         let reply = try await replies.waitForReply(id: "work")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
         XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
         let details = try XCTUnwrap(
             reply["errorDetails"] as? [String: Any]
@@ -743,15 +749,20 @@ final class TunnelAgentServeLoopTests: XCTestCase {
 
 /// Collects NDJSON reply lines and answers queries about them.
 private final class ReplyRecorder: @unchecked Sendable {
+    /// Protects the recorded lines while handler tasks write concurrently.
     private let lock = NSLock()
+
+    /// Complete encoded reply lines in observed write order.
     private var lines: [Data] = []
 
+    /// Records one complete reply line from the serving loop.
     func record(_ line: Data) {
         lock.withLock {
             lines.append(line)
         }
     }
 
+    /// Decodes every valid recorded line for assertions.
     private func decoded() -> [[String: Any]] {
         lock.withLock {
             lines.compactMap {
@@ -760,10 +771,12 @@ private final class ReplyRecorder: @unchecked Sendable {
         }
     }
 
+    /// Returns every reply carrying the requested correlation identifier.
     func replies(id: String) -> [[String: Any]] {
         decoded().filter { $0["id"] as? String == id }
     }
 
+    /// Waits for the first reply carrying the requested identifier.
     func waitForReply(id: String) async throws -> [String: Any] {
         try await poll(
             failure: "No reply for request \(id)."
@@ -772,6 +785,7 @@ private final class ReplyRecorder: @unchecked Sendable {
         }
     }
 
+    /// Waits until the requested number of replies share one identifier.
     func waitForReplies(
         id: String,
         count: Int
@@ -784,6 +798,7 @@ private final class ReplyRecorder: @unchecked Sendable {
         }
     }
 
+    /// Waits for the first reply carrying the requested event discriminator.
     func waitForEvent(_ event: String) async throws -> [String: Any] {
         try await poll(failure: "No \(event) event.") {
             decoded().first { $0["event"] as? String == event }
@@ -807,9 +822,13 @@ private final class ReplyRecorder: @unchecked Sendable {
 
 /// Suspends a handler without observing task cancellation.
 private actor TunnelAgentTestGate {
+    /// Whether later waiters may pass without suspension.
     private var isOpen = false
+
+    /// Suspended handlers released together when the gate opens.
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Suspends until the test opens the gate.
     func wait() async {
         guard !isOpen else {
             return
@@ -819,6 +838,7 @@ private actor TunnelAgentTestGate {
         }
     }
 
+    /// Opens the gate permanently and resumes every suspended handler.
     func open() {
         isOpen = true
         let pending = waiters

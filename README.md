@@ -374,12 +374,13 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 ```
 
 Protocol version one accepts legacy requests that omit `protocolVersion`.
-Supervisors should negotiate through `capabilities` before sending other
-operations. The serving `ready` event carries the same protocol and agent
-version fields beside its capability list. Request identifiers must remain
-unique until their terminal `op-result`. They may be reused afterward. A
-duplicate in-flight identifier receives an `op-error` without terminating the
-original operation.
+New supervisors should request `capabilities`, choose a value present in
+`supportedProtocolVersions`, and send that value as `protocolVersion` on later
+requests. The agent validates the requested version rather than negotiating
+one. The serving `ready` event carries the same protocol and agent version
+fields beside its capability list. Request identifiers must remain unique until
+their terminal `op-result`. They may be reused afterward. A duplicate in-flight
+identifier receives an `op-error` without terminating the original operation.
 
 Device-backed operations run through one shared Remote Service Discovery
 session that the agent opens over its own tunnel when a cycle becomes ready,
@@ -418,6 +419,41 @@ field so supervisors know what they can route through the pipe. In serving
 mode, end-of-file on standard input cancels active requests and waits at most
 five seconds before returning, so the parent-death contract below holds without
 the separate flag.
+
+Protocol version one defines the following stable error codes.
+
+`malformed_request` reports an unusable envelope.
+`unsupported_protocol_version` reports a version the agent does not accept.
+`duplicate_request_id` reports an identifier owned by an active request.
+`unknown_operation` reports an operation with no matching handler.
+
+`cancelled` reports that supervisor cancellation or shutdown won the completion
+race. `cancellation_target_not_found` reports a target that is no longer active.
+`invalid_input` reports an invalid parameter or caller value.
+`invalid_pairing_record` reports missing or malformed pairing data.
+
+`transport` reports a socket, tunnel, or forwarding failure.
+`protocol_violation` reports malformed data from a peer.
+`remote_xpc_stream_reset` reports a reset HTTP/2 stream.
+`lockdown` reports an operation rejected by Lockdown.
+`secure_session_unsupported` reports a missing secure backend.
+`secure_session` reports failed secure setup or encrypted input and output.
+`remote_pairing` reports a remote-pairing rejection.
+
+`afc_status` reports a nonzero AFC status. `heartbeat` reports a heartbeat
+failure or timeout. `installation_proxy` reports an InstallationProxy rejection.
+`misagent_status` reports a nonzero MISAgent status. `pairing` reports Lockdown
+pairing that needs action or was rejected. `internal` reports an unclassified
+implementation failure that escaped a handler.
+
+The optional `errorDetails` object preserves values needed for recovery.
+Version failures use `requestedVersion` and `supportedProtocolVersions`.
+Dispatch failures use `operation`, and cancellation lookup failures use
+`targetId`. RemoteXPC failures use `streamIdentifier` and `protocolErrorCode`.
+AFC and MISAgent failures use `afcStatus` and `misagentStatus`. Pairing,
+installation, and other categorized failures may use `reason`. Cancellation
+uses `operationMayHaveCompleted`, `operationErrorCode`, and `operationError` as
+described above.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard
