@@ -377,7 +377,7 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 -> {"id":"5","op":"run","argv":["install","/tmp/App.ipa"]}
 -> {"id":"6","op":"cancel","targetId":"5"}
 <- {"id":"6","event":"op-result","ok":true}
-<- {"id":"5","event":"op-result","ok":false,"error":"The request was cancelled.","errorCode":"cancelled"}
+<- {"id":"5","event":"op-result","ok":false,"error":"The request was cancelled.","errorCode":"cancelled","errorDetails":{"operationMayHaveCompleted":true}}
 ```
 
 Protocol version one accepts legacy requests that omit `protocolVersion`.

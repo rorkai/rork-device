@@ -122,6 +122,17 @@ final class TunnelAgentFailureTests: XCTestCase {
         }
     }
 
+    func testEveryAdvertisedBuiltInOperationIsServed() {
+        let handled = Set(
+            TunnelAgentIPC.builtInHandlers(capabilities: []).keys
+        ).union(["cancel"])
+
+        XCTAssertEqual(
+            Set(TunnelAgentIPC.builtInOperationNames),
+            handled
+        )
+    }
+
     func testErrorCodesPreserveUnknownFutureValues() throws {
         let code = TunnelAgentProtocol.ErrorCode(
             rawValue: "future_error"
@@ -428,11 +439,54 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         )
         XCTAssertEqual(
             details["operationMayHaveCompleted"] as? Bool,
-            true
+            false
         )
         try stdin.fileHandleForWriting.close()
         await serving.value
         XCTAssertEqual(replies.replies(id: "slow").count, 1)
+    }
+
+    func testCancellationReportsAConcurrentSuccessfulCompletion()
+        async throws
+    {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "work": { _ in
+                await gate.wait()
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"work","op":"work"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"work"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        await gate.open()
+
+        let reply = try await replies.waitForReply(id: "work")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+        try stdin.fileHandleForWriting.close()
+        await serving.value
     }
 
     func testRejectsCancellationForAnUnknownRequest() async throws {
