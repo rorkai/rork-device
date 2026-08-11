@@ -720,9 +720,16 @@ public final class DeviceClient {
                 )
             }
 
-            let discoverySession = try await RemoteServiceDiscoverySession.open(
-                over: connection
-            )
+            let discoverySession: RemoteServiceDiscoverySession
+            do {
+                discoverySession =
+                    try await RemoteServiceDiscoverySession.open(
+                        over: connection
+                    )
+            } catch {
+                connection.close()
+                throw error
+            }
             return DeviceSession(
                 backend: RemoteServiceSessionBackend(
                     host: host,
@@ -780,9 +787,16 @@ public final class DeviceClient {
                 )
             }
 
-            let discoverySession = try await RemoteServiceDiscoverySession.open(
-                over: connection
-            )
+            let discoverySession: RemoteServiceDiscoverySession
+            do {
+                discoverySession =
+                    try await RemoteServiceDiscoverySession.open(
+                        over: connection
+                    )
+            } catch {
+                connection.close()
+                throw error
+            }
             return DeviceSession(
                 backend: RemoteServiceSessionBackend(
                     transport: transport,

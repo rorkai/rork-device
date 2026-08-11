@@ -307,6 +307,26 @@ final class TypedThrowsAPITests: XCTestCase {
         }
     }
 
+    func testRemoteServiceDiscoveryConnectionClosesWhenHandshakeFails()
+        async
+    {
+        let connection = FakeConnection()
+        let client = DeviceClient()
+
+        do {
+            _ = try await client.connect(
+                toRemoteServicesUsing: TypedThrowsConnectionTransport(
+                    connection: connection
+                ),
+                discoveryPort: 58_783
+            )
+            XCTFail("The empty discovery handshake should fail.")
+        } catch {
+            XCTAssertFalse(error.description.isEmpty)
+        }
+        XCTAssertTrue(connection.isClosed)
+    }
+
     func testProvisioningProfileReadMapsToFileSystemFailure() async {
         let missingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -400,6 +420,25 @@ final class TypedThrowsAPITests: XCTestCase {
         }
         XCTAssertTrue(connection.isClosed)
     }
+
+    func testHouseArrestConnectionStaysOpenAfterSuccessfulVend() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Status": "Complete",
+            ])
+        )
+        let session = DeviceSession(
+            backend: TypedThrowsConnectionBackend(
+                connection: connection
+            )
+        )
+
+        _ = try await session.openApplicationContainer(
+            bundleIdentifier: "com.example.app"
+        )
+
+        XCTAssertFalse(connection.isClosed)
+    }
 }
 
 /// Type-checks an API expression without executing its operation.
@@ -425,6 +464,14 @@ private struct TypedThrowsFailingTransport: DeviceTransport {
 private struct TypedThrowsBlockingTransport: DeviceTransport {
     func connect(to _: UInt16) async throws -> DeviceConnection {
         TypedThrowsBlockingConnection()
+    }
+}
+
+private struct TypedThrowsConnectionTransport: DeviceTransport {
+    let connection: DeviceConnection
+
+    func connect(to _: UInt16) async throws -> DeviceConnection {
+        connection
     }
 }
 

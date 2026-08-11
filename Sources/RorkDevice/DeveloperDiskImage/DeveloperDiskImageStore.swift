@@ -267,24 +267,55 @@ public struct DeveloperDiskImageStore: Sendable {
             "prepared",
             isDirectory: true
         )
+        let preparedRestoreDirectory = preparedDirectory.appendingPathComponent(
+            "Restore",
+            isDirectory: true
+        )
         do {
             try FileManager.default.createDirectory(
                 at: preparedDirectory,
                 withIntermediateDirectories: true
             )
-            try FileManager.default.moveItem(
-                at: extractedRestoreDirectory,
-                to: preparedDirectory.appendingPathComponent(
-                    "Restore",
-                    isDirectory: true
-                )
-            )
+        } catch {
             if isCompleteRestoreDirectory(finalRestoreDirectory) {
                 return finalRestoreDirectory
             }
-            if FileManager.default.fileExists(atPath: finalDirectory.path) {
-                try FileManager.default.removeItem(at: finalDirectory)
+            throw RorkDeviceError.fileSystem(
+                path: preparedDirectory.path,
+                reason: error.localizedDescription
+            )
+        }
+        do {
+            try FileManager.default.moveItem(
+                at: extractedRestoreDirectory,
+                to: preparedRestoreDirectory
+            )
+        } catch {
+            if isCompleteRestoreDirectory(finalRestoreDirectory) {
+                return finalRestoreDirectory
             }
+            throw RorkDeviceError.fileSystem(
+                path: preparedRestoreDirectory.path,
+                reason: error.localizedDescription
+            )
+        }
+        if isCompleteRestoreDirectory(finalRestoreDirectory) {
+            return finalRestoreDirectory
+        }
+        if FileManager.default.fileExists(atPath: finalDirectory.path) {
+            do {
+                try FileManager.default.removeItem(at: finalDirectory)
+            } catch {
+                if isCompleteRestoreDirectory(finalRestoreDirectory) {
+                    return finalRestoreDirectory
+                }
+                throw RorkDeviceError.fileSystem(
+                    path: finalDirectory.path,
+                    reason: error.localizedDescription
+                )
+            }
+        }
+        do {
             try FileManager.default.moveItem(
                 at: preparedDirectory,
                 to: finalDirectory
