@@ -607,29 +607,31 @@ final class DeveloperDiskImagePublicationFileLock: @unchecked Sendable {
         }
         #elseif canImport(Darwin)
         while flock(fileDescriptor, LOCK_EX | LOCK_NB) != 0 {
+            let lockErrno = errno
             try Task.checkCancellation()
-            if errno == EWOULDBLOCK || errno == EAGAIN {
+            if lockErrno == EWOULDBLOCK || lockErrno == EAGAIN {
                 try await Task.sleep(for: .milliseconds(10))
                 continue
             }
-            if errno != EINTR {
+            if lockErrno != EINTR {
                 throw RorkDeviceError.fileSystem(
                     path: fileURL.path,
-                    reason: String(cString: strerror(errno))
+                    reason: String(cString: strerror(lockErrno))
                 )
             }
         }
         #elseif canImport(Glibc)
         while flock(fileDescriptor, LOCK_EX | LOCK_NB) != 0 {
+            let lockErrno = errno
             try Task.checkCancellation()
-            if errno == EWOULDBLOCK || errno == EAGAIN {
+            if lockErrno == EWOULDBLOCK || lockErrno == EAGAIN {
                 try await Task.sleep(for: .milliseconds(10))
                 continue
             }
-            if errno != EINTR {
+            if lockErrno != EINTR {
                 throw RorkDeviceError.fileSystem(
                     path: fileURL.path,
-                    reason: String(cString: strerror(errno))
+                    reason: String(cString: strerror(lockErrno))
                 )
             }
         }
