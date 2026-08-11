@@ -4,26 +4,33 @@ import Foundation
 ///
 /// Backends preserve the same service-oriented API while obtaining endpoints
 /// either from Lockdown or from a live Remote Service Discovery advertisement.
+/// Every throwing requirement exposes `RorkDeviceError`, which keeps
+/// transport-specific failures from leaking through the public session.
 protocol DeviceSessionBackend {
     /// Returns the device information available through this transport.
-    func fetchDeviceInfo() async throws -> DeviceInfo
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo
 
     /// Reads whether Developer Mode is enabled when the backend exposes the
     /// Lockdown AMFI value domain.
-    func isDeveloperModeEnabled() async throws -> Bool
+    func isDeveloperModeEnabled() async throws(RorkDeviceError) -> Bool
 
     /// Enables host connections through the device's wireless Lockdown route.
-    func enableWirelessConnections() async throws
+    func enableWirelessConnections() async throws(RorkDeviceError)
 
     /// Opens a service stream that is ready for its service-specific protocol.
-    func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection
+    func startService(
+        named serviceName: String,
+        escrowBag: Data?
+    ) async throws(RorkDeviceError) -> DeviceConnection
 
     /// Opens a raw service advertised directly by Remote Service Discovery.
     ///
     /// Unlike Lockdown-compatible shim services, direct CoreDevice services do
     /// not exchange `RSDCheckin` property lists before their own protocol
     /// begins.
-    func startRemoteService(named serviceName: String) async throws -> DeviceConnection
+    func startRemoteService(
+        named serviceName: String
+    ) async throws(RorkDeviceError) -> DeviceConnection
 
     /// Releases the backend's persistent control connections, if any.
     func close()
@@ -31,21 +38,23 @@ protocol DeviceSessionBackend {
 
 extension DeviceSessionBackend {
     /// Remote Service Discovery does not expose Lockdown value domains.
-    func isDeveloperModeEnabled() async throws -> Bool {
+    func isDeveloperModeEnabled() async throws(RorkDeviceError) -> Bool {
         throw RorkDeviceError.protocolViolation(
             "Developer Mode status requires a Lockdown session."
         )
     }
 
     /// Rejects wireless Lockdown configuration for non-Lockdown backends.
-    func enableWirelessConnections() async throws {
+    func enableWirelessConnections() async throws(RorkDeviceError) {
         throw RorkDeviceError.protocolViolation(
             "Wireless connections can only be configured through a Lockdown session."
         )
     }
 
     /// Rejects direct Remote Service Discovery access for non-RSD backends.
-    func startRemoteService(named serviceName: String) async throws -> DeviceConnection {
+    func startRemoteService(
+        named serviceName: String
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         throw RorkDeviceError.protocolViolation(
             "Remote service \(serviceName) requires a Remote Service Discovery session."
         )
@@ -83,21 +92,27 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     }
 
     /// Reads the default Lockdown value domain into the public device model.
-    func fetchDeviceInfo() async throws -> DeviceInfo {
-        DeviceInfo(values: try await lockdown.deviceValues())
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
+        try await withRorkDeviceError {
+            DeviceInfo(values: try await lockdown.deviceValues())
+        }
     }
 
     /// Reads Developer Mode from Lockdown's AMFI value domain.
-    func isDeveloperModeEnabled() async throws -> Bool {
-        try await lockdown.developerModeStatus()
+    func isDeveloperModeEnabled() async throws(RorkDeviceError) -> Bool {
+        try await withRorkDeviceError {
+            try await lockdown.developerModeStatus()
+        }
     }
 
     /// Enables the wireless Lockdown route used by local device tunnels.
-    func enableWirelessConnections() async throws {
-        try await lockdown.setValue(
-            true,
-            for: .wirelessConnectionsEnabled
-        )
+    func enableWirelessConnections() async throws(RorkDeviceError) {
+        try await withRorkDeviceError {
+            try await lockdown.setValue(
+                true,
+                for: .wirelessConnectionsEnabled
+            )
+        }
     }
 
     /// Requests a service from Lockdown and returns a protocol-ready stream.
@@ -105,28 +120,36 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
     /// The backend owns the raw service connection until a required secure
     /// upgrade succeeds. If the upgrader throws, the raw connection is closed
     /// before the error is propagated.
-    func startService(named serviceName: String, escrowBag: Data?) async throws -> DeviceConnection {
-        let service = try await lockdown.startService(serviceName, escrowBag: escrowBag)
-        var connection: DeviceConnection
-        do {
-            connection = try await transport.connect(to: service.port)
-        } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect \(service.name) on service port \(service.port): \(describeDeviceSessionError(error))"
+    func startService(
+        named serviceName: String,
+        escrowBag: Data?
+    ) async throws(RorkDeviceError) -> DeviceConnection {
+        try await withRorkDeviceError {
+            let service = try await lockdown.startService(
+                serviceName,
+                escrowBag: escrowBag
             )
-        }
-        if service.requiresSecureConnection {
+            var connection: DeviceConnection
             do {
-                connection = try await secureSessionUpgrader.upgrade(
-                    connection,
-                    pairingRecord: pairingRecord
-                )
+                connection = try await transport.connect(to: service.port)
             } catch {
-                connection.close()
-                throw error
+                throw RorkDeviceError.transport(
+                    "Failed to connect \(service.name) on service port \(service.port): \(describeDeviceSessionError(error))"
+                )
             }
+            if service.requiresSecureConnection {
+                do {
+                    connection = try await secureSessionUpgrader.upgrade(
+                        connection,
+                        pairingRecord: pairingRecord
+                    )
+                } catch {
+                    connection.close()
+                    throw error
+                }
+            }
+            return connection
         }
-        return connection
     }
 
     /// Closes the Lockdown control connection held by this backend.

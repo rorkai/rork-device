@@ -247,27 +247,31 @@ private final class ScriptedBrowseBackend: DeviceSessionBackend, @unchecked Send
     private let lock = NSLock()
     private var services: [String] = []
 
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         lock.withLock {
             services.append(serviceName)
         }
-        return RunScriptedConnection(
-            inbound: try PropertyListMessageFramer.encode([
-                "CurrentAmount": 1,
-                "CurrentIndex": 0,
-                "CurrentList": [
-                    ["CFBundleIdentifier": "com.example.app"],
-                ],
-                "Status": "Complete",
-            ])
-        )
+        do {
+            return RunScriptedConnection(
+                inbound: try PropertyListMessageFramer.encode([
+                    "CurrentAmount": 1,
+                    "CurrentIndex": 0,
+                    "CurrentList": [
+                        ["CFBundleIdentifier": "com.example.app"],
+                    ],
+                    "Status": "Complete",
+                ])
+            )
+        } catch {
+            throw normalizedRorkDeviceError(error)
+        }
     }
 
     func openedServices() -> [String] {

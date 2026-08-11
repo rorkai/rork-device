@@ -157,10 +157,15 @@ public final class USBMuxClient: Sendable {
                 "usbmux ReadPairRecord response was missing PairRecordData."
             )
         }
-        guard
-            var dictionary = try PropertyListCodec.decode(recordData)
-                as? [String: Any]
-        else {
+        let decodedRecord: Any
+        do {
+            decodedRecord = try PropertyListCodec.decode(recordData)
+        } catch {
+            throw RorkDeviceError.invalidPairingRecord(
+                "Stored property list could not be decoded: \(error.localizedDescription)"
+            )
+        }
+        guard var dictionary = decodedRecord as? [String: Any] else {
             throw RorkDeviceError.invalidPairingRecord(
                 "Expected plist dictionary."
             )
@@ -422,8 +427,17 @@ public final class USBMuxClient: Sendable {
             throw RorkDeviceError.protocolViolation(
                 "Unsupported usbmux response message type \(responsePacket.messageType).")
         }
-        guard let response = try PropertyListCodec.decode(responsePacket.payload) as? [String: Any]
-        else {
+        let decodedResponse: Any
+        do {
+            decodedResponse = try PropertyListCodec.decode(
+                responsePacket.payload
+            )
+        } catch {
+            throw RorkDeviceError.protocolViolation(
+                "usbmux response property list could not be decoded: \(error.localizedDescription)"
+            )
+        }
+        guard let response = decodedResponse as? [String: Any] else {
             throw RorkDeviceError.protocolViolation("usbmux response was not a dictionary.")
         }
         return response

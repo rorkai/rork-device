@@ -121,7 +121,7 @@ private final class CoreDeviceSessionTestBackend: DeviceSessionBackend {
     }
 
     /// Returns minimal device information for protocol conformance.
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
@@ -129,7 +129,7 @@ private final class CoreDeviceSessionTestBackend: DeviceSessionBackend {
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         startedLockdownServices.append(serviceName)
         throw RorkDeviceError.protocolViolation(
             "Unexpected Lockdown service \(serviceName)."
@@ -139,7 +139,7 @@ private final class CoreDeviceSessionTestBackend: DeviceSessionBackend {
     /// Returns the next direct CoreDevice service connection.
     func startRemoteService(
         named serviceName: String
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         startedRemoteServices.append(serviceName)
         guard !remoteConnections.isEmpty else {
             throw RorkDeviceError.transport(

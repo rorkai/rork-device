@@ -94,6 +94,37 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
 
 /// These tests preserve stable mappings from Swift failures to wire codes.
 final class TunnelAgentFailureTests: XCTestCase {
+    func testProtocolV1ErrorCodesRemainStable() {
+        let cases: [(TunnelAgentProtocol.ErrorCode, String)] = [
+            (.malformedRequest, "malformed_request"),
+            (.unsupportedProtocolVersion, "unsupported_protocol_version"),
+            (.duplicateRequestID, "duplicate_request_id"),
+            (.unknownOperation, "unknown_operation"),
+            (.cancelled, "cancelled"),
+            (.cancellationTargetNotFound, "cancellation_target_not_found"),
+            (.invalidInput, "invalid_input"),
+            (.invalidPairingRecord, "invalid_pairing_record"),
+            (.fileSystem, "file_system"),
+            (.transport, "transport"),
+            (.protocolViolation, "protocol_violation"),
+            (.remoteXPCStreamReset, "remote_xpc_stream_reset"),
+            (.lockdown, "lockdown"),
+            (.secureSessionUnsupported, "secure_session_unsupported"),
+            (.secureSession, "secure_session"),
+            (.remotePairing, "remote_pairing"),
+            (.afcStatus, "afc_status"),
+            (.heartbeat, "heartbeat"),
+            (.installationProxy, "installation_proxy"),
+            (.misagentStatus, "misagent_status"),
+            (.pairing, "pairing"),
+            (.internalFailure, "internal"),
+        ]
+
+        for (code, rawValue) in cases {
+            XCTAssertEqual(code.rawValue, rawValue)
+        }
+    }
+
     func testEveryAdvertisedBuiltInOperationIsServed() {
         let handled = Set(
             TunnelAgentIPC.builtInHandlers(capabilities: []).keys
@@ -123,7 +154,13 @@ final class TunnelAgentFailureTests: XCTestCase {
     func testMapsEveryDeviceErrorCaseToAStableCode() {
         let cases: [(RorkDeviceError, TunnelAgentProtocol.ErrorCode)] = [
             (.invalidInput("input"), .invalidInput),
+            (.cancelled, .cancelled),
             (.invalidPairingRecord("pairing"), .invalidPairingRecord),
+            (.pairing(.deviceLocked), .pairing),
+            (
+                .fileSystem(path: "/tmp/file", reason: "missing"),
+                .fileSystem
+            ),
             (.transport("transport"), .transport),
             (.protocolViolation("protocol"), .protocolViolation),
             (
@@ -168,6 +205,15 @@ final class TunnelAgentFailureTests: XCTestCase {
         XCTAssertEqual(cancellation.message, "The request was cancelled.")
         XCTAssertEqual(
             cancellation.details?.operationMayHaveCompleted,
+            false
+        )
+
+        let typedCancellation = TunnelAgentFailure.normalize(
+            RorkDeviceError.cancelled
+        )
+        XCTAssertEqual(typedCancellation.code, .cancelled)
+        XCTAssertEqual(
+            typedCancellation.details?.operationMayHaveCompleted,
             false
         )
 

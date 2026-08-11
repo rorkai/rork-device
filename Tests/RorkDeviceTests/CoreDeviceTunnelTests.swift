@@ -108,14 +108,14 @@ private final class CoreDeviceTunnelSessionBackend: DeviceSessionBackend {
         self.connection = connection
     }
 
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         startedServices.append(serviceName)
         return connection
     }

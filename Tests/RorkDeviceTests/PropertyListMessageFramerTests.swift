@@ -33,6 +33,27 @@ final class PropertyListMessageFramerTests: XCTestCase {
         }
     }
 
+    func testReceiveClassifiesMalformedPropertyListsAsProtocolFailures()
+        async throws
+    {
+        let payload = Data("not a plist".utf8)
+        var inbound = Data()
+        inbound.appendBigEndian(UInt32(payload.count))
+        inbound.append(payload)
+        let connection = FakeConnection(inbound: inbound)
+
+        await XCTAssertThrowsErrorAsync({
+            try await PropertyListMessageFramer.receive(from: connection)
+        }) { error in
+            guard case .protocolViolation(let message) =
+                error as? RorkDeviceError
+            else {
+                return XCTFail("Expected protocol violation, got \(error)")
+            }
+            XCTAssertTrue(message.contains("could not be decoded"))
+        }
+    }
+
     func testReceiveRejectsZeroLengthPayload() async throws {
         var inbound = Data()
         inbound.appendBigEndian(UInt32(0))

@@ -5,6 +5,55 @@ import XCTest
 @testable import RorkDevice
 
 final class PersonalizedDeveloperDiskImageTests: XCTestCase {
+    func testMissingManifestIsAFileSystemFailure() {
+        let restoreDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+
+        XCTAssertThrowsError(
+            try PersonalizedDeveloperDiskImage(
+                contentsOf: restoreDirectory
+            )
+        ) { error in
+            guard case .fileSystem(let path, _) =
+                error as? RorkDeviceError
+            else {
+                return XCTFail("Expected filesystem failure, got \(error)")
+            }
+            XCTAssertEqual(
+                path,
+                restoreDirectory
+                    .appendingPathComponent("BuildManifest.plist")
+                    .path
+            )
+        }
+    }
+
+    func testMalformedManifestIsAnInputFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        try Data("not a plist".utf8).write(
+            to: directory.appendingPathComponent("BuildManifest.plist")
+        )
+
+        XCTAssertThrowsError(
+            try PersonalizedDeveloperDiskImage(contentsOf: directory)
+        ) { error in
+            guard case .invalidInput(let message) =
+                error as? RorkDeviceError
+            else {
+                return XCTFail("Expected input failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("could not be decoded"))
+        }
+    }
+
     func testPayloadSelectsMatchingHardwareIdentityAndVerifiesFiles() throws {
         let fixture = try makeImageFixture(
             boardID: "0x0C",
@@ -125,6 +174,42 @@ final class PersonalizedDeveloperDiskImageTests: XCTestCase {
                     "Developer Disk Image digest does not match BuildManifest.plist."
                 )
             )
+        }
+    }
+
+    func testPayloadClassifiesMissingImageAsAFileSystemFailure()
+        throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let image = try PersonalizedDeveloperDiskImage(
+            contentsOf: fixture.restoreDirectory
+        )
+        let imageURL = fixture.restoreDirectory.appendingPathComponent(
+            "DeveloperDiskImage.dmg"
+        )
+        try FileManager.default.removeItem(at: imageURL)
+
+        XCTAssertThrowsError(
+            try image.payload(
+                matching: PersonalizationIdentifiers(
+                    boardID: 12,
+                    chipID: 0x8150,
+                    securityDomain: 1,
+                    additionalTSSParameters: [:]
+                )
+            )
+        ) { error in
+            guard case .fileSystem(let path, _) =
+                error as? RorkDeviceError
+            else {
+                return XCTFail("Expected filesystem failure, got \(error)")
+            }
+            XCTAssertEqual(path, imageURL.path)
         }
     }
 }

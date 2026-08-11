@@ -178,6 +178,8 @@ without duplicating the Swift protocol implementation:
   `AbortSignal` cancellation.
 - Add a versioned capabilities handshake and stable machine-readable error
   codes.
+- Use Swift 6 typed throws on high-level library workflows so native and Node
+  callers share one normalized error taxonomy.
 - Extend the existing long-lived agent protocol with opaque handles for
   sessions, services, and tunnels.
 - Carry high-volume binary streams over a local socket or named pipe with

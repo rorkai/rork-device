@@ -99,14 +99,14 @@ final class TunnelAgentSessionGateTests: XCTestCase {
 
 /// Backend for sessions that only need identity, never device access.
 private final class IdleSessionBackend: DeviceSessionBackend {
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         throw RorkDeviceError.transport(
             "The gate test backend opens no services."
         )

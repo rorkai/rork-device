@@ -148,6 +148,43 @@ try await session.installApplication(
 }
 ```
 
+High-level throwing operations on `DeviceClient`, `DeviceSession`,
+`DeveloperDiskImageSource`, and `DeveloperDiskImageStore` use
+`throws(RorkDeviceError)`. Callers therefore receive the concrete error type
+without casting from `any Error`. Pairing decisions are available through
+`.pairing`, task cancellation through `.cancelled`, and local file failures
+through `.fileSystem`. Low-level transport protocols retain untyped throws so
+custom backends can preserve their own implementation errors.
+
+Typed catches can match the failure directly:
+
+```swift
+do {
+    try await session.installApplication(
+        at: archiveURL,
+        bundleIdentifier: bundleIdentifier
+    )
+} catch .cancelled {
+    print("Installation was cancelled.")
+} catch .fileSystem(let path, let reason) {
+    print("Could not read \(path): \(reason)")
+} catch .pairing(let pairingError) {
+    print(pairingError.localizedDescription)
+} catch {
+    print(error.localizedDescription)
+}
+```
+
+Code that exhaustively switches over `RorkDeviceError` must include
+`.cancelled`, `.pairing`, and `.fileSystem`. A caught `.cancelled` value means
+the host task stopped. It does not prove that work already sent to the device
+was rolled back.
+
+Methods that return a live `DeviceConnection`, `AFCClient`, `DeviceHeartbeat`,
+or `CoreDeviceTunnel` transfer service ownership to the caller. Close or stop
+that value after use. Other high-level session operations close their transient
+service connections before returning.
+
 Low-level `LockdownClient` callers can use typed keys for individual values
 while retaining `value(domain:key:)` for whole domains and unusual payloads:
 
@@ -431,6 +468,7 @@ Protocol version one defines the following stable error codes.
 race. `cancellation_target_not_found` reports a target that is no longer active.
 `invalid_input` reports an invalid parameter or caller value.
 `invalid_pairing_record` reports missing or malformed pairing data.
+`file_system` reports a host-local file operation failure.
 
 `transport` reports a socket, tunnel, or forwarding failure.
 `protocol_violation` reports malformed data from a peer.

@@ -22,12 +22,12 @@ private final class WirelessConnectionsSessionTestBackend:
     private(set) var enableWirelessConnectionsCallCount = 0
 
     /// Returns minimal information required by the backend protocol.
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     /// Records one wireless Lockdown configuration request.
-    func enableWirelessConnections() async throws {
+    func enableWirelessConnections() async throws(RorkDeviceError) {
         enableWirelessConnectionsCallCount += 1
     }
 
@@ -35,7 +35,7 @@ private final class WirelessConnectionsSessionTestBackend:
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         throw RorkDeviceError.protocolViolation(
             "Unexpected service request: \(serviceName)"
         )

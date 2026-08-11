@@ -10,8 +10,20 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// protocol request was sent.
     case invalidInput(String)
 
+    /// Swift task cancellation stopped the host-side operation.
+    ///
+    /// This case does not prove that a device rejected or rolled back work
+    /// already sent before cancellation.
+    case cancelled
+
     /// A pairing record is missing required fields or contains invalid data.
     case invalidPairingRecord(String)
+
+    /// Lockdown pairing requires user action or ended with a typed rejection.
+    case pairing(LockdownPairingError)
+
+    /// A host-local file could not be read, written, or inspected.
+    case fileSystem(path: String, reason: String)
 
     /// A socket, tunnel, or forwarding transport failed.
     case transport(String)
@@ -56,8 +68,14 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
         switch self {
         case let .invalidInput(message):
             return message
+        case .cancelled:
+            return "The operation was cancelled."
         case let .invalidPairingRecord(message):
             return "Invalid pairing record: \(message)"
+        case let .pairing(error):
+            return error.localizedDescription
+        case let .fileSystem(path, reason):
+            return "Local file operation failed for \(path): \(reason)"
         case let .transport(message):
             return "Transport error: \(message)"
         case let .protocolViolation(message):
@@ -87,5 +105,46 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// bridges, and command-line tools that use `localizedDescription`.
     public var errorDescription: String? {
         description
+    }
+}
+
+/// Converts implementation failures into the public high-level error surface.
+///
+/// Explicit cancellation takes precedence, followed by an existing
+/// `RorkDeviceError` and a typed pairing rejection. Ambient task cancellation
+/// is consulted only after those values so it cannot hide a more specific
+/// failure. Every remaining error becomes a transport failure with its localized
+/// description.
+///
+/// - Parameter error: This implementation failure crosses a high-level boundary.
+/// - Returns: The stable error is exposed by `DeviceClient` and `DeviceSession`.
+func normalizedRorkDeviceError(_ error: any Error) -> RorkDeviceError {
+    if error is CancellationError {
+        return .cancelled
+    }
+    if let error = error as? RorkDeviceError {
+        return error
+    }
+    if let error = error as? LockdownPairingError {
+        return .pairing(error)
+    }
+    if Task.isCancelled {
+        return .cancelled
+    }
+    return .transport(error.localizedDescription)
+}
+
+/// Runs an asynchronous operation while normalizing its thrown error type.
+///
+/// - Parameter operation: This work runs behind a high-level API boundary.
+/// - Returns: The operation produces this value.
+/// - Throws: The helper throws the operation's normalized `RorkDeviceError`.
+func withRorkDeviceError<Result>(
+    _ operation: () async throws -> Result
+) async throws(RorkDeviceError) -> Result {
+    do {
+        return try await operation()
+    } catch {
+        throw normalizedRorkDeviceError(error)
     }
 }

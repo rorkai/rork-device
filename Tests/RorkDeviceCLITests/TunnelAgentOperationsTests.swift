@@ -195,14 +195,14 @@ private final class ScriptedServiceBackend: DeviceSessionBackend, @unchecked Sen
         self.inbound = inbound
     }
 
-    func fetchDeviceInfo() async throws -> DeviceInfo {
+    func fetchDeviceInfo() async throws(RorkDeviceError) -> DeviceInfo {
         DeviceInfo(values: [:])
     }
 
     func startService(
         named serviceName: String,
         escrowBag _: Data?
-    ) async throws -> DeviceConnection {
+    ) async throws(RorkDeviceError) -> DeviceConnection {
         let connection = ScriptedConnection(inbound: inbound)
         lock.withLock {
             connections.append(connection)

@@ -8,18 +8,36 @@ import Foundation
 ///
 /// An `AFCClient` owns one ordered AFC stream. Use one operation at a time per
 /// client instance; create another service connection when a workflow needs
-/// independent concurrent file operations.
+/// independent concurrent file operations. Call `close()` when access is
+/// complete. Deinitialization closes the stream as a final safety net.
 public final class AFCClient {
+    /// The client owns this service connection until it closes or deinitializes.
     private let connection: DeviceConnection
+
+    /// This value assigns monotonic identifiers on the ordered AFC stream.
     private var packetNumber: UInt64 = 0
 
     /// Creates an AFC client over an existing service connection.
     ///
     /// The connection should come from `DeviceSession.startService(.afc)` or a
     /// caller-provided transport that has already handled any required secure
-    /// service upgrade.
+    /// service upgrade. Ownership transfers to the client, which closes the
+    /// connection explicitly or during deinitialization.
     public init(connection: DeviceConnection) {
         self.connection = connection
+    }
+
+    /// Closes the owned AFC service connection.
+    ///
+    /// Calling this method more than once is safe because `DeviceConnection`
+    /// requires idempotent closure. The client must not be used afterward.
+    public func close() {
+        connection.close()
+    }
+
+    /// Releases the service connection when a caller omits explicit cleanup.
+    deinit {
+        close()
     }
 
     /// Uploads an IPA into `/PublicStaging` and returns its device path.
@@ -193,13 +211,35 @@ public final class AFCClient {
     /// - Parameters:
     ///   - fileURL: Local file to stream into AFC.
     ///   - destinationPath: Destination path in the AFC service root.
+    /// - Throws: `RorkDeviceError.fileSystem` when the local file cannot be
+    ///   opened or read, or another error when AFC transfer fails.
     public func uploadFile(at fileURL: URL, to destinationPath: String) async throws {
+        let file: FileHandle
+        do {
+            file = try FileHandle(forReadingFrom: fileURL)
+        } catch {
+            throw RorkDeviceError.fileSystem(
+                path: fileURL.path,
+                reason: error.localizedDescription
+            )
+        }
+        defer { try? file.close() }
+
         let handle = try await openFile(destinationPath, mode: .writeOnly)
         do {
-            let file = try FileHandle(forReadingFrom: fileURL)
-            defer { try? file.close() }
             while true {
-                let chunk = try file.read(upToCount: AFCStaging.writeChunkSize) ?? Data()
+                let chunk: Data
+                do {
+                    chunk =
+                        try file.read(
+                            upToCount: AFCStaging.writeChunkSize
+                        ) ?? Data()
+                } catch {
+                    throw RorkDeviceError.fileSystem(
+                        path: fileURL.path,
+                        reason: error.localizedDescription
+                    )
+                }
                 if chunk.isEmpty {
                     break
                 }

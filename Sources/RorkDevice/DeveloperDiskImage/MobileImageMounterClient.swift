@@ -116,6 +116,13 @@ private struct MobileImageMounterClient {
     ///
     /// The image stays file-backed so a multi-gigabyte DDI is never retained
     /// in memory as one `Data` value.
+    ///
+    /// - Parameters:
+    ///   - imageURL: This local disk image is streamed to the device.
+    ///   - ticket: The device accepts this personalization manifest.
+    /// - Throws: The method throws `RorkDeviceError.fileSystem` when the image
+    ///   cannot be read, `CancellationError` when the caller cancels streaming,
+    ///   or another error when transport or protocol work fails.
     func uploadImage(
         at imageURL: URL,
         ticket: Data
@@ -124,8 +131,9 @@ private struct MobileImageMounterClient {
         do {
             handle = try FileHandle(forReadingFrom: imageURL)
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not open Developer Disk Image: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: imageURL.path,
+                reason: error.localizedDescription
             )
         }
         defer {
@@ -137,8 +145,9 @@ private struct MobileImageMounterClient {
             imageSize = try handle.seekToEnd()
             try handle.seek(toOffset: 0)
         } catch {
-            throw RorkDeviceError.invalidInput(
-                "Could not read Developer Disk Image size: \(error.localizedDescription)"
+            throw RorkDeviceError.fileSystem(
+                path: imageURL.path,
+                reason: error.localizedDescription
             )
         }
         guard imageSize > 0 else {
@@ -160,18 +169,21 @@ private struct MobileImageMounterClient {
             )
         }
 
-        do {
-            while let chunk = try handle.read(upToCount: 1024 * 1024),
-                !chunk.isEmpty
-            {
-                try await connection.send(chunk)
+        while true {
+            try Task.checkCancellation()
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            } catch {
+                throw RorkDeviceError.fileSystem(
+                    path: imageURL.path,
+                    reason: error.localizedDescription
+                )
             }
-        } catch let error as RorkDeviceError {
-            throw error
-        } catch {
-            throw RorkDeviceError.transport(
-                "Developer Disk Image upload failed: \(error.localizedDescription)"
-            )
+            if chunk.isEmpty {
+                break
+            }
+            try await connection.send(chunk)
         }
         let completion = try await receive(command: "image upload")
         guard completion.string("Status") == "Complete" else {
