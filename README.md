@@ -361,13 +361,22 @@ output. Each request carries a caller-chosen `id` that every reply repeats:
 ```text
 -> {"id":"1","op":"ping"}
 <- {"id":"1","event":"op-result","ok":true}
--> {"id":"2","op":"capabilities"}
-<- {"id":"2","event":"op-result","ok":true,"capabilities":["ping","capabilities","apps-list","run"]}
+-> {"id":"2","op":"capabilities","protocolVersion":1}
+<- {"id":"2","event":"op-result","ok":true,"protocolVersion":1,"supportedProtocolVersions":[1],"agentVersion":"0.9.32","capabilities":["ping","capabilities","cancel","apps-list","run"]}
 -> {"id":"3","op":"apps-list","type":"all"}
 <- {"id":"3","event":"op-result","ok":true,"apps":[{"bundleIdentifier":"com.example.app", ...}]}
 -> {"id":"4","op":"run","argv":["apps","list","--type=all","--json"]}
 <- {"id":"4","event":"op-result","ok":true,"output":"[{\"bundleIdentifier\":\"com.example.app\", ...}]\n"}
+-> {"id":"5","op":"run","argv":["install","/tmp/App.ipa"]}
+-> {"id":"6","op":"cancel","targetId":"5"}
+<- {"id":"6","event":"op-result","ok":true}
+<- {"id":"5","event":"op-result","ok":false,"error":"The request was cancelled.","errorCode":"cancelled"}
 ```
+
+Protocol version one accepts legacy requests that omit `protocolVersion`.
+Supervisors should negotiate through `capabilities` before sending other
+operations. The serving `ready` event carries the same protocol and agent
+version fields beside its capability list.
 
 Device-backed operations run through one shared Remote Service Discovery
 session that the agent opens over its own tunnel when a cycle becomes ready,
@@ -390,11 +399,16 @@ accepts the same `type` values as `apps list` and answers with the same
 entry fields as its `--json` output.
 
 Unknown operations answer with `"ok":false` and malformed lines answer with an
-`op-error` event. Neither ends the process. The `ready` event lists the
-accepted operations in a `capabilities` field so supervisors know what they
-can route through the pipe. In serving mode, end-of-file on standard input
-still stops the process, so the parent-death contract below holds without the
-separate flag.
+`op-error` event. Neither ends the process. Failed replies retain a readable
+`error` and add a stable `errorCode`. Failures with useful protocol values also
+carry `errorDetails`. Supervisors may cancel an active request by sending a
+`cancel` operation with its `targetId`. Cancellation wins a concurrent
+completion once accepted, but device-side work may continue when its protocol
+does not observe Swift task cancellation. The `ready` event lists the accepted
+operations in a `capabilities` field so supervisors know what they can route
+through the pipe. In serving mode, end-of-file on standard input still stops
+the process, so the parent-death contract below holds without the separate
+flag.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard

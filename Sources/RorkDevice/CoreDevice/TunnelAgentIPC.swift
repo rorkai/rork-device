@@ -17,6 +17,10 @@ public enum TunnelAgentIPC {
         /// Operation name used to select a handler.
         public let operation: String
 
+        /// Protocol version requested by the supervisor, or nil for legacy
+        /// clients that use version one implicitly.
+        public let protocolVersion: Int?
+
         /// The complete request line, retained so handlers can decode
         /// operation-specific fields with their own `Decodable` types
         /// through ``parameters()``.
@@ -64,6 +68,7 @@ public enum TunnelAgentIPC {
     private struct RequestEnvelope: Decodable {
         let id: String
         let op: String
+        let protocolVersion: Int?
     }
 
     /// Salvages a correlation id from a line that failed envelope decoding.
@@ -74,7 +79,17 @@ public enum TunnelAgentIPC {
     /// The payload for the `capabilities` operation.
     private struct CapabilitiesPayload: Encodable {
         let capabilities: [String]
+        let protocolVersion = TunnelAgentProtocol.currentVersion
+        let supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
+        let agentVersion = RorkDevice.version
     }
+
+    /// Operations implemented by the protocol layer rather than a device handler.
+    public static let builtInOperationNames = [
+        "ping",
+        "capabilities",
+        "cancel",
+    ]
 
     /// Decodes one input line into a request or a correlatable failure.
     public static func decodeRequest(from line: String) -> DecodeOutcome {
@@ -83,7 +98,12 @@ public enum TunnelAgentIPC {
         if let envelope = try? decoder.decode(RequestEnvelope.self, from: data),
            !envelope.id.isEmpty, !envelope.op.isEmpty {
             return .request(
-                Request(id: envelope.id, operation: envelope.op, line: data)
+                Request(
+                    id: envelope.id,
+                    operation: envelope.op,
+                    protocolVersion: envelope.protocolVersion,
+                    line: data
+                )
             )
         }
         guard let probe = try? decoder.decode(RequestIdProbe.self, from: data) else {
@@ -118,21 +138,28 @@ public enum TunnelAgentIPC {
         send: @escaping @Sendable (Data) -> Void
     ) async {
         let writer = ReplyWriter(send: send)
-        await withTaskGroup(of: Void.self) { group in
-            var pending = Data()
-            for await chunk in chunks(of: input) {
-                pending.append(chunk)
-                while let newline = pending.firstIndex(of: 0x0a) {
-                    let lineData = pending.prefix(upTo: newline)
-                    pending.removeSubrange(...newline)
-                    guard let line = String(data: lineData, encoding: .utf8),
-                          !line.trimmingCharacters(in: .whitespaces).isEmpty else {
-                        continue
-                    }
-                    dispatch(line: line, handlers: handlers, writer: writer, group: &group)
+        let inFlightRequests = InFlightRequestRegistry(writer: writer)
+        var pending = Data()
+        for await chunk in chunks(of: input) {
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0a) {
+                let lineData = pending.prefix(upTo: newline)
+                pending.removeSubrange(...newline)
+                guard let line = String(data: lineData, encoding: .utf8),
+                      !line.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    continue
                 }
+                await dispatch(
+                    line: line,
+                    handlers: handlers,
+                    writer: writer,
+                    inFlightRequests: inFlightRequests
+                )
             }
-            group.cancelAll()
+        }
+        let cancelledTasks = await inFlightRequests.cancelAll()
+        for task in cancelledTasks {
+            await task.value
         }
     }
 
@@ -141,43 +168,136 @@ public enum TunnelAgentIPC {
         line: String,
         handlers: [String: Handler],
         writer: ReplyWriter,
-        group: inout TaskGroup<Void>
-    ) {
+        inFlightRequests: InFlightRequestRegistry
+    ) async {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
-            writer.write(Reply(event: "op-error", id: id, ok: nil, error: reason, payload: nil))
+            writer.write(
+                Reply.failure(
+                    event: "op-error",
+                    id: id,
+                    failure: TunnelAgentFailure(
+                        code: .malformedRequest,
+                        message: reason
+                    )
+                )
+            )
         case .request(let request):
-            guard let handler = handlers[request.operation] else {
+            if await inFlightRequests.contains(request.id) {
                 writer.write(
-                    Reply(
-                        event: "op-result",
+                    Reply.failure(
                         id: request.id,
-                        ok: false,
-                        error: "Unknown operation \(request.operation).",
-                        payload: nil
+                        failure: duplicateRequestFailure(id: request.id)
                     )
                 )
                 return
             }
-            group.addTask {
+            if let version = request.protocolVersion,
+               !TunnelAgentProtocol.supportedVersions.contains(version) {
+                writer.write(
+                    Reply.failure(
+                        id: request.id,
+                        failure: TunnelAgentFailure(
+                            code: .unsupportedProtocolVersion,
+                            message: "Unsupported tunnel agent protocol version \(version).",
+                            details: TunnelAgentErrorDetails(
+                                requestedVersion: version,
+                                supportedVersions: TunnelAgentProtocol.supportedVersions
+                            )
+                        )
+                    )
+                )
+                return
+            }
+            if request.operation == "cancel" {
+                await cancel(
+                    request: request,
+                    inFlightRequests: inFlightRequests,
+                    writer: writer
+                )
+                return
+            }
+            guard let handler = handlers[request.operation] else {
+                writer.write(
+                    Reply.failure(
+                        id: request.id,
+                        failure: TunnelAgentFailure(
+                            code: .unknownOperation,
+                            message: "Unknown operation \(request.operation).",
+                            details: TunnelAgentErrorDetails(
+                                operation: request.operation
+                            )
+                        )
+                    )
+                )
+                return
+            }
+
+            let started = await inFlightRequests.start(id: request.id) {
                 do {
                     let payload = try await handler(request)
-                    writer.write(
-                        Reply(event: "op-result", id: request.id, ok: true, error: nil, payload: payload)
-                    )
+                    return Reply.success(id: request.id, payload: payload)
                 } catch {
-                    writer.write(
-                        Reply(
-                            event: "op-result",
-                            id: request.id,
-                            ok: false,
-                            error: String(describing: error),
-                            payload: nil
-                        )
+                    return Reply.failure(
+                        id: request.id,
+                        failure: TunnelAgentFailure.normalize(error)
                     )
                 }
             }
+            if !started {
+                writer.write(
+                    Reply.failure(
+                        id: request.id,
+                        failure: duplicateRequestFailure(id: request.id)
+                    )
+                )
+            }
         }
+    }
+
+    /// Cancels one request selected by its supervisor-chosen identifier.
+    private static func cancel(
+        request: Request,
+        inFlightRequests: InFlightRequestRegistry,
+        writer: ReplyWriter
+    ) async {
+        let parameters: CancelParameters
+        do {
+            parameters = try request.parameters()
+        } catch {
+            writer.write(
+                Reply.failure(
+                    id: request.id,
+                    failure: TunnelAgentFailure.normalize(error)
+                )
+            )
+            return
+        }
+
+        guard await inFlightRequests.cancel(parameters.targetId) else {
+            writer.write(
+                Reply.failure(
+                    id: request.id,
+                    failure: TunnelAgentFailure(
+                        code: .cancellationTargetNotFound,
+                        message: "No in-flight request has id \(parameters.targetId).",
+                        details: TunnelAgentErrorDetails(
+                            targetID: parameters.targetId
+                        )
+                    )
+                )
+            )
+            return
+        }
+        writer.write(Reply.success(id: request.id, payload: nil))
+    }
+
+    /// Describes a request id that is already owned by an active operation.
+    private static func duplicateRequestFailure(id: String) -> TunnelAgentFailure {
+        TunnelAgentFailure(
+            code: .duplicateRequestID,
+            message: "Request id \(id) is already in flight."
+        )
     }
 
     /// Streams the file handle's bytes as they arrive, ending at end-of-file.
@@ -197,6 +317,11 @@ public enum TunnelAgentIPC {
             }
         }
     }
+
+    /// Parameters accepted by the protocol-level cancel operation.
+    private struct CancelParameters: Decodable {
+        let targetId: String
+    }
 }
 
 /// One reply line, carrying the shared envelope and the operation payload.
@@ -206,7 +331,7 @@ public enum TunnelAgentIPC {
 /// The type stays private because it describes the wire format the dispatcher
 /// owns. Handlers hand back payloads and supervisors read JSON, so no caller
 /// has a reason to construct or inspect a `Reply` directly.
-private struct Reply: Encodable {
+private struct Reply: Encodable, Sendable {
     /// Reply kind, `op-result` for handled requests and `op-error` for lines
     /// that could not be dispatched.
     let event: String
@@ -220,6 +345,12 @@ private struct Reply: Encodable {
     /// Human-readable failure description, absent on success.
     let error: String?
 
+    /// Stable machine-readable failure identifier, absent on success.
+    let errorCode: TunnelAgentProtocol.ErrorCode?
+
+    /// Structured context for failures whose code needs additional values.
+    let errorDetails: TunnelAgentErrorDetails?
+
     /// Operation-specific fields flattened into the reply, or nil when the
     /// envelope says everything.
     let payload: (any Encodable & Sendable)?
@@ -231,6 +362,41 @@ private struct Reply: Encodable {
         case id
         case ok
         case error
+        case errorCode
+        case errorDetails
+    }
+
+    /// Creates a successful handled-operation reply.
+    static func success(
+        id: String,
+        payload: (any Encodable & Sendable)?
+    ) -> Reply {
+        Reply(
+            event: "op-result",
+            id: id,
+            ok: true,
+            error: nil,
+            errorCode: nil,
+            errorDetails: nil,
+            payload: payload
+        )
+    }
+
+    /// Creates an unsuccessful reply while preserving the legacy error text.
+    static func failure(
+        event: String = "op-result",
+        id: String?,
+        failure: TunnelAgentFailure
+    ) -> Reply {
+        Reply(
+            event: event,
+            id: id,
+            ok: event == "op-result" ? false : nil,
+            error: failure.message,
+            errorCode: failure.code,
+            errorDetails: failure.details,
+            payload: nil
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -239,6 +405,8 @@ private struct Reply: Encodable {
         try container.encodeIfPresent(id, forKey: .id)
         try container.encodeIfPresent(ok, forKey: .ok)
         try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(errorCode, forKey: .errorCode)
+        try container.encodeIfPresent(errorDetails, forKey: .errorDetails)
         try payload?.encode(to: encoder)
     }
 }
@@ -266,6 +434,95 @@ private final class ReplyWriter: @unchecked Sendable {
         }
         lock.withLock {
             send(data)
+        }
+    }
+}
+
+/// Owns cancellable request tasks and arbitrates their terminal replies.
+private actor InFlightRequestRegistry {
+    /// One task and whether a supervisor cancellation won its completion race.
+    private struct Entry {
+        let task: Task<Void, Never>
+        var cancellationRequested: Bool
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let writer: ReplyWriter
+
+    init(writer: ReplyWriter) {
+        self.writer = writer
+    }
+
+    /// Returns whether an active request already owns this identifier.
+    func contains(_ id: String) -> Bool {
+        entries[id] != nil
+    }
+
+    /// Starts one request after atomically reserving its identifier.
+    func start(
+        id: String,
+        operation: @escaping @Sendable () async -> Reply
+    ) -> Bool {
+        guard entries[id] == nil else {
+            return false
+        }
+        let task = Task { [weak self] in
+            let reply = await operation()
+            await self?.finish(id: id, proposedReply: reply)
+        }
+        entries[id] = Entry(
+            task: task,
+            cancellationRequested: false
+        )
+        return true
+    }
+
+    /// Requests cancellation and returns false when the target already ended.
+    func cancel(_ id: String) -> Bool {
+        guard var entry = entries[id] else {
+            return false
+        }
+        entry.cancellationRequested = true
+        entries[id] = entry
+        entry.task.cancel()
+        return true
+    }
+
+    /// Cancels every remaining task and returns them for orderly joining.
+    func cancelAll() -> [Task<Void, Never>] {
+        var tasks: [Task<Void, Never>] = []
+        for id in Array(entries.keys) {
+            guard var entry = entries[id] else {
+                continue
+            }
+            entry.cancellationRequested = true
+            entries[id] = entry
+            entry.task.cancel()
+            tasks.append(entry.task)
+        }
+        return tasks
+    }
+
+    /// Emits one terminal reply, giving a requested cancellation precedence.
+    private func finish(
+        id: String,
+        proposedReply: Reply
+    ) {
+        guard let entry = entries.removeValue(forKey: id) else {
+            return
+        }
+        if entry.cancellationRequested {
+            writer.write(
+                Reply.failure(
+                    id: id,
+                    failure: TunnelAgentFailure(
+                        code: .cancelled,
+                        message: "The request was cancelled."
+                    )
+                )
+            )
+        } else {
+            writer.write(proposedReply)
         }
     }
 }

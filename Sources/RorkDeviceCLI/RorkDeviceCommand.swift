@@ -1365,7 +1365,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
     }
 
     /// Operations the serving loop answers, device-backed ones included.
-    static let serveCapabilities = ["ping", "capabilities"] + TunnelAgentOperations.names
+    static let serveCapabilities =
+        TunnelAgentIPC.builtInOperationNames + TunnelAgentOperations.names
 
     /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
     ///
@@ -1796,6 +1797,44 @@ struct TunnelReadyEvent: Encodable {
     /// outside serving mode. Supervisors route an operation through the pipe
     /// only when it is listed here.
     let capabilities: [String]?
+
+    /// Negotiated agent protocol version, or nil outside serving mode.
+    let protocolVersion: Int?
+
+    /// Protocol versions the serving agent can negotiate.
+    let supportedProtocolVersions: [Int]?
+
+    /// Native agent version paired with this protocol advertisement.
+    let agentVersion: String?
+
+    init(
+        address: String,
+        rsdPort: UInt16,
+        udid: String,
+        userspaceTunHost: String,
+        userspaceTunPort: UInt16,
+        identityPath: String,
+        mtu: UInt16,
+        capabilities: [String]?
+    ) {
+        self.address = address
+        self.rsdPort = rsdPort
+        self.udid = udid
+        self.userspaceTunHost = userspaceTunHost
+        self.userspaceTunPort = userspaceTunPort
+        self.identityPath = identityPath
+        self.mtu = mtu
+        self.capabilities = capabilities
+        if capabilities == nil {
+            protocolVersion = nil
+            supportedProtocolVersions = nil
+            agentVersion = nil
+        } else {
+            protocolVersion = TunnelAgentProtocol.currentVersion
+            supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
+            agentVersion = RorkDevice.version
+        }
+    }
 }
 
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
