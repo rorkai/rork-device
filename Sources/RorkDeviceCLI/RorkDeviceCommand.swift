@@ -1781,47 +1781,48 @@ func tunnelStatisticsLine(
         + "ip6Drops=\(statistics.ip6Drops)."
 }
 
-/// Machine-readable event emitted once a tunnel can accept local clients.
+/// This machine-readable event is emitted when a tunnel accepts local clients.
 struct TunnelReadyEvent: Encodable {
-    /// Event discriminator consumed by supervising processes.
+    /// Supervising processes consume this event discriminator.
     let event = "ready"
 
-    /// Device-side IPv6 address reached through the tunnel.
+    /// The tunnel reaches this device-side IPv6 address.
     let address: String
 
-    /// Remote Service Discovery port exposed by the device.
+    /// The device exposes this Remote Service Discovery port.
     let rsdPort: UInt16
 
-    /// Device identifier associated with this tunnel cycle.
+    /// This device identifier belongs to the current tunnel cycle.
     let udid: String
 
-    /// Whether packet forwarding uses the in-process network stack.
+    /// This value reports whether forwarding uses the in-process network stack.
     let userspaceTun = true
 
-    /// Host address where the packet bridge accepts local clients.
+    /// The packet bridge accepts local clients at this host address.
     let userspaceTunHost: String
 
-    /// Host port where the packet bridge accepts local clients.
+    /// The packet bridge accepts local clients on this host port.
     let userspaceTunPort: UInt16
 
-    /// Pairing identity used to establish the tunnel.
+    /// The tunnel was established with the pairing identity at this path.
     let identityPath: String
 
-    /// Maximum packet size accepted by the negotiated tunnel.
+    /// The negotiated tunnel accepts this maximum packet size.
     let mtu: UInt16
 
-    /// Operations the agent's serving loop accepts on standard input, or nil
-    /// outside serving mode. Supervisors route an operation through the pipe
-    /// only when it is listed here.
+    /// The serving loop accepts these operations on standard input.
+    ///
+    /// This value stays nil outside serving mode. Supervisors route an operation
+    /// through the pipe only when it is listed here.
     let capabilities: [String]?
 
-    /// Current agent protocol version, or nil outside serving mode.
+    /// This current agent protocol version stays nil outside serving mode.
     let protocolVersion: Int?
 
-    /// Protocol versions accepted by the serving agent.
+    /// The serving agent accepts these protocol versions.
     let supportedProtocolVersions: [Int]?
 
-    /// Native agent version paired with this protocol advertisement.
+    /// This native agent version is paired with the protocol advertisement.
     let agentVersion: String?
 
     /// Creates a ready event and includes protocol metadata in serving mode.
@@ -1830,14 +1831,14 @@ struct TunnelReadyEvent: Encodable {
     /// supervisors receive the same non-serving event shape.
     ///
     /// - Parameters:
-    ///   - address: Device-side IPv6 address reached through the tunnel.
-    ///   - rsdPort: Remote Service Discovery port exposed by the device.
-    ///   - udid: Device identifier associated with this tunnel cycle.
-    ///   - userspaceTunHost: Host address for the local packet bridge.
-    ///   - userspaceTunPort: Host port for the local packet bridge.
-    ///   - identityPath: Pairing identity used to establish the tunnel.
-    ///   - mtu: Maximum packet size accepted by the tunnel.
-    ///   - capabilities: Operations accepted on standard input in serving mode.
+    ///   - address: The tunnel reaches this device-side IPv6 address.
+    ///   - rsdPort: The device exposes this Remote Service Discovery port.
+    ///   - udid: This device identifier belongs to the tunnel cycle.
+    ///   - userspaceTunHost: The local packet bridge uses this host address.
+    ///   - userspaceTunPort: The local packet bridge uses this host port.
+    ///   - identityPath: The pairing identity is stored at this path.
+    ///   - mtu: The tunnel accepts this maximum packet size.
+    ///   - capabilities: Serving mode accepts these standard-input operations.
     init(
         address: String,
         rsdPort: UInt16,

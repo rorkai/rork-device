@@ -3,7 +3,7 @@ import XCTest
 
 @testable import RorkDevice
 
-/// Decoding of one stdin request line into a dispatchable request.
+/// These tests decode one standard-input line into a dispatchable request.
 final class TunnelAgentRequestDecodingTests: XCTestCase {
     func testDecodesIdOperationAndRetainsTheRawBody() throws {
         let line = #"{"id":"7","op":"apps-list","type":"all"}"#
@@ -92,7 +92,7 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
     }
 }
 
-/// Stable mappings from Swift failures to the tunnel agent's wire codes.
+/// These tests preserve stable mappings from Swift failures to wire codes.
 final class TunnelAgentFailureTests: XCTestCase {
     func testProtocolV1ErrorCodesRemainStable() {
         let cases: [(TunnelAgentProtocol.ErrorCode, String)] = [
@@ -798,7 +798,7 @@ private final class ReplyRecorder: @unchecked Sendable {
     /// Protects the recorded lines while handler tasks write concurrently.
     private let lock = NSLock()
 
-    /// Complete encoded reply lines in observed write order.
+    /// This array retains complete encoded replies in observed write order.
     private var lines: [Data] = []
 
     /// Records one complete reply line from the serving loop.
@@ -868,10 +868,10 @@ private final class ReplyRecorder: @unchecked Sendable {
 
 /// Suspends a handler without observing task cancellation.
 private actor TunnelAgentTestGate {
-    /// Whether later waiters may pass without suspension.
+    /// This value records whether later waiters may pass without suspension.
     private var isOpen = false
 
-    /// Suspended handlers released together when the gate opens.
+    /// These suspended handlers are released together when the gate opens.
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     /// Suspends until the test opens the gate.
