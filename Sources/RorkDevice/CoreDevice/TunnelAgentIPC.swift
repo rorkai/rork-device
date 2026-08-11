@@ -9,19 +9,18 @@ import Foundation
 /// caller shuts the agent down. Handlers own what each operation means.
 /// This type owns framing, dispatch, and reply ordering.
 public enum TunnelAgentIPC {
-    /// One decoded request line, ready for dispatch.
+    /// This value contains one decoded request line ready for dispatch.
     public struct Request: Equatable, Sendable {
-        /// Supervisor-chosen correlation value repeated in every reply.
+        /// The supervisor chooses this value for correlation with every reply.
         public let id: String
 
-        /// Operation name used to select a handler.
+        /// This operation name selects a handler.
         public let operation: String
 
-        /// Protocol version requested by the supervisor, or nil for legacy
-        /// clients that use version one implicitly.
+        /// The supervisor requests this version, or omits it to imply version one.
         public let protocolVersion: Int?
 
-        /// The complete request line, retained so handlers can decode
+        /// This complete request line is retained so handlers can decode
         /// operation-specific fields with their own `Decodable` types
         /// through ``parameters()``.
         public let line: Data
@@ -49,7 +48,7 @@ public enum TunnelAgentIPC {
         }
     }
 
-    /// The result of decoding one input line.
+    /// This value describes the result of decoding one input line.
     public enum DecodeOutcome: Equatable, Sendable {
         /// The line carried a dispatchable request.
         case request(Request)
@@ -68,43 +67,43 @@ public enum TunnelAgentIPC {
     /// error code, and structured details when the failure carries them.
     public typealias Handler = @Sendable (Request) async throws -> (any Encodable & Sendable)?
 
-    /// The wire shape of a request envelope.
+    /// This private value models the wire shape of a request envelope.
     private struct RequestEnvelope: Decodable {
-        /// Supervisor-chosen value used to correlate the reply.
+        /// The supervisor chooses this value to correlate the reply.
         let id: String
 
-        /// Wire operation name selected by the supervisor.
+        /// The supervisor selects this wire operation name.
         let op: String
 
-        /// Explicit protocol version, or nil for an implicit version-one request.
+        /// This is explicit, or nil when the request implies version one.
         let protocolVersion: Int?
     }
 
-    /// Salvages a correlation id from a line that failed envelope decoding.
-    private struct RequestIdProbe: Decodable {
-        /// Correlation value retained when the rest of the envelope is invalid.
+    /// This probe salvages an id from a line that failed envelope decoding.
+    private struct RequestIDProbe: Decodable {
+        /// This value survives when the rest of the envelope is invalid.
         let id: String?
     }
 
-    /// The payload for the `capabilities` operation.
+    /// This payload describes the `capabilities` operation.
     private struct CapabilitiesPayload: Encodable {
-        /// Operation names accepted by this serving agent.
+        /// This serving agent accepts these operation names.
         let capabilities: [String]
 
-        /// Current protocol version advertised by the agent.
+        /// The agent advertises this current protocol version.
         let protocolVersion = TunnelAgentProtocol.currentVersion
 
-        /// Protocol versions accepted in request envelopes.
+        /// The agent accepts these versions in request envelopes.
         let supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
 
-        /// Native agent version that implements the advertised contract.
+        /// This native agent version implements the advertised contract.
         let agentVersion = RorkDevice.version
     }
 
-    /// Built-ins dispatched by the serving loop because they need request state.
+    /// The serving loop dispatches these built-ins because they need request state.
     static let statefulBuiltInOperationNames = ["cancel"]
 
-    /// Operations implemented by the protocol layer rather than a device handler.
+    /// The protocol layer implements these operations instead of device handlers.
     public static let builtInOperationNames = [
         "ping",
         "capabilities",
@@ -125,7 +124,7 @@ public enum TunnelAgentIPC {
                 )
             )
         }
-        guard let probe = try? decoder.decode(RequestIdProbe.self, from: data) else {
+        guard let probe = try? decoder.decode(RequestIDProbe.self, from: data) else {
             return .malformed(reason: "The request line is not a JSON object.", id: nil)
         }
         guard let id = probe.id, !id.isEmpty else {
@@ -373,19 +372,19 @@ public enum TunnelAgentIPC {
         }
     }
 
-    /// Parameters accepted by the protocol-level cancel operation.
+    /// This value contains parameters for the protocol-level cancel operation.
     private struct CancelParameters: Decodable {
-        /// Request identifier whose operation should observe cancellation.
+        /// The operation with this request identifier should observe cancellation.
         let targetID: String
 
-        /// Preserves the protocol's lower-camel spelling on the wire.
+        /// These keys preserve the protocol's lower-camel spelling on the wire.
         private enum CodingKeys: String, CodingKey {
             case targetID = "targetId"
         }
     }
 }
 
-/// Reply kinds supported by the protocol envelope.
+/// This value defines reply kinds supported by the protocol envelope.
 private enum ReplyEvent: String, Sendable {
     /// A request reached a handler or protocol-level operation.
     case result = "op-result"
@@ -394,7 +393,7 @@ private enum ReplyEvent: String, Sendable {
     case error = "op-error"
 }
 
-/// One reply line, carrying the shared envelope and the operation payload.
+/// This value carries one shared reply envelope and operation payload.
 ///
 /// The payload encodes into the same keyed container as the envelope, so its
 /// fields appear at the top level of the reply object rather than nested.
@@ -402,26 +401,26 @@ private enum ReplyEvent: String, Sendable {
 /// owns. Handlers hand back payloads and supervisors read JSON, so no caller
 /// has a reason to construct or inspect a `Reply` directly.
 private struct Reply: Encodable, Sendable {
-    /// Reply kind, `op-result` for handled requests and `op-error` for lines
+    /// This kind is `op-result` for handled requests and `op-error` for lines
     /// that could not be dispatched.
     let event: ReplyEvent
 
-    /// The request's correlation id, absent when the line had none to salvage.
+    /// This id is absent when the input line had none to salvage.
     let id: String?
 
-    /// Whether the operation succeeded, absent on `op-error` lines.
+    /// This value reports success and stays absent on `op-error` lines.
     let ok: Bool?
 
-    /// Human-readable failure description, absent on success.
+    /// This human-readable failure description stays absent on success.
     let error: String?
 
-    /// Stable machine-readable failure identifier, absent on success.
+    /// This stable machine-readable failure identifier stays absent on success.
     let errorCode: TunnelAgentProtocol.ErrorCode?
 
-    /// Structured context for failures whose code needs additional values.
+    /// This structured context supplies values needed beyond the failure code.
     let errorDetails: TunnelAgentErrorDetails?
 
-    /// Operation-specific fields flattened into the reply, or nil when the
+    /// These operation-specific fields flatten into the reply, or stay nil when the
     /// envelope says everything. Payloads must not reuse the reserved keys
     /// `event`, `id`, `ok`, `error`, `errorCode`, or `errorDetails`.
     let payload: (any Encodable & Sendable)?
@@ -514,19 +513,19 @@ private final class ReplyWriter: @unchecked Sendable {
 
 /// Owns cancellable request tasks and arbitrates their terminal replies.
 private actor InFlightRequestRegistry {
-    /// One task and whether a supervisor cancellation won its completion race.
+    /// This value tracks one task and its cancellation race.
     private struct Entry {
-        /// Handler task, or nil during the atomic identifier reservation.
+        /// This task stays nil during the atomic identifier reservation.
         var task: Task<Void, Never>?
 
-        /// Whether a cancellation reply must take precedence at completion.
+        /// This value records whether cancellation takes precedence at completion.
         var cancellationRequested: Bool
     }
 
-    /// Active requests keyed by their supervisor-selected identifiers.
+    /// This dictionary keys active requests by supervisor-selected identifiers.
     private var entries: [String: Entry] = [:]
 
-    /// Serialized sink used when this actor chooses a terminal reply.
+    /// This serialized sink receives the terminal reply chosen by the actor.
     private let writer: ReplyWriter
 
     /// Creates a registry that emits terminal replies through one writer.

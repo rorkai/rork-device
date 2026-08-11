@@ -1,21 +1,21 @@
 import Foundation
 
-/// Stable metadata and error identifiers for the tunnel agent's NDJSON protocol.
+/// This namespace defines stable metadata and errors for the NDJSON protocol.
 public enum TunnelAgentProtocol {
-    /// Protocol version implemented by this agent.
+    /// This agent implements the current protocol version.
     public static let currentVersion = 1
 
-    /// Protocol versions accepted when a supervisor sends `protocolVersion`.
+    /// The agent accepts these versions in `protocolVersion`.
     public static let supportedVersions = [currentVersion]
 
-    /// Open failure identifier carried by unsuccessful agent replies.
+    /// Unsuccessful replies carry this extensible failure identifier.
     public struct ErrorCode:
         RawRepresentable,
         Hashable,
         Codable,
         Sendable
     {
-        /// Stable lower-snake-case value carried on the wire.
+        /// This stable lower-snake-case value is carried on the wire.
         public let rawValue: String
 
         /// Preserves known and future protocol error codes.
@@ -116,42 +116,42 @@ public enum TunnelAgentProtocol {
     }
 }
 
-/// Structured fields that accompany failures whose code alone loses context.
+/// These fields preserve context that a failure code alone cannot represent.
 struct TunnelAgentErrorDetails: Encodable, Sendable {
-    /// Protocol version rejected by the agent.
+    /// The agent rejected this protocol version.
     let requestedVersion: Int?
 
-    /// Protocol versions the supervisor may retry with.
+    /// The supervisor may retry with these protocol versions.
     let supportedProtocolVersions: [Int]?
 
-    /// Operation name that could not be dispatched.
+    /// This operation name could not be dispatched.
     let operation: String?
 
-    /// Active request the supervisor attempted to cancel.
+    /// The supervisor attempted to cancel this active request.
     let targetID: String?
 
-    /// RemoteXPC stream that reset before the operation completed.
+    /// This RemoteXPC stream reset before the operation completed.
     let streamIdentifier: UInt32?
 
-    /// HTTP/2 error code reported for a RemoteXPC stream reset.
+    /// RemoteXPC reported this HTTP/2 error code for the stream reset.
     let protocolErrorCode: UInt32?
 
-    /// AFC status returned by the device.
+    /// The device returned this AFC status.
     let afcStatus: UInt64?
 
-    /// MISAgent status returned by the device.
+    /// The device returned this MISAgent status.
     let misagentStatus: Int?
 
-    /// Stable reason that refines the top-level error code.
+    /// This stable reason refines the top-level error code.
     let reason: String?
 
-    /// Whether cancellation left the operation's side effects uncertain.
+    /// This value records whether cancellation left side effects uncertain.
     let operationMayHaveCompleted: Bool?
 
-    /// Failure reported by an operation after cancellation had already won.
+    /// The operation reported this failure after cancellation had already won.
     let operationErrorCode: TunnelAgentProtocol.ErrorCode?
 
-    /// Readable form of the failure reported after cancellation had won.
+    /// This text describes the failure reported after cancellation had won.
     let operationError: String?
 
     /// Keeps Swift acronym spelling while preserving the lower-camel wire key.
@@ -173,18 +173,18 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
     /// Creates structured details with only the context available for a failure.
     ///
     /// - Parameters:
-    ///   - requestedVersion: Protocol version rejected by the agent.
-    ///   - supportedProtocolVersions: Protocol versions accepted by the agent.
-    ///   - operation: Operation name that could not be dispatched.
-    ///   - targetID: Active request the supervisor attempted to cancel.
-    ///   - streamIdentifier: RemoteXPC stream that reset.
-    ///   - protocolErrorCode: HTTP/2 code reported for the stream reset.
-    ///   - afcStatus: AFC status returned by the device.
-    ///   - misagentStatus: MISAgent status returned by the device.
-    ///   - reason: Stable reason that refines the top-level error code.
-    ///   - operationMayHaveCompleted: Whether side effects remain uncertain.
-    ///   - operationErrorCode: Failure reported after cancellation had won.
-    ///   - operationError: Readable form of the concurrent operation failure.
+    ///   - requestedVersion: The agent rejected this protocol version.
+    ///   - supportedProtocolVersions: The agent accepts these protocol versions.
+    ///   - operation: This operation name could not be dispatched.
+    ///   - targetID: The supervisor attempted to cancel this active request.
+    ///   - streamIdentifier: This RemoteXPC stream reset.
+    ///   - protocolErrorCode: RemoteXPC reported this HTTP/2 error code.
+    ///   - afcStatus: The device returned this AFC status.
+    ///   - misagentStatus: The device returned this MISAgent status.
+    ///   - reason: This stable reason refines the top-level error code.
+    ///   - operationMayHaveCompleted: This records uncertain side effects.
+    ///   - operationErrorCode: The operation reported this concurrent failure.
+    ///   - operationError: This text describes the concurrent failure.
     init(
         requestedVersion: Int? = nil,
         supportedProtocolVersions: [Int]? = nil,
@@ -214,23 +214,23 @@ struct TunnelAgentErrorDetails: Encodable, Sendable {
     }
 }
 
-/// One normalized wire failure before it is encoded into a reply.
+/// This value represents one normalized failure before reply encoding.
 struct TunnelAgentFailure: Error, Sendable {
-    /// Stable identifier used by supervisors for control flow.
+    /// Supervisors use this stable identifier for control flow.
     let code: TunnelAgentProtocol.ErrorCode
 
-    /// Readable error text retained for operators and legacy supervisors.
+    /// Operators and legacy supervisors receive this readable error text.
     let message: String
 
-    /// Structured context needed to interpret the failure safely.
+    /// This structured context allows callers to interpret the failure safely.
     let details: TunnelAgentErrorDetails?
 
     /// Creates a failure that preserves both machine and human context.
     ///
     /// - Parameters:
-    ///   - code: Stable identifier used by supervisors for control flow.
-    ///   - message: Readable error text for operators and legacy supervisors.
-    ///   - details: Structured context needed to interpret the failure safely.
+    ///   - code: Supervisors use this stable identifier for control flow.
+    ///   - message: Operators and legacy supervisors receive this text.
+    ///   - details: This context allows callers to interpret the failure safely.
     init(
         code: TunnelAgentProtocol.ErrorCode,
         message: String,
