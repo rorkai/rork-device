@@ -161,7 +161,7 @@ final class AFCClientTests: XCTestCase {
         XCTAssertTrue(connection.sent[1].contains(Data("hello".utf8)))
     }
 
-    func testUploadFileMapsLocalReadFailureToFileSystemError() async throws {
+    func testUploadFileMapsLocalOpenFailureToFileSystemError() async throws {
         let missingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         var inbound = Data()
