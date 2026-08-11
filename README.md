@@ -407,11 +407,13 @@ Unknown operations answer with `"ok":false` and malformed lines answer with an
 carry `errorDetails`. Supervisors may cancel an active request by sending a
 `cancel` operation with its `targetId`. Cancellation wins a concurrent
 completion once accepted, but device-side work may continue when its protocol
-does not observe Swift task cancellation. The `ready` event lists the accepted
-operations in a `capabilities` field so supervisors know what they can route
-through the pipe. In serving mode, end-of-file on standard input still stops
-the process, so the parent-death contract below holds without the separate
-flag.
+does not observe Swift task cancellation. Cancelled replies therefore set
+`errorDetails.operationMayHaveCompleted` to `true`, so callers can reconcile
+operations with side effects. The `ready` event lists the accepted operations
+in a `capabilities` field so supervisors know what they can route through the
+pipe. In serving mode, end-of-file on standard input cancels active requests
+and waits at most five seconds before returning, so the parent-death contract
+below holds without the separate flag.
 
 Supervisors that spawn the tunnel as a child process should also pass
 `--exit-when-stdin-closes` and keep a pipe attached to the agent's standard

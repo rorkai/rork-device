@@ -386,6 +386,13 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let cancelled = try await replies.waitForReply(id: "slow")
         XCTAssertEqual(cancelled["ok"] as? Bool, false)
         XCTAssertEqual(cancelled["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            cancelled["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
         try stdin.fileHandleForWriting.close()
         await serving.value
         XCTAssertEqual(replies.replies(id: "slow").count, 1)
@@ -530,6 +537,43 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let reply = try await replies.waitForReply(id: "slow")
         XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
     }
+
+    func testEndOfFileBoundsNoncooperativeRequestShutdown() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "blocked": { _ in
+                await gate.wait()
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record,
+                shutdownGracePeriod: .milliseconds(20)
+            )
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"blocked","op":"blocked"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.close()
+
+        await serving.value
+        let reply = try await replies.waitForReply(id: "blocked")
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+        await gate.open()
+    }
 }
 
 /// Collects NDJSON reply lines and answers queries about them.
@@ -589,5 +633,29 @@ private final class ReplyRecorder: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(5))
         }
         throw RorkDeviceError.transport("No \(event) event.")
+    }
+}
+
+/// Suspends a handler without observing task cancellation.
+private actor TunnelAgentTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }
