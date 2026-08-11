@@ -84,12 +84,14 @@ public enum TunnelAgentIPC {
         let agentVersion = RorkDevice.version
     }
 
+    /// Built-ins whose dispatch needs serving-loop state.
+    static let statefulBuiltInOperationNames = ["cancel"]
+
     /// Operations implemented by the protocol layer rather than a device handler.
     public static let builtInOperationNames = [
         "ping",
         "capabilities",
-        "cancel",
-    ]
+    ] + statefulBuiltInOperationNames
 
     /// Decodes one input line into a request or a correlatable failure.
     public static func decodeRequest(from line: String) -> DecodeOutcome {
@@ -200,6 +202,8 @@ public enum TunnelAgentIPC {
                 )
             )
         case .request(let request):
+            // Duplicate detection precedes operation validation so an invalid
+            // second request cannot reuse an active request's correlation id.
             if await inFlightRequests.contains(request.id) {
                 writer.write(
                     Reply.failure(
@@ -227,7 +231,7 @@ public enum TunnelAgentIPC {
                 )
                 return
             }
-            if request.operation == "cancel" {
+            if statefulBuiltInOperationNames.contains(request.operation) {
                 let started = await inFlightRequests.start(id: request.id) {
                     await cancellationReply(
                         request: request,

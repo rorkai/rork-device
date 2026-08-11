@@ -125,7 +125,7 @@ final class TunnelAgentFailureTests: XCTestCase {
     func testEveryAdvertisedBuiltInOperationIsServed() {
         let handled = Set(
             TunnelAgentIPC.builtInHandlers(capabilities: []).keys
-        ).union(["cancel"])
+        ).union(TunnelAgentIPC.statefulBuiltInOperationNames)
 
         XCTAssertEqual(
             Set(TunnelAgentIPC.builtInOperationNames),
@@ -200,6 +200,10 @@ final class TunnelAgentFailureTests: XCTestCase {
         let cancellation = TunnelAgentFailure.normalize(CancellationError())
         XCTAssertEqual(cancellation.code, .cancelled)
         XCTAssertEqual(cancellation.message, "The request was cancelled.")
+        XCTAssertEqual(
+            cancellation.details?.operationMayHaveCompleted,
+            false
+        )
     }
 }
 
