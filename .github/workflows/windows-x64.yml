@@ -20,6 +20,9 @@ env:
   SWIFT_VERSION: 6.3.3
   SWIFT_INSTALLER_URL: https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe
   SWIFT_INSTALLER_SHA256: 235626548F249CD516D3D4D90EEE980DCCAD46F3822DAC1F8E3119B0FEDE94B7
+  SWIFT_SNAPSHOT_VERSION: 6.4-DEVELOPMENT-SNAPSHOT-2026-08-01-a
+  SWIFT_SNAPSHOT_INSTALLER_URL: https://download.swift.org/swift-6.4.x-branch/windows10/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-01-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-01-a-windows10.exe
+  SWIFT_SNAPSHOT_INSTALLER_SHA256: C287DD533A65A73D657B1B9F2305BE50552F89B46199A0F6162A287DEE547149
 
 jobs:
   test-windows:
@@ -193,6 +196,102 @@ jobs:
             ".github\scripts\test-windows-static-runtime.ps1") `
             -Binary $binary `
             -WorkingDirectory $env:RUNNER_TEMP
+
+  test-snapshot-static-runtime:
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install snapshot Swift toolchain and SDK
+        uses: ./.github/actions/setup-swift-windows
+        with:
+          version: ${{ env.SWIFT_SNAPSHOT_VERSION }}
+          installer-url: ${{ env.SWIFT_SNAPSHOT_INSTALLER_URL }}
+          installer-sha256: ${{ env.SWIFT_SNAPSHOT_INSTALLER_SHA256 }}
+          require-static-sdk: "true"
+
+      - name: Build and probe snapshot static runtime
+        run: |
+          $ErrorActionPreference = "Stop"
+          $compatibilityLibraries = Join-Path `
+            $env:RUNNER_TEMP `
+            "swift-static-link-compatibility"
+          New-Item `
+            -ItemType Directory `
+            -Path $compatibilityLibraries `
+            -Force |
+            Out-Null
+          Copy-Item `
+            (Join-Path $env:SWIFT_STATIC_RESOURCE_ROOT "libcurl.lib") `
+            (Join-Path $compatibilityLibraries "curl.lib")
+
+          $runtimeProbe = Join-Path `
+            $env:RUNNER_TEMP `
+            "windows-snapshot-static-runtime-probe.exe"
+          & swiftc `
+            -sdk $env:SWIFT_STATIC_SDK_ROOT `
+            -static-stdlib `
+            -Xcc -Ddispatch_STATIC `
+            -Xcc -static-libclosure `
+            -parse-as-library `
+            "Tests\WindowsStaticRuntimeProbe\main.swift" `
+            -o $runtimeProbe
+          $runtimeProbePassed = $LASTEXITCODE -eq 0
+          if ($runtimeProbePassed) {
+            & $runtimeProbe
+            $runtimeProbePassed = $LASTEXITCODE -eq 0
+          }
+
+          $staticArguments = @(
+            "--disable-automatic-resolution",
+            "--triple", "x86_64-unknown-windows-msvc",
+            "--configuration", "release",
+            "-Xswiftc", "-sdk",
+            "-Xswiftc", $env:SWIFT_STATIC_SDK_ROOT,
+            "-Xswiftc", "-static-stdlib",
+            "-Xswiftc", "-Xcc",
+            "-Xswiftc", "-Ddispatch_STATIC",
+            "-Xswiftc", "-Xcc",
+            "-Xswiftc", "-static-libclosure",
+            "-Xlinker", "/LIBPATH:$compatibilityLibraries",
+            "-Xlinker", "zlibstatic.lib",
+            "-Xlinker", "brotlidec.lib",
+            "-Xlinker", "brotlicommon.lib"
+          )
+          & swift build @staticArguments --product rorkdevice
+          if ($LASTEXITCODE -ne 0) {
+            throw "The snapshot static executable did not build."
+          }
+          $binaryDirectory = (
+            & swift build @staticArguments --show-bin-path
+          ).Trim()
+          $binary = Join-Path $binaryDirectory "rorkdevice.exe"
+
+          $packageProbePassed = $true
+          try {
+            & (Join-Path `
+              $env:GITHUB_WORKSPACE `
+              ".github\scripts\test-windows-static-runtime.ps1") `
+              -Binary $binary `
+              -WorkingDirectory $env:RUNNER_TEMP
+          } catch {
+            Write-Warning $_
+            $packageProbePassed = $false
+          }
+
+          if (-not $runtimeProbePassed) {
+            throw "The snapshot static delayed-task runtime probe failed."
+          }
+          if (-not $packageProbePassed) {
+            throw "The snapshot static reconnect probe failed."
+          }
 
   build-static-package:
     runs-on: blacksmith-4vcpu-windows-2025
