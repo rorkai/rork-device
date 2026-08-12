@@ -1,3 +1,5 @@
+import Dispatch
+
 /// Exercises delayed-task entry points that ordinary help commands never reach.
 @main
 struct WindowsStaticRuntimeProbe {
