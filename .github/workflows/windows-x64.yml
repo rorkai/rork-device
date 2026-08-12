@@ -48,6 +48,47 @@ jobs:
             throw "The complete Windows test suite failed."
           }
 
+  test-static-runtime-probe:
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Swift toolchain and SDK
+        uses: ./.github/actions/setup-swift-windows
+        with:
+          version: ${{ env.SWIFT_VERSION }}
+          installer-url: ${{ env.SWIFT_INSTALLER_URL }}
+          installer-sha256: ${{ env.SWIFT_INSTALLER_SHA256 }}
+          require-static-sdk: "true"
+
+      - name: Run static delayed-task runtime probe
+        run: |
+          $runtimeProbe = Join-Path `
+            $env:RUNNER_TEMP `
+            "windows-static-runtime-probe.exe"
+          & swiftc `
+            -sdk $env:SWIFT_STATIC_SDK_ROOT `
+            -static-stdlib `
+            -Xcc -Ddispatch_STATIC `
+            -Xcc -static-libclosure `
+            -parse-as-library `
+            "Tests\WindowsStaticRuntimeProbe\main.swift" `
+            -o $runtimeProbe
+          if ($LASTEXITCODE -ne 0) {
+            throw "The static delayed-task runtime probe did not build."
+          }
+          & $runtimeProbe
+          if ($LASTEXITCODE -ne 0) {
+            throw "The static delayed-task runtime probe failed."
+          }
+
   build-static-package:
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 60
@@ -153,24 +194,6 @@ jobs:
             throw "The tunnel command could not start."
           }
 
-          $runtimeProbe = Join-Path `
-            $env:RUNNER_TEMP `
-            "windows-static-runtime-probe.exe"
-          & swiftc `
-            -sdk $env:SWIFT_STATIC_SDK_ROOT `
-            -static-stdlib `
-            -Xcc -Ddispatch_STATIC `
-            -Xcc -static-libclosure `
-            -parse-as-library `
-            "Tests\WindowsStaticRuntimeProbe\main.swift" `
-            -o $runtimeProbe
-          if ($LASTEXITCODE -ne 0) {
-            throw "The static delayed-task runtime probe did not build."
-          }
-          & $runtimeProbe
-          if ($LASTEXITCODE -ne 0) {
-            throw "The static delayed-task runtime probe failed."
-          }
           Add-Content `
             -Path $env:GITHUB_ENV `
             -Value "RORKDEVICE_RELEASE=$binary"
@@ -310,11 +333,6 @@ jobs:
           Copy-Item "THIRD_PARTY_NOTICES.md" $package
           Copy-Item "ThirdPartyLicenses" $package -Recurse
 
-          $strip = Get-Command llvm-strip.exe -ErrorAction Stop
-          & $strip.Source --strip-all $packagedExecutable
-          if ($LASTEXITCODE -ne 0) {
-            throw "The packaged executable could not be stripped."
-          }
           $packagedLibraries = Get-ChildItem `
             -Path $package `
             -Filter "*.dll" `
@@ -399,6 +417,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - test-windows
+      - test-static-runtime-probe
       - build-static-package
     runs-on: blacksmith-4vcpu-windows-2025
     permissions:
