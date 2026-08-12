@@ -89,6 +89,111 @@ jobs:
             throw "The static delayed-task runtime probe failed."
           }
 
+  test-windows-build-matrix:
+    name: test-windows-build-matrix (${{ matrix.name }})
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: dynamic-release
+            configuration: release
+            static_build: "false"
+            require_static_sdk: "false"
+          - name: static-debug
+            configuration: debug
+            static_build: "true"
+            require_static_sdk: "true"
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Swift toolchain and SDK
+        uses: ./.github/actions/setup-swift-windows
+        with:
+          version: ${{ env.SWIFT_VERSION }}
+          installer-url: ${{ env.SWIFT_INSTALLER_URL }}
+          installer-sha256: ${{ env.SWIFT_INSTALLER_SHA256 }}
+          require-static-sdk: ${{ matrix.require_static_sdk }}
+
+      - name: Build and probe Windows executable
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+          STATIC_BUILD: ${{ matrix.static_build }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $buildArguments = @(
+            "--disable-automatic-resolution",
+            "--configuration", $env:BUILD_CONFIGURATION
+          )
+
+          if ($env:STATIC_BUILD -eq "true") {
+            $compatibilityLibraries = Join-Path `
+              $env:RUNNER_TEMP `
+              "swift-static-link-compatibility"
+            New-Item `
+              -ItemType Directory `
+              -Path $compatibilityLibraries `
+              -Force |
+              Out-Null
+            Copy-Item `
+              (Join-Path $env:SWIFT_STATIC_RESOURCE_ROOT "libcurl.lib") `
+              (Join-Path $compatibilityLibraries "curl.lib")
+
+            $buildArguments += @(
+              "--triple", "x86_64-unknown-windows-msvc",
+              "-Xswiftc", "-sdk",
+              "-Xswiftc", $env:SWIFT_STATIC_SDK_ROOT,
+              "-Xswiftc", "-static-stdlib",
+              "-Xswiftc", "-Xcc",
+              "-Xswiftc", "-Ddispatch_STATIC",
+              "-Xswiftc", "-Xcc",
+              "-Xswiftc", "-static-libclosure",
+              "-Xlinker", "/LIBPATH:$compatibilityLibraries",
+              "-Xlinker", "zlibstatic.lib",
+              "-Xlinker", "brotlidec.lib",
+              "-Xlinker", "brotlicommon.lib"
+            )
+          }
+
+          & swift build @buildArguments --product rorkdevice
+          if ($LASTEXITCODE -ne 0) {
+            throw "The $env:BUILD_CONFIGURATION executable did not build."
+          }
+          $binaryDirectory = (
+            & swift build @buildArguments --show-bin-path
+          ).Trim()
+          $binary = Join-Path $binaryDirectory "rorkdevice.exe"
+
+          if ($env:STATIC_BUILD -ne "true") {
+            $runtimeProbe = Join-Path `
+              $env:RUNNER_TEMP `
+              "windows-dynamic-runtime-probe.exe"
+            & swiftc `
+              -parse-as-library `
+              "Tests\WindowsStaticRuntimeProbe\main.swift" `
+              -o $runtimeProbe
+            if ($LASTEXITCODE -ne 0) {
+              throw "The dynamic delayed-task control did not build."
+            }
+            & $runtimeProbe
+            if ($LASTEXITCODE -ne 0) {
+              throw "The dynamic delayed-task control failed."
+            }
+          }
+
+          & (Join-Path `
+            $env:GITHUB_WORKSPACE `
+            ".github\scripts\test-windows-static-runtime.ps1") `
+            -Binary $binary `
+            -WorkingDirectory $env:RUNNER_TEMP
+
   build-static-package:
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 60
