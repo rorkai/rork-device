@@ -145,17 +145,27 @@ runs:
           $sdkRoot = $windowsSDK.FullName
         }
 
-        $staticSDKRoot = Join-Path `
+        $experimentalStaticSDKRoot = Join-Path `
           (Split-Path $sdkRoot -Parent) `
           "WindowsExperimental.sdk"
-        $staticSDKExists = Test-Path $staticSDKRoot -PathType Container
+        $staticSDKRoot = @(
+          $experimentalStaticSDKRoot,
+          $sdkRoot
+        ) | Where-Object {
+          Test-Path `
+            (Join-Path `
+              $_ `
+              "usr\lib\swift_static\windows\x86_64\libswiftCore.lib") `
+            -PathType Leaf
+        } | Select-Object -First 1
+        $staticSDKExists = $null -ne $staticSDKRoot
         if ($env:REQUIRE_STATIC_SDK -eq "true" -and -not $staticSDKExists) {
           throw "The pinned toolchain does not contain its static Windows SDK."
         }
-        $staticResourceRoot = Join-Path `
-          $staticSDKRoot `
-          "usr\lib\swift_static\windows\x86_64"
         if ($staticSDKExists) {
+          $staticResourceRoot = Join-Path `
+            $staticSDKRoot `
+            "usr\lib\swift_static\windows\x86_64"
           foreach ($library in @(
             "libswiftCore.lib",
             "libcurl.lib",
