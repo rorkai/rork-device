@@ -219,10 +219,10 @@ jobs:
           @(
             "Swift 6.4 development snapshot 2026-08-01",
             "Static dispatch and Blocks runtime",
-            "Static ICU",
-            "Static curl",
-            "Static zlib",
-            "Static Brotli"
+            "ICU 76.1",
+            "curl 8.9.1-DEV",
+            "zlib 1.3.1",
+            "Brotli 1.2.0"
           ) |
             Out-File (Join-Path $inspection "static-sdk-components.txt")
 
