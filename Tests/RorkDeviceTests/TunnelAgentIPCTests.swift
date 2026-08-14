@@ -3,7 +3,7 @@ import XCTest
 
 @testable import RorkDevice
 
-/// Decoding of one stdin request line into a dispatchable request.
+/// These tests decode one standard-input line into a dispatchable request.
 final class TunnelAgentRequestDecodingTests: XCTestCase {
     func testDecodesIdOperationAndRetainsTheRawBody() throws {
         let line = #"{"id":"7","op":"apps-list","type":"all"}"#
@@ -15,8 +15,23 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
         }
         XCTAssertEqual(request.id, "7")
         XCTAssertEqual(request.operation, "apps-list")
+        XCTAssertNil(request.protocolVersion)
         // Handlers decode operation-specific fields from the retained line.
-        XCTAssertTrue(String(data: request.line, encoding: .utf8)!.contains(#""type":"all""#))
+        let body = try XCTUnwrap(
+            String(data: request.line, encoding: .utf8)
+        )
+        XCTAssertTrue(body.contains(#""type":"all""#))
+    }
+
+    func testDecodesAnOptionalProtocolVersion() {
+        let line = #"{"id":"7","op":"apps-list","protocolVersion":1}"#
+
+        let outcome = TunnelAgentIPC.decodeRequest(from: line)
+
+        guard case .request(let request) = outcome else {
+            return XCTFail("Expected a decoded request, got \(outcome)")
+        }
+        XCTAssertEqual(request.protocolVersion, 1)
     }
 
     func testRejectsALineThatIsNotJSON() {
@@ -77,6 +92,92 @@ final class TunnelAgentRequestDecodingTests: XCTestCase {
     }
 }
 
+/// These tests preserve stable mappings from Swift failures to wire codes.
+final class TunnelAgentFailureTests: XCTestCase {
+    func testEveryAdvertisedBuiltInOperationIsServed() {
+        let handled = Set(
+            TunnelAgentIPC.builtInHandlers(capabilities: []).keys
+        ).union(TunnelAgentIPC.statefulBuiltInOperationNames)
+
+        XCTAssertEqual(
+            Set(TunnelAgentIPC.builtInOperationNames),
+            handled
+        )
+    }
+
+    func testErrorCodesPreserveUnknownFutureValues() throws {
+        let code = TunnelAgentProtocol.ErrorCode(
+            rawValue: "future_error"
+        )
+
+        let encoded = try JSONEncoder().encode(code)
+        let decoded = try JSONDecoder().decode(
+            TunnelAgentProtocol.ErrorCode.self,
+            from: encoded
+        )
+
+        XCTAssertEqual(String(data: encoded, encoding: .utf8), #""future_error""#)
+        XCTAssertEqual(decoded, code)
+    }
+
+    func testMapsEveryDeviceErrorCaseToAStableCode() {
+        let cases: [(RorkDeviceError, TunnelAgentProtocol.ErrorCode)] = [
+            (.invalidInput("input"), .invalidInput),
+            (.invalidPairingRecord("pairing"), .invalidPairingRecord),
+            (.transport("transport"), .transport),
+            (.protocolViolation("protocol"), .protocolViolation),
+            (
+                .remoteXPCStreamReset(streamIdentifier: 3, errorCode: 8),
+                .remoteXPCStreamReset
+            ),
+            (.lockdown("lockdown"), .lockdown),
+            (.secureSessionUnsupported, .secureSessionUnsupported),
+            (.secureSession("secure"), .secureSession),
+            (.remotePairing(.unknownPeer), .remotePairing),
+            (.afcStatus(4), .afcStatus),
+            (.heartbeat("heartbeat"), .heartbeat),
+            (
+                .installationProxy(
+                    InstallationError(
+                        code: .applicationVerificationFailed
+                    )
+                ),
+                .installationProxy
+            ),
+            (.misagentStatus(7), .misagentStatus),
+        ]
+
+        for (error, expectedCode) in cases {
+            XCTAssertEqual(
+                TunnelAgentFailure.normalize(error).code,
+                expectedCode,
+                "Unexpected wire code for \(error)"
+            )
+        }
+    }
+
+    func testMapsPairingAndCancellationWithoutSwiftCaseNames() {
+        let pairing = TunnelAgentFailure.normalize(
+            LockdownPairingError.userConfirmationRequired
+        )
+        XCTAssertEqual(pairing.code, .pairing)
+        XCTAssertEqual(pairing.details?.reason, "user_confirmation_required")
+
+        let cancellation = TunnelAgentFailure.normalize(CancellationError())
+        XCTAssertEqual(cancellation.code, .cancelled)
+        XCTAssertEqual(cancellation.message, "The request was cancelled.")
+        XCTAssertEqual(
+            cancellation.details?.operationMayHaveCompleted,
+            false
+        )
+
+        let internalFailure = TunnelAgentFailure.normalize(
+            NSError(domain: "TunnelAgentTests", code: 1)
+        )
+        XCTAssertEqual(internalFailure.code, .internalFailure)
+    }
+}
+
 /// Drives the serve loop through scripted stdin sessions. These cover
 /// dispatch, error replies, and the end-of-file shutdown contract that
 /// replaces the plain liveness watch.
@@ -124,6 +225,38 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let reply = try await replies.waitForReply(id: "2")
         XCTAssertEqual(reply["ok"] as? Bool, true)
         XCTAssertEqual(reply["capabilities"] as? [String], ["ping", "capabilities"])
+        XCTAssertEqual(reply["protocolVersion"] as? Int, 1)
+        XCTAssertEqual(reply["supportedProtocolVersions"] as? [Int], [1])
+        XCTAssertEqual(reply["agentVersion"] as? String, RorkDevice.version)
+        try stdin.fileHandleForWriting.close()
+    }
+
+    func testRejectsAnUnsupportedProtocolVersion() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: TunnelAgentIPC.builtInHandlers(capabilities: ["ping", "capabilities"]),
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"version","op":"capabilities","protocolVersion":99}"#.utf8 + [0x0a]
+            )
+        )
+
+        let reply = try await replies.waitForReply(id: "version")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "unsupported_protocol_version")
+        let details = try XCTUnwrap(reply["errorDetails"] as? [String: Any])
+        XCTAssertEqual(details["requestedVersion"] as? Int, 99)
+        XCTAssertEqual(details["supportedProtocolVersions"] as? [Int], [1])
         try stdin.fileHandleForWriting.close()
     }
 
@@ -147,6 +280,7 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let unknown = try await replies.waitForReply(id: "3")
         XCTAssertEqual(unknown["ok"] as? Bool, false)
         XCTAssertTrue((unknown["error"] as? String ?? "").contains("frobnicate"))
+        XCTAssertEqual(unknown["errorCode"] as? String, "unknown_operation")
 
         // The loop keeps serving after an unknown operation.
         try stdin.fileHandleForWriting.write(contentsOf: Data(#"{"id":"4","op":"ping"}"#.utf8 + [0x0a]))
@@ -172,6 +306,7 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         try stdin.fileHandleForWriting.write(contentsOf: Data("not json\n".utf8))
         let error = try await replies.waitForEvent("op-error")
         XCTAssertNil(error["id"])
+        XCTAssertEqual(error["errorCode"] as? String, "malformed_request")
 
         try stdin.fileHandleForWriting.write(contentsOf: Data(#"{"id":"5","op":"ping"}"#.utf8 + [0x0a]))
         let pong = try await replies.waitForReply(id: "5")
@@ -204,19 +339,430 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         _ = try await replies.waitForReply(id: "8")
         try stdin.fileHandleForWriting.close()
     }
+
+    func testMapsDeviceErrorsToStableCodesAndDetails() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "reset": { _ in
+                throw RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: 3,
+                    errorCode: 8
+                )
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"reset","op":"reset"}"#.utf8 + [0x0a])
+        )
+
+        let reply = try await replies.waitForReply(id: "reset")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "remote_xpc_stream_reset")
+        let details = try XCTUnwrap(reply["errorDetails"] as? [String: Any])
+        XCTAssertEqual(details["streamIdentifier"] as? Int, 3)
+        XCTAssertEqual(details["protocolErrorCode"] as? Int, 8)
+        try stdin.fileHandleForWriting.close()
+    }
+
+    func testCancelsAnInFlightRequestExactlyOnce() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "slow": { _ in
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"slow","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"slow"}"#.utf8 + [0x0a]
+            )
+        )
+
+        let acknowledgement = try await replies.waitForReply(id: "cancel")
+        XCTAssertEqual(acknowledgement["ok"] as? Bool, true)
+        let cancelled = try await replies.waitForReply(id: "slow")
+        XCTAssertEqual(cancelled["ok"] as? Bool, false)
+        XCTAssertEqual(cancelled["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            cancelled["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            false
+        )
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+        XCTAssertEqual(replies.replies(id: "slow").count, 1)
+    }
+
+    func testCancellationReportsAConcurrentSuccessfulCompletion()
+        async throws
+    {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "work": { _ in
+                await gate.wait()
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"work","op":"work"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"work"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        await gate.open()
+
+        let reply = try await replies.waitForReply(id: "work")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+    }
+
+    func testCancellationPreservesAConcurrentOperationFailure()
+        async throws
+    {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "work": { _ in
+                await gate.wait()
+                throw RorkDeviceError.protocolViolation(
+                    "The operation failed after applying work."
+                )
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"work","op":"work"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"work"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        await gate.open()
+
+        let reply = try await replies.waitForReply(id: "work")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+        XCTAssertEqual(
+            details["operationErrorCode"] as? String,
+            "protocol_violation"
+        )
+        XCTAssertTrue(
+            (details["operationError"] as? String ?? "")
+                .contains("after applying work")
+        )
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+    }
+
+    func testRejectsCancellationForAnUnknownRequest() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: [:],
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"missing"}"#.utf8 + [0x0a]
+            )
+        )
+
+        let reply = try await replies.waitForReply(id: "cancel")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(
+            reply["errorCode"] as? String,
+            "cancellation_target_not_found"
+        )
+        let details = try XCTUnwrap(reply["errorDetails"] as? [String: Any])
+        XCTAssertEqual(details["targetId"] as? String, "missing")
+        try stdin.fileHandleForWriting.close()
+    }
+
+    func testRejectsCancellationThatTargetsItsOwnRequest() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: [:],
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"cancel"}"#.utf8 + [0x0a]
+            )
+        )
+
+        let reply = try await replies.waitForReply(id: "cancel")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["errorCode"] as? String, "invalid_input")
+        try stdin.fileHandleForWriting.close()
+    }
+
+    func testRejectsDuplicateInFlightRequestIdentifiers() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "slow": { _ in
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"same"}"#.utf8 + [0x0a]
+            )
+        )
+
+        _ = try await replies.waitForReply(id: "cancel")
+        _ = try await replies.waitForReplies(id: "same", count: 2)
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+        let targetReplies = replies.replies(id: "same")
+        XCTAssertEqual(targetReplies.count, 2)
+        let duplicate = try XCTUnwrap(
+            targetReplies.first {
+                $0["errorCode"] as? String == "duplicate_request_id"
+            }
+        )
+        XCTAssertEqual(duplicate["event"] as? String, "op-error")
+        let cancelled = try XCTUnwrap(
+            targetReplies.first {
+                $0["errorCode"] as? String == "cancelled"
+            }
+        )
+        XCTAssertEqual(cancelled["event"] as? String, "op-result")
+        XCTAssertEqual(
+            Set(targetReplies.compactMap { $0["errorCode"] as? String }),
+            ["duplicate_request_id", "cancelled"]
+        )
+    }
+
+    func testMalformedRequestCannotReuseAnInFlightIdentifier() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "slow": { _ in
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"same"}"#.utf8 + [0x0a])
+        )
+
+        let duplicate = try await replies.waitForEvent("op-error")
+        XCTAssertEqual(
+            duplicate["errorCode"] as? String,
+            "duplicate_request_id"
+        )
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(
+                #"{"id":"cancel","op":"cancel","targetId":"same"}"#.utf8 + [0x0a]
+            )
+        )
+        _ = try await replies.waitForReply(id: "cancel")
+        try stdin.fileHandleForWriting.close()
+        await serving.value
+    }
+
+    func testEndOfFileCancelsInFlightRequests() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "slow": { _ in
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"slow","op":"slow"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.close()
+
+        await serving.value
+        let reply = try await replies.waitForReply(id: "slow")
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+    }
+
+    func testEndOfFileBoundsNoncooperativeRequestShutdown() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let gate = TunnelAgentTestGate()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "blocked": { _ in
+                await gate.wait()
+                return nil
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record,
+                shutdownGracePeriod: .milliseconds(20)
+            )
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"blocked","op":"blocked"}"#.utf8 + [0x0a])
+        )
+        try stdin.fileHandleForWriting.close()
+
+        await serving.value
+        await gate.open()
+        let reply = try await replies.waitForReply(id: "blocked")
+        XCTAssertEqual(reply["errorCode"] as? String, "cancelled")
+        let details = try XCTUnwrap(
+            reply["errorDetails"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            details["operationMayHaveCompleted"] as? Bool,
+            true
+        )
+    }
 }
 
 /// Collects NDJSON reply lines and answers queries about them.
 private final class ReplyRecorder: @unchecked Sendable {
+    /// Protects the recorded lines while handler tasks write concurrently.
     private let lock = NSLock()
+
+    /// This array retains complete encoded replies in observed write order.
     private var lines: [Data] = []
 
+    /// Records one complete reply line from the serving loop.
     func record(_ line: Data) {
         lock.withLock {
             lines.append(line)
         }
     }
 
+    /// Decodes every valid recorded line for assertions.
     private func decoded() -> [[String: Any]] {
         lock.withLock {
             lines.compactMap {
@@ -225,23 +771,80 @@ private final class ReplyRecorder: @unchecked Sendable {
         }
     }
 
-    func waitForReply(id: String) async throws -> [String: Any] {
-        for _ in 0..<400 {
-            if let reply = decoded().first(where: { $0["id"] as? String == id }) {
-                return reply
-            }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        throw RorkDeviceError.transport("No reply for request \(id).")
+    /// Returns every reply carrying the requested correlation identifier.
+    func replies(id: String) -> [[String: Any]] {
+        decoded().filter { $0["id"] as? String == id }
     }
 
+    /// Waits for the first reply carrying the requested identifier.
+    func waitForReply(id: String) async throws -> [String: Any] {
+        try await poll(
+            failure: "No reply for request \(id)."
+        ) {
+            decoded().first { $0["id"] as? String == id }
+        }
+    }
+
+    /// Waits until the requested number of replies share one identifier.
+    func waitForReplies(
+        id: String,
+        count: Int
+    ) async throws -> [[String: Any]] {
+        try await poll(
+            failure: "Expected \(count) replies for request \(id)."
+        ) {
+            let matches = replies(id: id)
+            return matches.count >= count ? matches : nil
+        }
+    }
+
+    /// Waits for the first reply carrying the requested event discriminator.
     func waitForEvent(_ event: String) async throws -> [String: Any] {
+        try await poll(failure: "No \(event) event.") {
+            decoded().first { $0["event"] as? String == event }
+        }
+    }
+
+    /// Polls recorded lines with one timeout budget for every query shape.
+    private func poll<Value>(
+        failure: String,
+        produce: () -> Value?
+    ) async throws -> Value {
         for _ in 0..<400 {
-            if let reply = decoded().first(where: { $0["event"] as? String == event }) {
-                return reply
+            if let value = produce() {
+                return value
             }
             try await Task.sleep(for: .milliseconds(5))
         }
-        throw RorkDeviceError.transport("No \(event) event.")
+        throw RorkDeviceError.transport(failure)
+    }
+}
+
+/// Suspends a handler without observing task cancellation.
+private actor TunnelAgentTestGate {
+    /// This value records whether later waiters may pass without suspension.
+    private var isOpen = false
+
+    /// These suspended handlers are released together when the gate opens.
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Suspends until the test opens the gate.
+    func wait() async {
+        guard !isOpen else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    /// Opens the gate permanently and resumes every suspended handler.
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }

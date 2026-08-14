@@ -9,15 +9,18 @@ import Foundation
 /// caller shuts the agent down. Handlers own what each operation means.
 /// This type owns framing, dispatch, and reply ordering.
 public enum TunnelAgentIPC {
-    /// One decoded request line, ready for dispatch.
+    /// This value contains one decoded request line ready for dispatch.
     public struct Request: Equatable, Sendable {
-        /// Supervisor-chosen correlation value repeated in every reply.
+        /// The supervisor chooses this value for correlation with every reply.
         public let id: String
 
-        /// Operation name used to select a handler.
+        /// This operation name selects a handler.
         public let operation: String
 
-        /// The complete request line, retained so handlers can decode
+        /// The supervisor requests this version, or omits it to imply version one.
+        public let protocolVersion: Int?
+
+        /// This complete request line is retained so handlers can decode
         /// operation-specific fields with their own `Decodable` types
         /// through ``parameters()``.
         public let line: Data
@@ -28,6 +31,10 @@ public enum TunnelAgentIPC {
         /// contract stays local to the code that implements it. A decoding
         /// failure names the operation, which becomes the `ok: false` reply
         /// the supervisor sees.
+        ///
+        /// - Parameter type: Parameter type owned by the operation handler.
+        /// - Returns: Parameters decoded from the complete request envelope.
+        /// - Throws: ``RorkDeviceError/invalidInput(_:)`` when decoding fails.
         public func parameters<Parameters: Decodable>(
             _ type: Parameters.Type = Parameters.self
         ) throws -> Parameters {
@@ -41,7 +48,7 @@ public enum TunnelAgentIPC {
         }
     }
 
-    /// The result of decoding one input line.
+    /// This value describes the result of decoding one input line.
     public enum DecodeOutcome: Equatable, Sendable {
         /// The line carried a dispatchable request.
         case request(Request)
@@ -56,25 +63,51 @@ public enum TunnelAgentIPC {
     /// The payload's fields are merged into the top level of the `op-result`
     /// reply. Return nil when the result carries no fields beyond the
     /// envelope. The dispatcher owns the `id`, `event`, and `ok` fields.
-    /// Throwing produces an `ok: false` result carrying the error's
-    /// description.
+    /// Throwing produces an unsuccessful result with readable text, a stable
+    /// error code, and structured details when the failure carries them.
     public typealias Handler = @Sendable (Request) async throws -> (any Encodable & Sendable)?
 
-    /// The wire shape of a request envelope.
+    /// This private value models the wire shape of a request envelope.
     private struct RequestEnvelope: Decodable {
+        /// The supervisor chooses this value to correlate the reply.
         let id: String
+
+        /// The supervisor selects this wire operation name.
         let op: String
+
+        /// This is explicit, or nil when the request implies version one.
+        let protocolVersion: Int?
     }
 
-    /// Salvages a correlation id from a line that failed envelope decoding.
-    private struct RequestIdProbe: Decodable {
+    /// This probe salvages an id from a line that failed envelope decoding.
+    private struct RequestIDProbe: Decodable {
+        /// This value survives when the rest of the envelope is invalid.
         let id: String?
     }
 
-    /// The payload for the `capabilities` operation.
+    /// This payload describes the `capabilities` operation.
     private struct CapabilitiesPayload: Encodable {
+        /// This serving agent accepts these operation names.
         let capabilities: [String]
+
+        /// The agent advertises this current protocol version.
+        let protocolVersion = TunnelAgentProtocol.currentVersion
+
+        /// The agent accepts these versions in request envelopes.
+        let supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
+
+        /// This native agent version implements the advertised contract.
+        let agentVersion = RorkDevice.version
     }
+
+    /// The serving loop dispatches these built-ins because they need request state.
+    static let statefulBuiltInOperationNames = ["cancel"]
+
+    /// The protocol layer implements these operations instead of device handlers.
+    public static let builtInOperationNames = [
+        "ping",
+        "capabilities",
+    ] + statefulBuiltInOperationNames
 
     /// Decodes one input line into a request or a correlatable failure.
     public static func decodeRequest(from line: String) -> DecodeOutcome {
@@ -83,10 +116,15 @@ public enum TunnelAgentIPC {
         if let envelope = try? decoder.decode(RequestEnvelope.self, from: data),
            !envelope.id.isEmpty, !envelope.op.isEmpty {
             return .request(
-                Request(id: envelope.id, operation: envelope.op, line: data)
+                Request(
+                    id: envelope.id,
+                    operation: envelope.op,
+                    protocolVersion: envelope.protocolVersion,
+                    line: data
+                )
             )
         }
-        guard let probe = try? decoder.decode(RequestIdProbe.self, from: data) else {
+        guard let probe = try? decoder.decode(RequestIDProbe.self, from: data) else {
             return .malformed(reason: "The request line is not a JSON object.", id: nil)
         }
         guard let id = probe.id, !id.isEmpty else {
@@ -95,10 +133,11 @@ public enum TunnelAgentIPC {
         return .malformed(reason: "The request has no op field.", id: id)
     }
 
-    /// The operations every serving agent supports before any device work.
+    /// Builds the stateless handlers available before any device work.
     ///
     /// `ping` proves the channel works. `capabilities` reports the operations
-    /// the supervisor may route through the pipe.
+    /// the supervisor may route through the pipe. The serving loop owns
+    /// `cancel` because it requires access to the in-flight request registry.
     public static func builtInHandlers(capabilities: [String]) -> [String: Handler] {
         [
             "ping": { _ in nil },
@@ -110,30 +149,55 @@ public enum TunnelAgentIPC {
     ///
     /// Every request runs as its own task, so a slow operation never blocks
     /// the read loop or other operations. Replies are serialized through
-    /// `send`, one complete line per call. The method returns when the input
-    /// reaches end-of-file, which means the supervisor is gone.
+    /// `send`, one complete line per call. End-of-file cancels active work and
+    /// waits up to `shutdownGracePeriod`. Requests that do not stop before the
+    /// deadline receive conservative cancellation replies before this method
+    /// returns.
+    ///
+    /// - Parameters:
+    ///   - input: Request stream whose end-of-file signals supervisor exit.
+    ///   - handlers: Device and operation handlers keyed by wire name.
+    ///   - send: Sink for one complete encoded reply per invocation.
+    ///   - shutdownGracePeriod: Maximum wait for active handlers to observe
+    ///     cancellation before the agent emits their terminal replies.
     public static func serve(
         requestsFrom input: FileHandle,
         handlers: [String: Handler],
-        send: @escaping @Sendable (Data) -> Void
+        send: @escaping @Sendable (Data) -> Void,
+        shutdownGracePeriod: Duration = .seconds(5)
     ) async {
         let writer = ReplyWriter(send: send)
-        await withTaskGroup(of: Void.self) { group in
-            var pending = Data()
-            for await chunk in chunks(of: input) {
-                pending.append(chunk)
-                while let newline = pending.firstIndex(of: 0x0a) {
-                    let lineData = pending.prefix(upTo: newline)
-                    pending.removeSubrange(...newline)
-                    guard let line = String(data: lineData, encoding: .utf8),
-                          !line.trimmingCharacters(in: .whitespaces).isEmpty else {
-                        continue
-                    }
-                    dispatch(line: line, handlers: handlers, writer: writer, group: &group)
+        let inFlightRequests = InFlightRequestRegistry(writer: writer)
+        var pending = Data()
+        for await chunk in chunks(of: input) {
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0a) {
+                let lineData = pending.prefix(upTo: newline)
+                pending.removeSubrange(...newline)
+                guard let line = String(data: lineData, encoding: .utf8),
+                      !line.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    continue
                 }
+                await dispatch(
+                    line: line,
+                    handlers: handlers,
+                    writer: writer,
+                    inFlightRequests: inFlightRequests
+                )
             }
-            group.cancelAll()
         }
+        await inFlightRequests.cancelAll()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: shutdownGracePeriod)
+        while await inFlightRequests.hasInFlightRequests(),
+              clock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
+        }
+        await inFlightRequests.finishRemainingAsCancelled()
     }
 
     /// Routes one decoded line to its handler task or to an error reply.
@@ -141,43 +205,153 @@ public enum TunnelAgentIPC {
         line: String,
         handlers: [String: Handler],
         writer: ReplyWriter,
-        group: inout TaskGroup<Void>
-    ) {
+        inFlightRequests: InFlightRequestRegistry
+    ) async {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
-            writer.write(Reply(event: "op-error", id: id, ok: nil, error: reason, payload: nil))
+            if let id, await inFlightRequests.contains(id) {
+                writeDuplicateRequest(id: id, writer: writer)
+                return
+            }
+            writer.write(
+                Reply.failure(
+                    event: .error,
+                    id: id,
+                    failure: TunnelAgentFailure(
+                        code: .malformedRequest,
+                        message: reason
+                    )
+                )
+            )
         case .request(let request):
-            guard let handler = handlers[request.operation] else {
+            // Duplicate detection precedes operation validation so an invalid
+            // second request cannot reuse an active request's correlation id.
+            if await inFlightRequests.contains(request.id) {
+                writeDuplicateRequest(id: request.id, writer: writer)
+                return
+            }
+            if let version = request.protocolVersion,
+               !TunnelAgentProtocol.supportedVersions.contains(version) {
                 writer.write(
-                    Reply(
-                        event: "op-result",
+                    Reply.failure(
                         id: request.id,
-                        ok: false,
-                        error: "Unknown operation \(request.operation).",
-                        payload: nil
+                        failure: TunnelAgentFailure(
+                            code: .unsupportedProtocolVersion,
+                            message: "Unsupported tunnel agent protocol version \(version).",
+                            details: TunnelAgentErrorDetails(
+                                requestedVersion: version,
+                                supportedProtocolVersions:
+                                    TunnelAgentProtocol.supportedVersions
+                            )
+                        )
                     )
                 )
                 return
             }
-            group.addTask {
+            if statefulBuiltInOperationNames.contains(request.operation) {
+                let started = await inFlightRequests.start(id: request.id) {
+                    await cancellationReply(
+                        request: request,
+                        inFlightRequests: inFlightRequests
+                    )
+                }
+                if !started {
+                    writeDuplicateRequest(id: request.id, writer: writer)
+                }
+                return
+            }
+            guard let handler = handlers[request.operation] else {
+                writer.write(
+                    Reply.failure(
+                        id: request.id,
+                        failure: TunnelAgentFailure(
+                            code: .unknownOperation,
+                            message: "Unknown operation \(request.operation).",
+                            details: TunnelAgentErrorDetails(
+                                operation: request.operation
+                            )
+                        )
+                    )
+                )
+                return
+            }
+
+            let started = await inFlightRequests.start(id: request.id) {
                 do {
                     let payload = try await handler(request)
-                    writer.write(
-                        Reply(event: "op-result", id: request.id, ok: true, error: nil, payload: payload)
-                    )
+                    return Reply.success(id: request.id, payload: payload)
                 } catch {
-                    writer.write(
-                        Reply(
-                            event: "op-result",
-                            id: request.id,
-                            ok: false,
-                            error: String(describing: error),
-                            payload: nil
-                        )
+                    return Reply.failure(
+                        id: request.id,
+                        failure: TunnelAgentFailure.normalize(error)
                     )
                 }
             }
+            if !started {
+                writeDuplicateRequest(id: request.id, writer: writer)
+            }
         }
+    }
+
+    /// Builds the reply for cancelling one supervisor-selected request.
+    private static func cancellationReply(
+        request: Request,
+        inFlightRequests: InFlightRequestRegistry
+    ) async -> Reply {
+        let parameters: CancelParameters
+        do {
+            parameters = try request.parameters()
+        } catch {
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure.normalize(error)
+            )
+        }
+        guard parameters.targetID != request.id else {
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure(
+                    code: .invalidInput,
+                    message: "A cancel request cannot target its own id."
+                )
+            )
+        }
+
+        guard await inFlightRequests.cancel(parameters.targetID) else {
+            return Reply.failure(
+                id: request.id,
+                failure: TunnelAgentFailure(
+                    code: .cancellationTargetNotFound,
+                    message: "No in-flight request has id \(parameters.targetID).",
+                    details: TunnelAgentErrorDetails(
+                        targetID: parameters.targetID
+                    )
+                )
+            )
+        }
+        return Reply.success(id: request.id, payload: nil)
+    }
+
+    /// Writes the protocol error for an identifier already owned by a request.
+    private static func writeDuplicateRequest(
+        id: String,
+        writer: ReplyWriter
+    ) {
+        writer.write(
+            Reply.failure(
+                event: .error,
+                id: id,
+                failure: duplicateRequestFailure(id: id)
+            )
+        )
+    }
+
+    /// Describes a request id that is already owned by an active operation.
+    private static func duplicateRequestFailure(id: String) -> TunnelAgentFailure {
+        TunnelAgentFailure(
+            code: .duplicateRequestID,
+            message: "Request id \(id) is already in flight."
+        )
     }
 
     /// Streams the file handle's bytes as they arrive, ending at end-of-file.
@@ -197,31 +371,58 @@ public enum TunnelAgentIPC {
             }
         }
     }
+
+    /// This value contains parameters for the protocol-level cancel operation.
+    private struct CancelParameters: Decodable {
+        /// The operation with this request identifier should observe cancellation.
+        let targetID: String
+
+        /// These keys preserve the protocol's lower-camel spelling on the wire.
+        private enum CodingKeys: String, CodingKey {
+            case targetID = "targetId"
+        }
+    }
 }
 
-/// One reply line, carrying the shared envelope and the operation payload.
+/// This value defines reply kinds supported by the protocol envelope.
+private enum ReplyEvent: String, Sendable {
+    /// A request reached a handler or protocol-level operation.
+    case result = "op-result"
+
+    /// A line could not be dispatched as a unique request.
+    case error = "op-error"
+}
+
+/// This value carries one shared reply envelope and operation payload.
 ///
 /// The payload encodes into the same keyed container as the envelope, so its
 /// fields appear at the top level of the reply object rather than nested.
 /// The type stays private because it describes the wire format the dispatcher
 /// owns. Handlers hand back payloads and supervisors read JSON, so no caller
 /// has a reason to construct or inspect a `Reply` directly.
-private struct Reply: Encodable {
-    /// Reply kind, `op-result` for handled requests and `op-error` for lines
+private struct Reply: Encodable, Sendable {
+    /// This kind is `op-result` for handled requests and `op-error` for lines
     /// that could not be dispatched.
-    let event: String
+    let event: ReplyEvent
 
-    /// The request's correlation id, absent when the line had none to salvage.
+    /// This id is absent when the input line had none to salvage.
     let id: String?
 
-    /// Whether the operation succeeded, absent on `op-error` lines.
+    /// This value reports success and stays absent on `op-error` lines.
     let ok: Bool?
 
-    /// Human-readable failure description, absent on success.
+    /// This human-readable failure description stays absent on success.
     let error: String?
 
-    /// Operation-specific fields flattened into the reply, or nil when the
-    /// envelope says everything.
+    /// This stable machine-readable failure identifier stays absent on success.
+    let errorCode: TunnelAgentProtocol.ErrorCode?
+
+    /// This structured context supplies values needed beyond the failure code.
+    let errorDetails: TunnelAgentErrorDetails?
+
+    /// These operation-specific fields flatten into the reply, or stay nil when the
+    /// envelope says everything. Payloads must not reuse the reserved keys
+    /// `event`, `id`, `ok`, `error`, `errorCode`, or `errorDetails`.
     let payload: (any Encodable & Sendable)?
 
     /// The payload has no key on purpose. It encodes through the same encoder
@@ -231,25 +432,65 @@ private struct Reply: Encodable {
         case id
         case ok
         case error
+        case errorCode
+        case errorDetails
     }
 
+    /// Creates a successful handled-operation reply.
+    static func success(
+        id: String,
+        payload: (any Encodable & Sendable)?
+    ) -> Reply {
+        Reply(
+            event: .result,
+            id: id,
+            ok: true,
+            error: nil,
+            errorCode: nil,
+            errorDetails: nil,
+            payload: payload
+        )
+    }
+
+    /// Creates an unsuccessful reply while preserving the legacy error text.
+    static func failure(
+        event: ReplyEvent = .result,
+        id: String?,
+        failure: TunnelAgentFailure
+    ) -> Reply {
+        Reply(
+            event: event,
+            id: id,
+            ok: event == .result ? false : nil,
+            error: failure.message,
+            errorCode: failure.code,
+            errorDetails: failure.details,
+            payload: nil
+        )
+    }
+
+    /// Encodes the envelope and payload into the same JSON object.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(event, forKey: .event)
+        try container.encode(event.rawValue, forKey: .event)
         try container.encodeIfPresent(id, forKey: .id)
         try container.encodeIfPresent(ok, forKey: .ok)
         try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(errorCode, forKey: .errorCode)
+        try container.encodeIfPresent(errorDetails, forKey: .errorDetails)
         try payload?.encode(to: encoder)
     }
 }
 
 /// Serializes reply lines so concurrent handlers cannot interleave output.
 private final class ReplyWriter: @unchecked Sendable {
+    /// Protects reply ordering while handler tasks write concurrently.
     private let lock = NSLock()
 
     /// Receives one encoded reply line per call, never a partial line.
     private let send: @Sendable (Data) -> Void
 
+    /// Creates a writer around one complete-line output sink.
     init(send: @escaping @Sendable (Data) -> Void) {
         self.send = send
     }
@@ -267,5 +508,146 @@ private final class ReplyWriter: @unchecked Sendable {
         lock.withLock {
             send(data)
         }
+    }
+}
+
+/// Owns cancellable request tasks and arbitrates their terminal replies.
+private actor InFlightRequestRegistry {
+    /// This value tracks one task and its cancellation race.
+    private struct Entry {
+        /// This task stays nil during the atomic identifier reservation.
+        var task: Task<Void, Never>?
+
+        /// This value records whether cancellation takes precedence at completion.
+        var cancellationRequested: Bool
+    }
+
+    /// This dictionary keys active requests by supervisor-selected identifiers.
+    private var entries: [String: Entry] = [:]
+
+    /// This serialized sink receives the terminal reply chosen by the actor.
+    private let writer: ReplyWriter
+
+    /// Creates a registry that emits terminal replies through one writer.
+    init(writer: ReplyWriter) {
+        self.writer = writer
+    }
+
+    /// Returns whether an active request already owns this identifier.
+    func contains(_ id: String) -> Bool {
+        entries[id] != nil
+    }
+
+    /// Starts one request after atomically reserving its identifier.
+    func start(
+        id: String,
+        operation: @escaping @Sendable () async -> Reply
+    ) -> Bool {
+        guard entries[id] == nil else {
+            return false
+        }
+
+        // The identifier is reserved first so a fast task always finds an entry.
+        entries[id] = Entry(
+            task: nil,
+            cancellationRequested: false
+        )
+        let task = Task { [weak self] in
+            let reply = await operation()
+            await self?.finish(id: id, proposedReply: reply)
+        }
+        guard var entry = entries[id] else {
+            task.cancel()
+            return true
+        }
+        entry.task = task
+        entries[id] = entry
+        if entry.cancellationRequested {
+            task.cancel()
+        }
+        return true
+    }
+
+    /// Requests cancellation and returns false when the target already ended.
+    func cancel(_ id: String) -> Bool {
+        guard var entry = entries[id] else {
+            return false
+        }
+        entry.cancellationRequested = true
+        entries[id] = entry
+        entry.task?.cancel()
+        return true
+    }
+
+    /// Requests cancellation for every remaining task.
+    func cancelAll() {
+        for id in Array(entries.keys) {
+            guard var entry = entries[id] else {
+                continue
+            }
+            entry.cancellationRequested = true
+            entries[id] = entry
+            entry.task?.cancel()
+        }
+    }
+
+    /// Returns whether shutdown still has active request tasks.
+    func hasInFlightRequests() -> Bool {
+        !entries.isEmpty
+    }
+
+    /// Finishes requests that did not cooperate before the shutdown deadline.
+    func finishRemainingAsCancelled() {
+        for id in Array(entries.keys) {
+            guard entries.removeValue(forKey: id) != nil else {
+                continue
+            }
+            writer.write(cancelledReply(id: id))
+        }
+    }
+
+    /// Emits one terminal reply, giving a requested cancellation precedence.
+    private func finish(
+        id: String,
+        proposedReply: Reply
+    ) {
+        guard let entry = entries.removeValue(forKey: id) else {
+            return
+        }
+        if entry.cancellationRequested {
+            let observedCancellation =
+                proposedReply.errorCode == .cancelled
+            let operationErrorCode =
+                observedCancellation ? nil : proposedReply.errorCode
+            let operationError =
+                observedCancellation ? nil : proposedReply.error
+            writer.write(
+                cancelledReply(
+                    id: id,
+                    operationMayHaveCompleted: !observedCancellation,
+                    operationErrorCode: operationErrorCode,
+                    operationError: operationError
+                )
+            )
+        } else {
+            writer.write(proposedReply)
+        }
+    }
+
+    /// Reports side-effect uncertainty after accepted or forced cancellation.
+    private func cancelledReply(
+        id: String,
+        operationMayHaveCompleted: Bool = true,
+        operationErrorCode: TunnelAgentProtocol.ErrorCode? = nil,
+        operationError: String? = nil
+    ) -> Reply {
+        Reply.failure(
+            id: id,
+            failure: TunnelAgentFailure.cancelled(
+                operationMayHaveCompleted: operationMayHaveCompleted,
+                operationErrorCode: operationErrorCode,
+                operationError: operationError
+            )
+        )
     }
 }

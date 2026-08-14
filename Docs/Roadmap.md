@@ -159,6 +159,47 @@ Current limitations:
 - Windows and Linux support still requires portable usbmux discovery and
   remote-pairing TLS backends.
 
+Releases 0.7.0 through 0.9.x shipped incrementally without separate milestones
+in this document. The roadmap resumes at 0.10.0 because it is the next planned
+public API milestone.
+
+## 0.10.0: Node SDK
+
+This release should make every stable host-side workflow available to Node.js
+without duplicating the Swift protocol implementation:
+
+- Add a TypeScript package under `Node/` and publish it as `rork-device`.
+- Keep known device operations typed while retaining explicit escape hatches
+  for newer service names and registry keys.
+- Cover discovery, pairing, Lockdown values, Developer Mode, developer images,
+  applications, files, containers, profiles, companion devices, remote
+  pairing, and tunnels.
+- Expose device events and operation progress as async iterators with
+  `AbortSignal` cancellation.
+- Add a versioned capabilities handshake and stable machine-readable error
+  codes.
+- Extend the existing long-lived agent protocol with opaque handles for
+  sessions, services, and tunnels.
+- Carry high-volume binary streams over a local socket or named pipe with
+  backpressure instead of encoding them into JSON.
+- Clean up every live handle when the Node process disconnects.
+- Support an explicit binary path while resolving a bundled platform package
+  by default.
+- Publish a small TypeScript package with exact optional dependencies on
+  `rork-device-darwin-universal` and `rork-device-win32-x64-msvc`. Linux
+  packages can follow when matching release artifacts are available.
+- Publish platform packages before the TypeScript package so one release cannot
+  reference missing binaries.
+- Avoid install-time download scripts so package installation remains reliable
+  behind proxies, with disabled lifecycle scripts, and in offline CI.
+- Run contract tests against the exact release binaries on macOS and Windows,
+  alongside opt-in physical-device coverage.
+
+The Node SDK should provide behavioral parity with public workflows rather than
+mirror Swift generics or injected implementation protocols. Browser and WebUSB
+support remain a separate `RorkDeviceWeb` distribution because they do not have
+access to Node processes or native binaries.
+
 ## Future Milestones
 
 The next milestones should expand service coverage without weakening the public
@@ -179,3 +220,9 @@ opt-in physical-device checks while keeping the implementation Swift-first and
 independently structured. Platform-dependent features expose an availability
 check and return a typed unsupported error instead of failing through an
 unavailable framework or inaccessible API.
+
+The TypeScript package and native binary should use the same release version.
+Every Node client startup should verify that `protocolVersion` appears in
+`supportedProtocolVersions` and that every required operation name appears in
+`capabilities`. Additive capabilities remain optional. Incompatible protocol
+changes require a new minor version during the `0.x` release series.

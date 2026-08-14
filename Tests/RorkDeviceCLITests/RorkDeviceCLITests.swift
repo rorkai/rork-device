@@ -301,6 +301,9 @@ final class RorkDeviceCLITests: XCTestCase {
         )
 
         XCTAssertEqual(output["capabilities"] as? [String], ["ping", "capabilities"])
+        XCTAssertEqual(output["protocolVersion"] as? Int, 1)
+        XCTAssertEqual(output["supportedProtocolVersions"] as? [Int], [1])
+        XCTAssertEqual(output["agentVersion"] as? String, RorkDevice.version)
     }
 
     func testServeCapabilitiesAdvertiseTheDeviceBackedOperations() {
@@ -308,7 +311,7 @@ final class RorkDeviceCLITests: XCTestCase {
         // list names it, so it is the compatibility contract of the release.
         XCTAssertEqual(
             TunnelStartCommand.serveCapabilities,
-            ["ping", "capabilities", "apps-list", "run"]
+            ["ping", "capabilities", "cancel", "apps-list", "run"]
         )
     }
 
@@ -330,6 +333,9 @@ final class RorkDeviceCLITests: XCTestCase {
         )
 
         XCTAssertNil(output["capabilities"])
+        XCTAssertNil(output["protocolVersion"])
+        XCTAssertNil(output["supportedProtocolVersions"])
+        XCTAssertNil(output["agentVersion"])
     }
 
     func testTunnelStartParsesExitWhenStdinCloses() throws {

@@ -1365,7 +1365,8 @@ struct TunnelStartCommand: AsyncParsableCommand {
     }
 
     /// Operations the serving loop answers, device-backed ones included.
-    static let serveCapabilities = ["ping", "capabilities"] + TunnelAgentOperations.names
+    static let serveCapabilities =
+        TunnelAgentIPC.builtInOperationNames + TunnelAgentOperations.names
 
     /// Runs the tunnel until `untilParentGone` returns, then stops cleanly.
     ///
@@ -1780,22 +1781,92 @@ func tunnelStatisticsLine(
         + "ip6Drops=\(statistics.ip6Drops)."
 }
 
-/// Machine-readable event emitted once a tunnel can accept local clients.
+/// This machine-readable event is emitted when a tunnel accepts local clients.
 struct TunnelReadyEvent: Encodable {
+    /// Supervising processes consume this event discriminator.
     let event = "ready"
+
+    /// The tunnel reaches this device-side IPv6 address.
     let address: String
+
+    /// The device exposes this Remote Service Discovery port.
     let rsdPort: UInt16
+
+    /// This device identifier belongs to the current tunnel cycle.
     let udid: String
+
+    /// This value reports whether forwarding uses the in-process network stack.
     let userspaceTun = true
+
+    /// The packet bridge accepts local clients at this host address.
     let userspaceTunHost: String
+
+    /// The packet bridge accepts local clients on this host port.
     let userspaceTunPort: UInt16
+
+    /// The tunnel was established with the pairing identity at this path.
     let identityPath: String
+
+    /// The negotiated tunnel accepts this maximum packet size.
     let mtu: UInt16
 
-    /// Operations the agent's serving loop accepts on standard input, or nil
-    /// outside serving mode. Supervisors route an operation through the pipe
-    /// only when it is listed here.
+    /// The serving loop accepts these operations on standard input.
+    ///
+    /// This value stays nil outside serving mode. Supervisors route an operation
+    /// through the pipe only when it is listed here.
     let capabilities: [String]?
+
+    /// This current agent protocol version stays nil outside serving mode.
+    let protocolVersion: Int?
+
+    /// The serving agent accepts these protocol versions.
+    let supportedProtocolVersions: [Int]?
+
+    /// This native agent version is paired with the protocol advertisement.
+    let agentVersion: String?
+
+    /// Creates a ready event and includes protocol metadata in serving mode.
+    ///
+    /// Protocol metadata stays absent when `capabilities` is nil so existing
+    /// supervisors receive the same non-serving event shape.
+    ///
+    /// - Parameters:
+    ///   - address: The tunnel reaches this device-side IPv6 address.
+    ///   - rsdPort: The device exposes this Remote Service Discovery port.
+    ///   - udid: This device identifier belongs to the tunnel cycle.
+    ///   - userspaceTunHost: The local packet bridge uses this host address.
+    ///   - userspaceTunPort: The local packet bridge uses this host port.
+    ///   - identityPath: The pairing identity is stored at this path.
+    ///   - mtu: The tunnel accepts this maximum packet size.
+    ///   - capabilities: Serving mode accepts these standard-input operations.
+    init(
+        address: String,
+        rsdPort: UInt16,
+        udid: String,
+        userspaceTunHost: String,
+        userspaceTunPort: UInt16,
+        identityPath: String,
+        mtu: UInt16,
+        capabilities: [String]?
+    ) {
+        self.address = address
+        self.rsdPort = rsdPort
+        self.udid = udid
+        self.userspaceTunHost = userspaceTunHost
+        self.userspaceTunPort = userspaceTunPort
+        self.identityPath = identityPath
+        self.mtu = mtu
+        self.capabilities = capabilities
+        if capabilities == nil {
+            protocolVersion = nil
+            supportedProtocolVersions = nil
+            agentVersion = nil
+        } else {
+            protocolVersion = TunnelAgentProtocol.currentVersion
+            supportedProtocolVersions = TunnelAgentProtocol.supportedVersions
+            agentVersion = RorkDevice.version
+        }
+    }
 }
 
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
