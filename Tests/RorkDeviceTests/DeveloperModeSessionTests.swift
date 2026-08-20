@@ -64,6 +64,73 @@ final class DeveloperModeSessionTests: XCTestCase {
 
         XCTAssertTrue(connection.isClosed)
     }
+
+    /// Verifies a successful AMFI response completes before its deadline.
+    func testRevealDeveloperModeCompletesBeforeTimeout() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "success": true
+            ])
+        )
+        let backend = DeveloperModeSessionTestBackend(
+            connection: connection
+        )
+        let session = DeviceSession(backend: backend)
+
+        try await session.revealDeveloperMode(timeout: .seconds(1))
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Verifies a timed-out reveal closes its pending AMFI service connection.
+    func testRevealDeveloperModeTimesOutAndClosesService() async throws {
+        let connection = FakeConnection(blocksWhenDrained: true)
+        let backend = DeveloperModeSessionTestBackend(
+            connection: connection
+        )
+        let session = DeviceSession(backend: backend)
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await session.revealDeveloperMode(
+                    timeout: .milliseconds(20)
+                )
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .transport("Developer Mode reveal timed out.")
+                )
+            }
+        )
+
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Verifies invalid deadlines fail before opening the AMFI service.
+    func testRevealDeveloperModeRejectsNonpositiveTimeout() async throws {
+        let connection = FakeConnection()
+        let backend = DeveloperModeSessionTestBackend(
+            connection: connection
+        )
+        let session = DeviceSession(backend: backend)
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await session.revealDeveloperMode(timeout: .zero)
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .invalidInput(
+                        "Developer Mode reveal timeout must be greater than zero."
+                    )
+                )
+            }
+        )
+
+        XCTAssertTrue(backend.startedServiceNames.isEmpty)
+    }
 }
 
 /// Device-session backend that records the service requested by the operation.

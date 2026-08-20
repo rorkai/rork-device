@@ -18,6 +18,24 @@ final class DeveloperModeClientTests: XCTestCase {
         XCTAssertEqual(request["action"] as? Int, 0)
     }
 
+    /// Verifies a completed response cannot be replaced by a later timeout.
+    func testCompletedRevealCannotBecomeTimeout() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "success": true
+            ])
+        )
+        let worker = DeveloperModeRevealWorker(
+            client: DeveloperModeClient(connection: connection)
+        )
+
+        try await worker.reveal()
+        worker.markTimedOutAndClose()
+
+        XCTAssertFalse(worker.didTimeOut)
+        XCTAssertFalse(connection.isClosed)
+    }
+
     func testRevealPropagatesDeviceError() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -39,6 +57,36 @@ final class DeveloperModeClientTests: XCTestCase {
                 )
             }
         )
+    }
+
+    /// Verifies a completed AMFI error cannot be replaced by a later timeout.
+    func testFailedRevealCannotBecomeTimeout() async throws {
+        let connection = FakeConnection(
+            inbound: try PropertyListMessageFramer.encode([
+                "Error": "DeviceLocked"
+            ])
+        )
+        let worker = DeveloperModeRevealWorker(
+            client: DeveloperModeClient(connection: connection)
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            {
+                try await worker.reveal()
+            },
+            { error in
+                XCTAssertEqual(
+                    error as? RorkDeviceError,
+                    .lockdown(
+                        "Developer Mode reveal failed: DeviceLocked"
+                    )
+                )
+            }
+        )
+        worker.markTimedOutAndClose()
+
+        XCTAssertFalse(worker.didTimeOut)
+        XCTAssertFalse(connection.isClosed)
     }
 
     func testRevealRejectsResponseWithoutResult() async throws {
