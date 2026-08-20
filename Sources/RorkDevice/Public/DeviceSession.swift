@@ -223,17 +223,33 @@ public final class DeviceSession: @unchecked Sendable {
     /// The device must already trust the host because the AMFI service is
     /// opened through the authenticated Lockdown session.
     ///
+    /// - Parameter timeout: Maximum time to wait for the AMFI response after
+    ///   the service starts. Passing `nil` waits for the transport to complete.
     /// - Throws: A Lockdown error when iOS rejects the request, a protocol
     ///   violation when the service returns an incomplete response, or a
-    ///   transport error when the service connection fails.
-    public func revealDeveloperMode() async throws {
+    ///   transport error when the service connection fails or times out. A
+    ///   nonpositive timeout produces an input error.
+    public func revealDeveloperMode(
+        timeout: Duration? = nil
+    ) async throws {
+        if let timeout, timeout <= .zero {
+            throw RorkDeviceError.invalidInput(
+                "Developer Mode reveal timeout must be greater than zero."
+            )
+        }
+
         let connection = try await startService(.developerMode)
         defer {
             connection.close()
         }
-        try await DeveloperModeClient(
+        let client = DeveloperModeClient(
             connection: connection
-        ).reveal()
+        )
+        if let timeout {
+            try await client.reveal(timeout: timeout)
+        } else {
+            try await client.reveal()
+        }
     }
 
     /// Mounts an iOS 17+ personalized Developer Disk Image.

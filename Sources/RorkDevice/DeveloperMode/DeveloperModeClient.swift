@@ -7,6 +7,11 @@ import Foundation
 /// which makes the Developer Mode setting visible without enabling it,
 /// restarting the device, or confirming the post-restart prompt.
 final class DeveloperModeClient {
+    /// Stable error returned when the AMFI response exceeds its deadline.
+    private static let timeoutError = RorkDeviceError.transport(
+        "Developer Mode reveal timed out."
+    )
+
     /// Connected `com.apple.amfi.lockdown` service stream.
     private let connection: DeviceConnection
 
@@ -42,5 +47,97 @@ final class DeveloperModeClient {
                 "Developer Mode reveal response did not report success."
             )
         }
+    }
+
+    /// Makes the setting visible or fails after the supplied duration.
+    ///
+    /// The timeout closes the AMFI service connection before returning so a
+    /// pending receive cannot outlive the operation.
+    ///
+    /// - Parameter timeout: Maximum time to wait for the AMFI response.
+    /// - Throws: A transport timeout or any error produced by `reveal()`.
+    func reveal(timeout: Duration) async throws {
+        let worker = DeveloperModeRevealWorker(client: self)
+        do {
+            try await withTaskCancellationHandler {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { [worker] in
+                        try await worker.reveal()
+                    }
+                    group.addTask { [worker] in
+                        try await Task.sleep(for: timeout)
+                        worker.markTimedOutAndClose()
+                        throw Self.timeoutError
+                    }
+
+                    defer {
+                        group.cancelAll()
+                    }
+                    _ = try await group.next()
+                }
+            } onCancel: {
+                worker.close()
+            }
+            if worker.didTimeOut {
+                throw Self.timeoutError
+            }
+        } catch {
+            if worker.didTimeOut {
+                throw Self.timeoutError
+            }
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+    }
+
+    /// Closes the underlying AMFI connection.
+    func close() {
+        connection.close()
+    }
+}
+
+/// Shares one Developer Mode reveal client across racing timeout tasks.
+///
+/// `DeviceConnection.close()` is thread-safe and interrupts pending reads, so
+/// the worker may close the stream from the timeout or cancellation path while
+/// the operation task is receiving a response.
+private final class DeveloperModeRevealWorker: @unchecked Sendable {
+    /// Client performing the AMFI protocol exchange.
+    private let client: DeveloperModeClient
+
+    /// Protects the timeout marker shared by the racing tasks.
+    private let lock = NSLock()
+
+    /// Records whether the timeout path closed the connection.
+    private var timedOut = false
+
+    /// Creates a worker that owns one reveal client's concurrent lifecycle.
+    init(client: DeveloperModeClient) {
+        self.client = client
+    }
+
+    /// Reports whether the timeout path won the race.
+    var didTimeOut: Bool {
+        lock.withLock { timedOut }
+    }
+
+    /// Performs the AMFI request on the operation task.
+    func reveal() async throws {
+        try await client.reveal()
+    }
+
+    /// Marks the timeout before closing the connection that may be receiving.
+    func markTimedOutAndClose() {
+        lock.withLock {
+            timedOut = true
+        }
+        close()
+    }
+
+    /// Closes the AMFI connection to release any pending operation.
+    func close() {
+        client.close()
     }
 }
