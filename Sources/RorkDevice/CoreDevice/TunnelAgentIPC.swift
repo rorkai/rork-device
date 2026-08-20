@@ -1,5 +1,7 @@
 import Foundation
 
+#if !os(WASI)
+
 /// Serves newline-delimited JSON requests on a tunnel agent's standard input.
 ///
 /// A supervising process writes one request object per line and reads replies
@@ -269,3 +271,5 @@ private final class ReplyWriter: @unchecked Sendable {
         }
     }
 }
+
+#endif

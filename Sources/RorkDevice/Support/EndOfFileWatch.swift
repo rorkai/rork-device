@@ -1,5 +1,7 @@
 import Foundation
 
+#if !os(WASI)
+
 /// Suspends until a file handle reaches end-of-file.
 ///
 /// Supervised agent processes use this on standard input: a supervisor that
@@ -46,3 +48,5 @@ private final class ResumeOnce: @unchecked Sendable {
         }
     }
 }
+
+#endif
