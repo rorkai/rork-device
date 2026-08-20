@@ -65,6 +65,7 @@ final class DeveloperModeSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Verifies a successful AMFI response completes before its deadline.
     func testRevealDeveloperModeCompletesBeforeTimeout() async throws {
         let connection = FakeConnection(
             inbound: try PropertyListMessageFramer.encode([
@@ -81,6 +82,7 @@ final class DeveloperModeSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Verifies a timed-out reveal closes its pending AMFI service connection.
     func testRevealDeveloperModeTimesOutAndClosesService() async throws {
         let connection = FakeConnection(blocksWhenDrained: true)
         let backend = DeveloperModeSessionTestBackend(
@@ -105,6 +107,7 @@ final class DeveloperModeSessionTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
     }
 
+    /// Verifies invalid deadlines fail before opening the AMFI service.
     func testRevealDeveloperModeRejectsNonpositiveTimeout() async throws {
         let connection = FakeConnection()
         let backend = DeveloperModeSessionTestBackend(

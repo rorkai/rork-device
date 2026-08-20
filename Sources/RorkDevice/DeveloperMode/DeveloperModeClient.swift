@@ -103,15 +103,27 @@ final class DeveloperModeClient {
 /// `DeviceConnection.close()` is thread-safe and interrupts pending reads, so
 /// the worker may close the stream from the timeout or cancellation path while
 /// the operation task is receiving a response.
-private final class DeveloperModeRevealWorker: @unchecked Sendable {
+final class DeveloperModeRevealWorker: @unchecked Sendable {
+    /// Terminal state shared by the operation and timeout tasks.
+    private enum Outcome {
+        /// Neither task has completed the reveal.
+        case pending
+
+        /// The AMFI operation completed with a response or protocol error.
+        case completed
+
+        /// The timeout task closed the AMFI connection first.
+        case timedOut
+    }
+
     /// Client performing the AMFI protocol exchange.
     private let client: DeveloperModeClient
 
     /// Protects the timeout marker shared by the racing tasks.
     private let lock = NSLock()
 
-    /// Records whether the timeout path closed the connection.
-    private var timedOut = false
+    /// First terminal outcome observed by the racing tasks.
+    private var outcome = Outcome.pending
 
     /// Creates a worker that owns one reveal client's concurrent lifecycle.
     init(client: DeveloperModeClient) {
@@ -120,24 +132,51 @@ private final class DeveloperModeRevealWorker: @unchecked Sendable {
 
     /// Reports whether the timeout path won the race.
     var didTimeOut: Bool {
-        lock.withLock { timedOut }
+        lock.withLock {
+            if case .timedOut = outcome {
+                return true
+            }
+            return false
+        }
     }
 
     /// Performs the AMFI request on the operation task.
     func reveal() async throws {
-        try await client.reveal()
+        do {
+            try await client.reveal()
+            markCompleted()
+        } catch {
+            markCompleted()
+            throw error
+        }
     }
 
     /// Marks the timeout before closing the connection that may be receiving.
     func markTimedOutAndClose() {
-        lock.withLock {
-            timedOut = true
+        let shouldClose = lock.withLock {
+            guard case .pending = outcome else {
+                return false
+            }
+            outcome = .timedOut
+            return true
         }
-        close()
+        if shouldClose {
+            close()
+        }
     }
 
     /// Closes the AMFI connection to release any pending operation.
     func close() {
         client.close()
+    }
+
+    /// Records AMFI completion without replacing an earlier timeout.
+    private func markCompleted() {
+        lock.withLock {
+            guard case .pending = outcome else {
+                return
+            }
+            outcome = .completed
+        }
     }
 }
