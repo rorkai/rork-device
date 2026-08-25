@@ -150,7 +150,7 @@ public final class InstallationProxyClient {
     /// - Parameters:
     ///   - packagePath: Device-side path to the staged IPA.
     ///   - bundleIdentifier: Optional expected bundle identifier.
-    public func submitInstallation(
+    func submitInstallation(
         packagePath: String,
         bundleIdentifier: String? = nil
     ) async throws {

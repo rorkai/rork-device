@@ -682,6 +682,29 @@ public final class DeviceSession: @unchecked Sendable {
         try await client.uninstall(bundleIdentifier: bundleIdentifier, progress: progress)
     }
 
+    /// Submits installation of a package already staged on the device.
+    ///
+    /// The method opens a dedicated InstallationProxy connection, writes the
+    /// request, and closes that connection without waiting for status events.
+    /// Later verification and installation failures are unavailable. Use
+    /// `installApplication(at:bundleIdentifier:progress:)` when completion or
+    /// error reporting is required.
+    ///
+    /// - Parameters:
+    ///   - packagePath: Device-side path returned by `stageApplication`.
+    ///   - bundleIdentifier: Optional expected bundle identifier.
+    public func submitInstallation(
+        at packagePath: String,
+        bundleIdentifier: String? = nil
+    ) async throws {
+        let connection = try await startService(.installationProxy)
+        let client = InstallationProxyClient(connection: connection)
+        try await client.submitInstallation(
+            packagePath: packagePath,
+            bundleIdentifier: bundleIdentifier
+        )
+    }
+
     /// Stages and installs an IPA through the device services used by iOS.
     ///
     /// This combines two lower-level operations: upload the IPA to
