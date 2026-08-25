@@ -142,11 +142,10 @@ public final class InstallationProxyClient {
 
     /// Submits an installation without waiting for a status response.
     ///
-    /// This method returns after the entire request has been written to the
-    /// service connection. The caller retains ownership of that connection and
-    /// may close it immediately. Later verification and installation failures
-    /// cannot be observed through this method. Use `install` when completion or
-    /// error reporting is required.
+    /// This method returns after the entire request has been written and always
+    /// closes the underlying service connection. The client cannot be reused.
+    /// Later verification and installation failures cannot be observed through
+    /// this method. Use `install` when completion or error reporting is required.
     ///
     /// - Parameters:
     ///   - packagePath: Device-side path to the staged IPA.
@@ -155,6 +154,9 @@ public final class InstallationProxyClient {
         packagePath: String,
         bundleIdentifier: String? = nil
     ) async throws {
+        defer {
+            connection.close()
+        }
         try await PropertyListMessageFramer.send(
             Self.installCommand(
                 packagePath: packagePath,

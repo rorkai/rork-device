@@ -150,6 +150,7 @@ final class InstallationProxyClientTests: XCTestCase {
         }
     }
 
+    /// Installation streams every progress event through the terminal status.
     func testInstallEmitsProgressUntilComplete() async throws {
         var inbound = Data()
         inbound.append(try PropertyListMessageFramer.encode([
@@ -171,8 +172,8 @@ final class InstallationProxyClientTests: XCTestCase {
         XCTAssertEqual(events.values.first?.percentComplete, 50)
     }
 
-    /// Submission returns after writing the entire request without reading.
-    func testSubmitInstallationReturnsAfterSendingRequest() async throws {
+    /// Submission writes the request without reading and consumes the connection.
+    func testSubmitInstallationClosesConnectionAfterSendingRequest() async throws {
         let connection = FakeConnection()
         let client = InstallationProxyClient(connection: connection)
 
@@ -189,8 +190,19 @@ final class InstallationProxyClientTests: XCTestCase {
         )
         let options = try XCTUnwrap(request["ClientOptions"] as? [String: Any])
         XCTAssertEqual(options["CFBundleIdentifier"] as? String, "app.example")
+        XCTAssertTrue(connection.isClosed)
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.install(packagePath: "/PublicStaging/Other.ipa")
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("Fake connection is closed.")
+            )
+        }
     }
 
+    /// Unknown progress values remain available without failing installation.
     func testInstallPreservesUnknownProgressStatus() async throws {
         var inbound = Data()
         inbound.append(try PropertyListMessageFramer.encode([
