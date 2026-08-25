@@ -171,6 +171,26 @@ final class InstallationProxyClientTests: XCTestCase {
         XCTAssertEqual(events.values.first?.percentComplete, 50)
     }
 
+    /// Submission returns after writing the entire request without reading.
+    func testSubmitInstallationReturnsAfterSendingRequest() async throws {
+        let connection = FakeConnection()
+        let client = InstallationProxyClient(connection: connection)
+
+        try await client.submitInstallation(
+            packagePath: "/PublicStaging/App.ipa",
+            bundleIdentifier: "app.example"
+        )
+
+        let request = try XCTUnwrap(decodedProxyMessage(connection.sent[0]))
+        XCTAssertEqual(request["Command"] as? String, "Install")
+        XCTAssertEqual(
+            request["PackagePath"] as? String,
+            "/PublicStaging/App.ipa"
+        )
+        let options = try XCTUnwrap(request["ClientOptions"] as? [String: Any])
+        XCTAssertEqual(options["CFBundleIdentifier"] as? String, "app.example")
+    }
+
     func testInstallPreservesUnknownProgressStatus() async throws {
         var inbound = Data()
         inbound.append(try PropertyListMessageFramer.encode([
