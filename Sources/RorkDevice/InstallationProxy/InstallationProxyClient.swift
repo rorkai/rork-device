@@ -132,8 +132,8 @@ public final class InstallationProxyClient {
         progress: InstallationProgressHandler? = nil
     ) async throws {
         try await performCommand(
-            Self.installCommand(
-                packagePath: packagePath,
+            Self.makeInstallCommand(
+                forPackageAt: packagePath,
                 bundleIdentifier: bundleIdentifier
             ),
             progress: progress
@@ -151,15 +151,15 @@ public final class InstallationProxyClient {
     ///   - packagePath: Device-side path to the staged IPA.
     ///   - bundleIdentifier: Optional expected bundle identifier.
     func submitInstallation(
-        packagePath: String,
+        at packagePath: String,
         bundleIdentifier: String? = nil
     ) async throws {
         defer {
             connection.close()
         }
         try await PropertyListMessageFramer.send(
-            Self.installCommand(
-                packagePath: packagePath,
+            Self.makeInstallCommand(
+                forPackageAt: packagePath,
                 bundleIdentifier: bundleIdentifier
             ),
             to: connection
@@ -207,9 +207,9 @@ public final class InstallationProxyClient {
         }
     }
 
-    /// Builds the InstallationProxy command for a staged IPA.
-    private static func installCommand(
-        packagePath: String,
+    /// Creates the InstallationProxy command for a staged IPA.
+    private static func makeInstallCommand(
+        forPackageAt packagePath: String,
         bundleIdentifier: String?
     ) -> [String: Any] {
         var clientOptions: [String: Any] = [:]

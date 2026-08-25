@@ -178,7 +178,7 @@ final class InstallationProxyClientTests: XCTestCase {
         let client = InstallationProxyClient(connection: connection)
 
         try await client.submitInstallation(
-            packagePath: "/PublicStaging/App.ipa",
+            at: "/PublicStaging/App.ipa",
             bundleIdentifier: "app.example"
         )
 

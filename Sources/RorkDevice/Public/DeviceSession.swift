@@ -700,7 +700,7 @@ public final class DeviceSession: @unchecked Sendable {
         let connection = try await startService(.installationProxy)
         let client = InstallationProxyClient(connection: connection)
         try await client.submitInstallation(
-            packagePath: packagePath,
+            at: packagePath,
             bundleIdentifier: bundleIdentifier
         )
     }
