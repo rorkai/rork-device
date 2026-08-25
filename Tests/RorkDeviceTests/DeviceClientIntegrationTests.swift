@@ -345,6 +345,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.installedPackagePaths, ["./PublicStaging/com.example.app/app.ipa"])
     }
 
+    /// In-memory installation stages bytes before waiting for completion.
     func testInstallsInMemoryApplicationThroughFakeUSBMuxDeviceStack() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }
@@ -370,6 +371,38 @@ final class DeviceClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.installedPackagePaths, ["./PublicStaging/com.example.memory/app.ipa"])
     }
 
+    /// Request-only installation submits a staged package without waiting for progress.
+    func testSubmitsStagedInstallationThroughFakeUSBMuxDeviceStack() async throws {
+        let daemon = try FakeUSBMuxDaemon()
+        defer { daemon.stop() }
+        let client = DeviceClient(
+            usbmuxClient: USBMuxClient(host: "127.0.0.1", port: daemon.port)
+        )
+
+        let devices = try await client.discoverDevices()
+        let device = try XCTUnwrap(devices.first)
+        let session = try await client.connect(
+            to: device,
+            using: try testPairingRecord()
+        )
+        let bundleIdentifier = "com.example.submission"
+        let stagedPath = try await session.stageApplication(
+            Data("fake ipa".utf8),
+            bundleIdentifier: bundleIdentifier
+        )
+
+        try await session.submitInstallation(
+            at: stagedPath,
+            bundleIdentifier: bundleIdentifier
+        )
+
+        try await waitUntil("InstallationProxy receives the submitted package") {
+            !daemon.installedPackagePaths.isEmpty
+        }
+        XCTAssertEqual(daemon.installedPackagePaths, [stagedPath])
+    }
+
+    /// AFC staging does not forward Lockdown escrow material to the service.
     func testStagesApplicationDoesNotSendEscrowBagForAFCService() async throws {
         let daemon = try FakeUSBMuxDaemon()
         defer { daemon.stop() }

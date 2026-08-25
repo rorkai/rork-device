@@ -131,15 +131,39 @@ public final class InstallationProxyClient {
         bundleIdentifier: String? = nil,
         progress: InstallationProgressHandler? = nil
     ) async throws {
-        var clientOptions: [String: Any] = [:]
-        if let bundleIdentifier {
-            clientOptions["CFBundleIdentifier"] = bundleIdentifier
+        try await performCommand(
+            Self.installCommand(
+                for: packagePath,
+                bundleIdentifier: bundleIdentifier
+            ),
+            progress: progress
+        )
+    }
+
+    /// Submits an installation without waiting for a status response.
+    ///
+    /// This method returns after the entire request has been written and always
+    /// closes the underlying service connection. The client cannot be reused.
+    /// Later verification and installation failures cannot be observed through
+    /// this method. Use `install` when completion or error reporting is required.
+    ///
+    /// - Parameters:
+    ///   - packagePath: Device-side path to the staged IPA.
+    ///   - bundleIdentifier: Optional expected bundle identifier.
+    func submitInstallation(
+        at packagePath: String,
+        bundleIdentifier: String? = nil
+    ) async throws {
+        defer {
+            connection.close()
         }
-        try await performCommand([
-            "Command": "Install",
-            "PackagePath": packagePath,
-            "ClientOptions": clientOptions,
-        ], progress: progress)
+        try await PropertyListMessageFramer.send(
+            Self.installCommand(
+                for: packagePath,
+                bundleIdentifier: bundleIdentifier
+            ),
+            to: connection
+        )
     }
 
     /// Uninstalls an application by bundle identifier.
@@ -181,5 +205,21 @@ public final class InstallationProxyClient {
                 return
             }
         }
+    }
+
+    /// Returns the InstallationProxy request for a staged IPA.
+    private static func installCommand(
+        for packagePath: String,
+        bundleIdentifier: String?
+    ) -> [String: Any] {
+        var clientOptions: [String: Any] = [:]
+        if let bundleIdentifier {
+            clientOptions["CFBundleIdentifier"] = bundleIdentifier
+        }
+        return [
+            "Command": "Install",
+            "PackagePath": packagePath,
+            "ClientOptions": clientOptions,
+        ]
     }
 }
