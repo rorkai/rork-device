@@ -82,6 +82,10 @@ let swiftZipArchive: Package.Dependency = .package(
     url: "https://github.com/rorkai/swift-zip-archive.git",
     exact: "0.8.1-rork.4"
 )
+let swiftSystem: Package.Dependency = .package(
+    url: "https://github.com/apple/swift-system.git",
+    from: "1.4.0"
+)
 
 var dependencies: [Package.Dependency] = [
     swiftArgumentParser,
@@ -91,6 +95,7 @@ var dependencies: [Package.Dependency] = [
     swiftCrypto,
     bigInt,
     swiftZipArchive,
+    swiftSystem,
 ]
 
 var targets: [Target] = [
@@ -169,6 +174,7 @@ var targets: [Target] = [
                 condition: .when(platforms: hostPlatforms)
             ),
             .product(name: "Crypto", package: "swift-crypto"),
+            .product(name: "SystemPackage", package: "swift-system"),
             .product(name: "ZipArchive", package: "swift-zip-archive"),
         ]
     ),
