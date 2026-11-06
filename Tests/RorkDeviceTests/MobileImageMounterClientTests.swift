@@ -108,7 +108,7 @@ final class MobileImageMounterClientTests: XCTestCase {
                 personalizationIdentifiersResponse(),
             ]),
             receiveFailureAfterSendCount: 3,
-            receiveFailure: .connectionClosed
+            receiveFailure: .connectionClosed("Connection closed.")
         )
         let replacementConnection = FakeConnection(
             inbound: try framedMessages([

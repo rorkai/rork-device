@@ -20,6 +20,16 @@ enum FailureReport {
         environment[formatVariable] == "json"
     }
 
+    /// A failure the command already reported in its own output, such as a
+    /// diagnostic report.
+    ///
+    /// Throwing it exits with status 1 without printing the error again,
+    /// while the opt-in failure line still classifies `underlying`.
+    struct AlreadyReported: Error {
+        /// The error the command reported.
+        let underlying: Error
+    }
+
     /// Where a command failed, which decides how its error classifies.
     enum Phase {
         /// Parsing or validating the command line.
@@ -42,6 +52,9 @@ enum FailureReport {
                 code: .invalidInput,
                 message: RorkDeviceCommand.message(for: error)
             )
+        }
+        if let reported = error as? AlreadyReported {
+            return failure(for: reported.underlying)
         }
         if error is any RorkDeviceFailureConvertible || error is CancellationError {
             return RorkDeviceFailure(error)
@@ -70,12 +83,21 @@ enum FailureReport {
     /// What a failed run writes to standard error and its exit status, or
     /// nil when ArgumentParser's own `exit(withError:)` handles the error
     /// unchanged: the format is not requested, or the error is a clean exit
-    /// such as `--help`.
+    /// such as `--help`. An ``AlreadyReported`` failure always terminates
+    /// here, because ArgumentParser would print it again.
     static func termination(
         for error: Error,
         phase: Phase,
         environment: [String: String]
     ) -> (standardError: Data, status: Int32)? {
+        if error is AlreadyReported {
+            guard isEnabled(in: environment),
+                let line = try? line(for: failure(for: error, phase: phase))
+            else {
+                return (Data(), ExitCode.failure.rawValue)
+            }
+            return (line + Data([0x0a]), ExitCode.failure.rawValue)
+        }
         let exitCode = RorkDeviceCommand.exitCode(for: error)
         guard exitCode != .success, isEnabled(in: environment) else {
             return nil

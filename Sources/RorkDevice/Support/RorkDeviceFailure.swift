@@ -227,6 +227,7 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         case cause
     }
 
+    /// Decodes a failure, reading unknown codes at any depth as ``Code/unknown``.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
@@ -237,6 +238,7 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         )
     }
 
+    /// Encodes `code` and `message`, and `details` and `cause` only when set.
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(code, forKey: .code)

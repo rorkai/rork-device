@@ -159,7 +159,7 @@ final class FailureReportTests: XCTestCase {
     func testDefersToArgumentParserWhenNotRequestedOrClean() {
         XCTAssertNil(
             FailureReport.termination(
-                for: RorkDeviceError.connectionClosed,
+                for: RorkDeviceError.connectionClosed("Connection closed."),
                 phase: .running,
                 environment: [:]
             )
@@ -170,6 +170,29 @@ final class FailureReportTests: XCTestCase {
                 phase: .parsing,
                 environment: Self.jsonEnvironment
             )
+        )
+    }
+
+    /// `remote-pairing diagnose` prints its own report, so it exits quietly
+    /// without the line and keeps the typed classification with it.
+    func testAnAlreadyReportedFailureKeepsItsClassification() throws {
+        let error = FailureReport.AlreadyReported(
+            underlying: RorkDeviceError.remotePairing(.unknownPeer)
+        )
+
+        let quiet = try XCTUnwrap(
+            FailureReport.termination(for: error, phase: .running, environment: [:])
+        )
+        XCTAssertEqual(quiet.status, 1)
+        XCTAssertTrue(quiet.standardError.isEmpty)
+
+        let reported = try XCTUnwrap(
+            FailureReport.termination(for: error, phase: .running, environment: Self.jsonEnvironment)
+        )
+        XCTAssertEqual(reported.status, 1)
+        XCTAssertEqual(
+            lines(of: reported.standardError),
+            [#"{"failure":{"code":"trust-not-recognized","message":"The device does not recognize this remote-pairing identity."}}"#]
         )
     }
 }

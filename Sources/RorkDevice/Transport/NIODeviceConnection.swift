@@ -24,10 +24,10 @@ final class NIODeviceConnection:
     @unchecked Sendable
 {
     /// Error reported to callers once the owner closes the stream locally.
-    static let closedError = RorkDeviceError.localConnectionClosed
+    static let closedError = RorkDeviceError.localConnectionClosed("Connection is closed.")
 
     /// Error reported when the peer closes before a read can be satisfied.
-    static let peerClosedError = RorkDeviceError.connectionClosed
+    static let peerClosedError = RorkDeviceError.connectionClosed("Connection closed.")
 
     /// Channel handle retained for outbound writes and prompt close.
     private let channel: Channel

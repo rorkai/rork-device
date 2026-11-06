@@ -49,7 +49,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(upTo: 1024) }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed)
+            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed("Connection is closed."))
         }
     }
 
@@ -62,7 +62,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ try await connection.send(Data([1])) }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed)
+            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed("Connection is closed."))
         }
     }
 
@@ -75,7 +75,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 1) }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed)
+            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed("Connection is closed."))
         }
     }
 
@@ -94,7 +94,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         connection.close()
 
         await XCTAssertThrowsErrorAsync({ _ = try await pendingRead.value }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed)
+            XCTAssertEqual(error as? RorkDeviceError, .localConnectionClosed("Connection is closed."))
         }
     }
 
@@ -123,7 +123,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         defer { connection.close() }
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 4) }) { error in
-            XCTAssertEqual(error as? RorkDeviceError, .connectionClosed)
+            XCTAssertEqual(error as? RorkDeviceError, .connectionClosed("Connection closed."))
         }
     }
 

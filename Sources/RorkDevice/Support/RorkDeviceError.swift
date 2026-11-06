@@ -24,12 +24,13 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// passcode.
     case deviceLocked(request: String)
 
-    /// The peer closed the connection.
-    case connectionClosed
+    /// The peer closed the connection. The message names the connection.
+    case connectionClosed(String)
 
     /// This side closed the connection, for example while a tunnel cycle
-    /// was torn down, and an operation still used it.
-    case localConnectionClosed
+    /// was torn down, and an operation still used it. The message names the
+    /// connection.
+    case localConnectionClosed(String)
 
     /// The peer reset the connection. The message preserves the platform's
     /// diagnostic detail.
@@ -108,10 +109,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return usbOnly ? "No matching USB device found." : "No matching device found."
         case let .deviceLocked(request):
             return "Lockdown error: \(request) failed: PasswordProtected"
-        case .connectionClosed:
-            return "Transport error: Connection closed."
-        case .localConnectionClosed:
-            return "Transport error: Connection is closed."
+        case let .connectionClosed(message), let .localConnectionClosed(message):
+            return "Transport error: \(message)"
         case let .connectionReset(message):
             return "Transport error: \(message)"
         case let .timedOut(message):

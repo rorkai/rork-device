@@ -39,12 +39,12 @@ final class RorkDeviceFailureTests: XCTestCase {
                 "Lockdown error: StartService failed: PasswordProtected"
             ),
             (
-                RorkDeviceError.connectionClosed,
+                RorkDeviceError.connectionClosed("Connection closed."),
                 .connectionClosed,
                 "Transport error: Connection closed."
             ),
             (
-                RorkDeviceError.localConnectionClosed,
+                RorkDeviceError.localConnectionClosed("Connection is closed."),
                 .connectionClosed,
                 "Transport error: Connection is closed."
             ),
@@ -149,7 +149,7 @@ final class RorkDeviceFailureTests: XCTestCase {
         let failure = RorkDeviceFailure(
             RorkDeviceError.transportStep(
                 context: "Remote service com.apple.example on [fd00::1]:5000 closed while waiting for StartService",
-                underlying: RorkDeviceError.connectionClosed.failure
+                underlying: RorkDeviceError.connectionClosed("Connection closed.").failure
             )
         )
 

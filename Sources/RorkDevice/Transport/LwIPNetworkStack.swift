@@ -206,7 +206,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
         }
         let terminalError =
             error
-            ?? RorkDeviceError.transport(
+            ?? RorkDeviceError.localConnectionClosed(
                 "CoreDevice userspace network closed."
             )
         states.forEach { $0.finish(with: terminalError) }
@@ -239,7 +239,7 @@ final class LwIPNetworkStack: @unchecked Sendable {
             }
         }
         guard let result else {
-            throw RorkDeviceError.transport(
+            throw RorkDeviceError.localConnectionClosed(
                 "CoreDevice userspace TCP connection is closed."
             )
         }
@@ -579,7 +579,7 @@ final class LwIPConnectionState: @unchecked Sendable {
             handleWritable()
         case RORK_LWIP_CONNECTION_CLOSED:
             finish(
-                with: RorkDeviceError.transport(
+                with: RorkDeviceError.connectionClosed(
                     "CoreDevice userspace TCP connection closed."
                 )
             )
@@ -780,7 +780,7 @@ private final class LwIPDeviceConnection:
             return
         }
         state.finish(
-            with: RorkDeviceError.transport(
+            with: RorkDeviceError.localConnectionClosed(
                 "CoreDevice userspace TCP connection closed."
             )
         )

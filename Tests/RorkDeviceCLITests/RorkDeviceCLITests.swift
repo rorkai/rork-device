@@ -352,7 +352,7 @@ final class RorkDeviceCLITests: XCTestCase {
     func testTunnelLostEventEncodesReasonFailureAndDevice() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
-                event: .tunnelLost(failure: RorkDeviceError.connectionClosed.failure),
+                event: .tunnelLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure),
                 udid: "00008150-TEST"
             )
         )

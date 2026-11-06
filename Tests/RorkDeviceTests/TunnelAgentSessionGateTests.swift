@@ -51,7 +51,7 @@ final class TunnelAgentSessionGateTests: XCTestCase {
     func testTimesOutWithTheLastLossReasonWhileTheTunnelIsDown() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: IdleSessionBackend()))
-        gate.markLost(failure: RorkDeviceError.connectionClosed.failure)
+        gate.markLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure)
 
         do {
             _ = try await gate.waitForSession(upTo: .milliseconds(50))
@@ -59,7 +59,7 @@ final class TunnelAgentSessionGateTests: XCTestCase {
         } catch {
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .tunnelUnavailable(lastFailure: RorkDeviceError.connectionClosed.failure)
+                .tunnelUnavailable(lastFailure: RorkDeviceError.connectionClosed("Connection closed.").failure)
             )
             XCTAssertTrue(
                 String(describing: error).contains("Connection closed."),
@@ -71,7 +71,7 @@ final class TunnelAgentSessionGateTests: XCTestCase {
     func testANilLossReasonKeepsTheLastKnownReason() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: IdleSessionBackend()))
-        gate.markLost(failure: RorkDeviceError.connectionClosed.failure)
+        gate.markLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure)
         gate.markLost(failure: nil)
 
         do {
@@ -80,7 +80,7 @@ final class TunnelAgentSessionGateTests: XCTestCase {
         } catch {
             XCTAssertEqual(
                 RorkDeviceFailure(error).cause,
-                RorkDeviceError.connectionClosed.failure
+                RorkDeviceError.connectionClosed("Connection closed.").failure
             )
         }
     }

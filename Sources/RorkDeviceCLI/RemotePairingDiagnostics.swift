@@ -153,7 +153,7 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
                 ),
                 asJSON: json
             )
-            throw ExitCode.failure
+            throw FailureReport.AlreadyReported(underlying: error)
         }
 
         try writeRemotePairingDiagnosticReport(

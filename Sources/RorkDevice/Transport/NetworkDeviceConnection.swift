@@ -242,7 +242,7 @@ final class NetworkDeviceConnection: DeviceConnection {
                 return content
             }
             if result.isComplete {
-                throw RorkDeviceError.transport("Network connection closed.")
+                throw RorkDeviceError.connectionClosed("Network connection closed.")
             }
         }
     }

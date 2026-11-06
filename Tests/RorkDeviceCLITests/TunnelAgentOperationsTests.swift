@@ -102,7 +102,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
 
     func testAppsListFailsWithTheLastLossReasonWhenTheTunnelStaysDown() async throws {
         let gate = TunnelAgentSessionGate()
-        gate.markLost(failure: RorkDeviceError.connectionClosed.failure)
+        gate.markLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure)
         let handlers = TunnelAgentOperations.handlers(
             sessionGate: gate,
             patience: .milliseconds(50)
