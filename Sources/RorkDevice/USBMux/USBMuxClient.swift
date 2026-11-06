@@ -148,8 +148,9 @@ public final class USBMuxClient: Sendable {
         if let number = response["Number"] as? NSNumber,
             number.intValue != 0
         {
-            throw RorkDeviceError.transport(
-                "usbmux ReadPairRecord failed with code \(number.intValue)."
+            throw RorkDeviceError.usbmuxResult(
+                operation: .readPairRecord,
+                code: number.intValue
             )
         }
         guard let recordData = response["PairRecordData"] as? Data else {
@@ -246,7 +247,7 @@ public final class USBMuxClient: Sendable {
         let response = try await request(requestValues)
         try validateUSBMuxResult(
             response,
-            operation: "SavePairRecord"
+            operation: .savePairRecord
         )
     }
 
@@ -272,7 +273,7 @@ public final class USBMuxClient: Sendable {
         ])
         try validateUSBMuxResult(
             response,
-            operation: "DeletePairRecord"
+            operation: .deletePairRecord
         )
     }
 
@@ -315,7 +316,7 @@ public final class USBMuxClient: Sendable {
                             "ProgName": "rorkdevice",
                             "kLibUSBMuxVersion": 3,
                         ], connection: connection)
-                    try validateUSBMuxResult(response, operation: "Listen")
+                    try validateUSBMuxResult(response, operation: .listen)
 
                     while !Task.isCancelled {
                         let message = try await readResponseDictionary(from: connection)
@@ -370,7 +371,7 @@ public final class USBMuxClient: Sendable {
                     "PortNumber": UInt32(port.bigEndian),
                 ], connection: connection)
 
-            try validateUSBMuxResult(response, operation: "Connect")
+            try validateUSBMuxResult(response, operation: .connect)
             return connection
         } catch {
             connection.close()
@@ -613,12 +614,12 @@ private func parseDeviceEvent(_ message: [String: Any]) -> USBMuxDeviceEvent? {
 }
 
 /// Validates the numeric result field used by usbmux control responses.
-private func validateUSBMuxResult(_ response: [String: Any], operation: String) throws {
+private func validateUSBMuxResult(_ response: [String: Any], operation: USBMuxOperation) throws {
     guard let number = response["Number"] as? NSNumber else {
-        throw RorkDeviceError.protocolViolation("usbmux \(operation) response was missing Number.")
+        throw RorkDeviceError.protocolViolation("usbmux \(operation.rawValue) response was missing Number.")
     }
     if number.intValue != 0 {
-        throw RorkDeviceError.transport("usbmux \(operation) failed with code \(number.intValue).")
+        throw RorkDeviceError.usbmuxResult(operation: operation, code: number.intValue)
     }
 }
 

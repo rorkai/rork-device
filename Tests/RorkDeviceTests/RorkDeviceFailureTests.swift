@@ -111,6 +111,146 @@ final class RorkDeviceFailureTests: XCTestCase {
         XCTAssertEqual(failure.details?.retryAfterMilliseconds, .max)
     }
 
+    /// InstallationProxy reports several distinct failures under one error
+    /// code; the MobileInstallation result code separates them.
+    func testInstallationFailuresClassifyByResultCode() {
+        func failure(_ error: InstallationError) -> RorkDeviceFailure {
+            RorkDeviceFailure(RorkDeviceError.installationProxy(error))
+        }
+
+        let appLimit = failure(InstallationError(
+            code: .applicationVerificationFailed,
+            message: "Failed to verify code signature of App.app : 0xe8008021 (This device has reached the maximum number of installed apps using a free developer profile)"
+        ))
+        XCTAssertEqual(appLimit.code, .appLimitReached)
+        XCTAssertEqual(
+            appLimit.details,
+            .init(deviceErrorCode: "ApplicationVerificationFailed", installationResultCode: 0xE800_8021)
+        )
+        XCTAssertEqual(
+            appLimit.message,
+            "InstallationProxy ApplicationVerificationFailed: Failed to verify code signature of App.app : 0xe8008021 (This device has reached the maximum number of installed apps using a free developer profile)"
+        )
+
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "0xe8008015 (A valid provisioning profile for this executable was not found.)"
+            )).code,
+            .provisioningProfileRejected
+        )
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "Signature rejected",
+                resultCode: InstallationError.missingProvisioningProfileResult
+            )).code,
+            .provisioningProfileRejected
+        )
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .deviceOSVersionTooLow,
+                message: "The system version is lower than the minimum OS version specified for bundle at path App.app. Need 18.0 Have 17.5"
+            )).code,
+            .osVersionTooLow
+        )
+
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "Failed to verify code signature of App0xe8008021.app and 0xe8008021x.app : 0xe8008015 (A valid provisioning profile for this executable was not found.)"
+            )).code,
+            .provisioningProfileRejected
+        )
+
+        let other = failure(InstallationError(
+            code: .applicationVerificationFailed,
+            message: "Failed to verify code signature of App.app : 0xe8008016 (The executable was signed with invalid entitlements.)"
+        ))
+        XCTAssertEqual(other.code, .installationFailed)
+        XCTAssertEqual(other.details?.installationResultCode, 0xE800_8016)
+        XCTAssertNil(other.details?.status)
+
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "0xe8008015 (A valid provisioning profile for this executable was not found.)",
+                resultCode: InstallationError.freeDeveloperAppLimitResult
+            )).code,
+            .appLimitReached,
+            "ErrorDetail outranks a code repeated in the description"
+        )
+        XCTAssertNil(InstallationError(code: .packageNotFound, message: "id 0xE8123456").resultCode)
+        XCTAssertEqual(failure(InstallationError(code: "SomethingNewFailed")).code, .installationFailed)
+    }
+
+    /// usbmux answers `Connect` with its bad-device result when the device
+    /// detached after it was listed; other results stay transport failures.
+    func testUSBMuxBadDeviceOnConnectIsADisconnect() {
+        let disconnected = RorkDeviceFailure(
+            RorkDeviceError.usbmuxResult(operation: .connect, code: 2)
+        )
+        XCTAssertEqual(disconnected.code, .deviceDisconnected)
+        XCTAssertEqual(disconnected.message, "Transport error: usbmux Connect failed with code 2.")
+        XCTAssertEqual(disconnected.details, .init(status: 2))
+
+        XCTAssertEqual(
+            RorkDeviceFailure(RorkDeviceError.usbmuxResult(operation: .connect, code: 3)).code,
+            .transport
+        )
+        XCTAssertEqual(
+            RorkDeviceFailure(RorkDeviceError.usbmuxResult(operation: .readPairRecord, code: 2)).code,
+            .transport
+        )
+    }
+
+    func testAMissingServiceNamesTheService() {
+        let failure = RorkDeviceFailure(
+            RorkDeviceError.serviceNotAdvertised("com.apple.coredevice.appservice")
+        )
+
+        XCTAssertEqual(failure.code, .serviceNotAdvertised)
+        XCTAssertEqual(failure.details?.serviceName, "com.apple.coredevice.appservice")
+        XCTAssertEqual(
+            failure.message,
+            "Protocol violation: Remote service directory does not advertise com.apple.coredevice.appservice."
+        )
+    }
+
+    /// The two-argument initializers stay available as function references
+    /// for callers built against earlier releases.
+    func testInstallationErrorKeepsItsEarlierInitializers() {
+        let typed: (InstallationError.Code, String?) -> InstallationError = InstallationError.init(code:message:)
+        let raw: (String, String?) -> InstallationError = InstallationError.init(code:message:)
+
+        XCTAssertEqual(typed(.packageNotFound, nil).code, .packageNotFound)
+        XCTAssertEqual(raw("SomethingNewFailed", "0xe8008015").resultCode, 0xE800_8015)
+    }
+
+    /// The new details survive the wire, so a supervisor decoding the JSON
+    /// line sees the same fields.
+    func testNewDetailsRoundTripThroughJSON() throws {
+        let failures = [
+            RorkDeviceError.serviceNotAdvertised("com.apple.coredevice.appservice").failure,
+            RorkDeviceError.installationProxy(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "m",
+                resultCode: InstallationError.missingProvisioningProfileResult
+            )).failure,
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+
+        for failure in failures {
+            let data = try encoder.encode(failure)
+            XCTAssertEqual(try JSONDecoder().decode(RorkDeviceFailure.self, from: data), failure)
+        }
+        XCTAssertEqual(
+            String(decoding: try encoder.encode(failures[1]), as: UTF8.self),
+            #"{"code":"provisioning-profile-rejected","details":{"deviceErrorCode":"ApplicationVerificationFailed","installationResultCode":3892346901},"message":"InstallationProxy ApplicationVerificationFailed: m"}"#
+        )
+    }
+
     func testTrustDialogOutcomesMapToDistinctCodes() {
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userConfirmationRequired).code, .awaitingTrust)
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userDenied).code, .trustDenied)

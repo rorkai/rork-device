@@ -56,8 +56,20 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// A socket, tunnel, or forwarding transport failed.
     case transport(String)
 
+    /// The usbmux daemon answered `operation` with a non-zero result code.
+    ///
+    /// The same number means different things per operation, so only
+    /// ``USBMuxOperation/connect`` answered with
+    /// ``USBMuxOperation/connectBadDeviceResult`` means the device detached.
+    case usbmuxResult(operation: USBMuxOperation, code: Int)
+
     /// The peer returned malformed or unexpected protocol data.
     case protocolViolation(String)
+
+    /// The device's Remote Service Discovery directory does not list the
+    /// named service, for example a CoreDevice service that only appears once
+    /// the Developer Disk Image is mounted.
+    case serviceNotAdvertised(String)
 
     /// The peer terminated one RemoteXPC HTTP/2 stream and supplied the
     /// protocol error code carried by `RST_STREAM`.
@@ -124,8 +136,12 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Transport error: \(context): \(underlying.message)"
         case let .transport(message):
             return "Transport error: \(message)"
+        case let .usbmuxResult(operation, code):
+            return "Transport error: usbmux \(operation.rawValue) failed with code \(code)."
         case let .protocolViolation(message):
             return "Protocol violation: \(message)"
+        case let .serviceNotAdvertised(serviceName):
+            return "Protocol violation: Remote service directory does not advertise \(serviceName)."
         case let .remoteXPCStreamReset(streamIdentifier, errorCode):
             return "RemoteXPC reset HTTP/2 stream \(streamIdentifier) with error code \(errorCode)."
         case let .lockdown(message):
@@ -153,5 +169,24 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// bridges, and command-line tools that use `localizedDescription`.
     public var errorDescription: String? {
         description
+    }
+}
+
+/// A usbmux control request whose result code the client checks.
+public enum USBMuxOperation: String, Equatable, Hashable, Sendable {
+    case connect = "Connect"
+    case listen = "Listen"
+    case readPairRecord = "ReadPairRecord"
+    case savePairRecord = "SavePairRecord"
+    case deletePairRecord = "DeletePairRecord"
+
+    /// usbmux answers `Connect` with this result (BadDevice) when the device
+    /// is no longer attached. Pair-record requests reuse the number for a
+    /// missing record, so it means a detach only for ``connect``.
+    public static let connectBadDeviceResult = 2
+
+    /// Whether `code`, answered to this request, means the device detached.
+    func meansDeviceDetached(_ code: Int) -> Bool {
+        self == .connect && code == Self.connectBadDeviceResult
     }
 }
