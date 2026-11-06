@@ -255,7 +255,7 @@ public enum RemotePairingTrust {
             return false
         }
         switch deviceError {
-        case .transport, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
+        case .transport, .usbmuxResult, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
             .transportStep, .remoteXPCStreamReset:
             return true
         case .remotePairing(let rejection):

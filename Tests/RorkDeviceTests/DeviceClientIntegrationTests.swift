@@ -272,9 +272,7 @@ final class DeviceClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport(
-                    "usbmux DeletePairRecord failed with code 2."
-                )
+                .usbmuxResult(operation: "DeletePairRecord", code: 2)
             )
         }
 

@@ -111,6 +111,89 @@ final class RorkDeviceFailureTests: XCTestCase {
         XCTAssertEqual(failure.details?.retryAfterMilliseconds, .max)
     }
 
+    /// InstallationProxy reports several distinct failures under one error
+    /// code; the MobileInstallation result code separates them.
+    func testInstallationFailuresClassifyByResultCode() {
+        func failure(_ error: InstallationError) -> RorkDeviceFailure {
+            RorkDeviceFailure(RorkDeviceError.installationProxy(error))
+        }
+
+        let appLimit = failure(InstallationError(
+            code: .applicationVerificationFailed,
+            message: "Failed to verify code signature of App.app : 0xe8008021 (This device has reached the maximum number of installed apps using a free developer profile)"
+        ))
+        XCTAssertEqual(appLimit.code, .appLimitReached)
+        XCTAssertEqual(appLimit.details, .init(status: 0xE800_8021, deviceErrorCode: "ApplicationVerificationFailed"))
+        XCTAssertEqual(
+            appLimit.message,
+            "InstallationProxy ApplicationVerificationFailed: Failed to verify code signature of App.app : 0xe8008021 (This device has reached the maximum number of installed apps using a free developer profile)"
+        )
+
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "0xe8008015 (A valid provisioning profile for this executable was not found.)"
+            )).code,
+            .provisioningProfileRejected
+        )
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "Signature rejected",
+                resultCode: InstallationError.missingProvisioningProfileResult
+            )).code,
+            .provisioningProfileRejected
+        )
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .deviceOSVersionTooLow,
+                message: "The system version is lower than the minimum OS version specified for bundle at path App.app. Need 18.0 Have 17.5"
+            )).code,
+            .osVersionTooLow
+        )
+
+        let other = failure(InstallationError(
+            code: .applicationVerificationFailed,
+            message: "Failed to verify code signature of App.app : 0xe8008016 (The executable was signed with invalid entitlements.)"
+        ))
+        XCTAssertEqual(other.code, .installationFailed)
+        XCTAssertEqual(other.details?.status, 0xE800_8016)
+        XCTAssertEqual(failure(InstallationError(code: "SomethingNewFailed")).code, .installationFailed)
+    }
+
+    /// usbmux answers `Connect` with its bad-device result when the device
+    /// detached after it was listed; other results stay transport failures.
+    func testUSBMuxBadDeviceOnConnectIsADisconnect() {
+        let disconnected = RorkDeviceFailure(
+            RorkDeviceError.usbmuxResult(operation: "Connect", code: 2)
+        )
+        XCTAssertEqual(disconnected.code, .deviceDisconnected)
+        XCTAssertEqual(disconnected.message, "Transport error: usbmux Connect failed with code 2.")
+        XCTAssertEqual(disconnected.details, .init(status: 2))
+
+        XCTAssertEqual(
+            RorkDeviceFailure(RorkDeviceError.usbmuxResult(operation: "Connect", code: 3)).code,
+            .transport
+        )
+        XCTAssertEqual(
+            RorkDeviceFailure(RorkDeviceError.usbmuxResult(operation: "ReadPairRecord", code: 2)).code,
+            .transport
+        )
+    }
+
+    func testAMissingServiceNamesTheService() {
+        let failure = RorkDeviceFailure(
+            RorkDeviceError.serviceNotAdvertised("com.apple.coredevice.appservice")
+        )
+
+        XCTAssertEqual(failure.code, .serviceNotAdvertised)
+        XCTAssertEqual(failure.details?.serviceName, "com.apple.coredevice.appservice")
+        XCTAssertEqual(
+            failure.message,
+            "Protocol violation: Remote service directory does not advertise com.apple.coredevice.appservice."
+        )
+    }
+
     func testTrustDialogOutcomesMapToDistinctCodes() {
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userConfirmationRequired).code, .awaitingTrust)
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userDenied).code, .trustDenied)

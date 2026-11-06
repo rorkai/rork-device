@@ -430,24 +430,47 @@ English error text. A failure is a JSON object:
 prints. `details` appears when the error carries typed context, such as
 `deviceIdentifier`, `streamIdentifier` and `http2ErrorCode` for a reset
 RemoteXPC stream, `status`, `deviceErrorCode`, `rejectionCode`,
-`retryAfterMilliseconds`, or `port`. `cause` appears when the failure reports
-an earlier one, such as the tunnel loss behind a request that ran out of
-patience. Codes keep their meaning across releases and new codes may be
+`retryAfterMilliseconds`, `port`, or `serviceName`. `cause` appears when the
+failure reports an earlier one, such as the tunnel loss behind a request that
+ran out of patience. Codes keep their meaning across releases and new codes may be
 added, so treat an unrecognized code like `unknown`. The codes are listed in
 `RorkDeviceFailure.Code`. These are the ones supervisors usually act on:
 
-| Code                          | Meaning                                                                       |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `device-not-found`            | No attached device matched the requested selection.                           |
-| `device-locked`               | The device must be unlocked first.                                            |
-| `connection-closed`           | The peer closed or reset the connection, or a torn-down tunnel closed it.     |
-| `stream-reset`                | The device reset a RemoteXPC HTTP/2 stream.                                   |
-| `timeout`                     | An operation inside `rorkdevice` exceeded its deadline.                       |
-| `tunnel-unavailable`          | A served request outlived the tunnel's absence. `cause` says why it was down. |
-| `trust-not-recognized`        | The device does not recognize the remote-pairing identity.                    |
-| `pairing-approval-incomplete` | The user declined the Trust prompt or did not finish the passcode approval.   |
-| `invalid-input`               | The command line or a request was invalid.                                    |
-| `unknown`                     | No more specific classification.                                              |
+| Code                            | Meaning                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| `device-not-found`              | No attached device matched the requested selection.                           |
+| `device-disconnected`           | The device detached before a connection to it opened (usbmux bad device).     |
+| `device-locked`                 | The device must be unlocked first.                                            |
+| `connection-closed`             | The peer closed or reset the connection, or a torn-down tunnel closed it.     |
+| `stream-reset`                  | The device reset a RemoteXPC HTTP/2 stream.                                   |
+| `timeout`                       | An operation inside `rorkdevice` exceeded its deadline.                       |
+| `tunnel-unavailable`            | A served request outlived the tunnel's absence. `cause` says why it was down. |
+| `trust-not-recognized`          | The device does not recognize the remote-pairing identity.                    |
+| `pairing-approval-incomplete`   | The user declined the Trust prompt or did not finish the passcode approval.   |
+| `service-not-advertised`        | The device does not list `details.serviceName`; see below.                    |
+| `app-limit-reached`             | The device already holds the most apps free developer profiles allow.         |
+| `provisioning-profile-rejected` | No valid provisioning profile authorizes the app on this device.              |
+| `os-version-too-low`            | The app requires a newer OS than the device runs.                             |
+| `installation-failed`           | Any other InstallationProxy error; see below.                                 |
+| `invalid-input`                 | The command line or a request was invalid.                                    |
+| `unknown`                       | No more specific classification.                                              |
+
+A device that detaches while a connection is already open reports
+`connection-closed`: the closed socket does not say why it closed, so treat
+`connection-closed` during a long transfer as a possible disconnect.
+
+`service-not-advertised` with `serviceName` `com.apple.coredevice.appservice`
+usually means the Developer Disk Image is not mounted yet; mount it and retry.
+
+InstallationProxy failures carry the device's error identifier in
+`details.deviceErrorCode` (such as `ApplicationVerificationFailed`) and, when
+the device sends one, its MobileInstallation result code in `details.status`
+as an unsigned integer (`0xE8008015` is `3892346901`). The dedicated codes are
+derived from those values, never from the localized description:
+`app-limit-reached` is result `0xE8008021`, `provisioning-profile-rejected` is
+result `0xE8008015`, and `os-version-too-low` is error `DeviceOSVersionTooLow`.
+Other values stay `installation-failed`, so match `deviceErrorCode` and
+`status` for them.
 
 The failure appears in three places:
 

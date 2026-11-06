@@ -135,9 +135,7 @@ final class RemoteServiceSessionTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .protocolViolation(
-                    "Remote service directory does not advertise com.apple.mobile.installation_proxy.shim.remote."
-                )
+                .serviceNotAdvertised("com.apple.mobile.installation_proxy.shim.remote")
             )
         }
     }

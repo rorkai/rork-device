@@ -84,9 +84,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
         named serviceName: String
     ) async throws -> DeviceConnection {
         guard let port = directory.services[serviceName] else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote service directory does not advertise \(serviceName)."
-            )
+            throw RorkDeviceError.serviceNotAdvertised(serviceName)
         }
         return try await connect(
             to: serviceName,
@@ -103,9 +101,7 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             ? "\(serviceName).shim.remote"
             : serviceName
         guard let port = directory.port(for: serviceName) else {
-            throw RorkDeviceError.protocolViolation(
-                "Remote service directory does not advertise \(advertisedName)."
-            )
+            throw RorkDeviceError.serviceNotAdvertised(advertisedName)
         }
 
         let connection = try await connect(

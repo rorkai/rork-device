@@ -243,6 +243,29 @@ final class InstallationProxyClientTests: XCTestCase {
         }
     }
 
+    /// `ErrorDetail` carries the MobileInstallation result as a signed
+    /// integer; it is what tells failures that share an error code apart.
+    func testInstallKeepsTheResultCodeFromErrorDetail() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Status": "Failed",
+            "Error": "ApplicationVerificationFailed",
+            "ErrorDescription": "Failed to verify code signature of App.app",
+            "ErrorDetail": -402_620_383,
+        ])
+        let client = InstallationProxyClient(connection: FakeConnection(inbound: inbound))
+
+        do {
+            try await client.install(packagePath: "/PublicStaging/App.ipa")
+            XCTFail("Expected install to throw.")
+        } catch let error as RorkDeviceError {
+            guard case let .installationProxy(installationError) = error else {
+                return XCTFail("Expected an InstallationProxy error, got \(error).")
+            }
+            XCTAssertEqual(installationError.resultCode, InstallationError.freeDeveloperAppLimitResult)
+            XCTAssertEqual(RorkDeviceFailure(error).code, .appLimitReached)
+        }
+    }
+
     func testInstallPreservesUnknownErrorCode() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Status": "Failed",

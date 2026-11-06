@@ -94,6 +94,9 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
 
         /// InstallationProxy received an invalid command or client option.
         public static let invalidCommand = Self(rawValue: "InvalidCommand")
+
+        /// The app's minimum OS version is newer than the device's.
+        public static let deviceOSVersionTooLow = Self(rawValue: "DeviceOSVersionTooLow")
     }
 
     /// Protocol error code reported by InstallationProxy.
@@ -102,15 +105,45 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
     /// Optional human-readable message paired with `code`.
     public let message: String?
 
+    /// MobileInstallation result code behind `code`, such as `0xE8008015`.
+    ///
+    /// Several distinct failures share one `code`: a missing provisioning
+    /// profile and the free-profile app limit both report
+    /// `ApplicationVerificationFailed`, and only this number tells them apart.
+    public let resultCode: UInt32?
+
+    /// MobileInstallation result for a provisioning profile that does not
+    /// authorize the executable on this device.
+    public static let missingProvisioningProfileResult: UInt32 = 0xE800_8015
+
+    /// MobileInstallation result for a device that already holds the maximum
+    /// number of apps signed with free developer profiles.
+    public static let freeDeveloperAppLimitResult: UInt32 = 0xE800_8021
+
     /// Creates an InstallationProxy error from decoded protocol fields.
-    public init(code: Code, message: String? = nil) {
+    ///
+    /// When `resultCode` is nil, it is read from a `0xE800xxxx` code in
+    /// `message`, where InstallationProxy repeats it.
+    public init(code: Code, message: String? = nil, resultCode: UInt32? = nil) {
         self.code = code
         self.message = message
+        self.resultCode = resultCode ?? message.flatMap(Self.resultCode(in:))
     }
 
     /// Creates an InstallationProxy error from a raw protocol code string.
-    public init(code rawCode: String, message: String? = nil) {
-        self.init(code: Code(rawValue: rawCode), message: message)
+    public init(code rawCode: String, message: String? = nil, resultCode: UInt32? = nil) {
+        self.init(code: Code(rawValue: rawCode), message: message, resultCode: resultCode)
+    }
+
+    /// Finds the first MobileInstallation result code written in hex.
+    private static func resultCode(in message: String) -> UInt32? {
+        guard let range = message.range(
+            of: #"0x[eE]8[0-9a-fA-F]{6}\b"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+        return UInt32(message[range].dropFirst(2), radix: 16)
     }
 
     /// Human-readable error text suitable for logs and CLI output.

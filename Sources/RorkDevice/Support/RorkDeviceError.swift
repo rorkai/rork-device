@@ -56,8 +56,19 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// A socket, tunnel, or forwarding transport failed.
     case transport(String)
 
+    /// The usbmux daemon answered `operation` with a non-zero result code.
+    ///
+    /// A `Connect` answered with ``usbmuxBadDeviceResult`` means the device
+    /// is no longer attached.
+    case usbmuxResult(operation: String, code: Int)
+
     /// The peer returned malformed or unexpected protocol data.
     case protocolViolation(String)
+
+    /// The device's Remote Service Discovery directory does not list the
+    /// named service, for example a CoreDevice service that only appears once
+    /// the Developer Disk Image is mounted.
+    case serviceNotAdvertised(String)
 
     /// The peer terminated one RemoteXPC HTTP/2 stream and supplied the
     /// protocol error code carried by `RST_STREAM`.
@@ -124,8 +135,12 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Transport error: \(context): \(underlying.message)"
         case let .transport(message):
             return "Transport error: \(message)"
+        case let .usbmuxResult(operation, code):
+            return "Transport error: usbmux \(operation) failed with code \(code)."
         case let .protocolViolation(message):
             return "Protocol violation: \(message)"
+        case let .serviceNotAdvertised(serviceName):
+            return "Protocol violation: Remote service directory does not advertise \(serviceName)."
         case let .remoteXPCStreamReset(streamIdentifier, errorCode):
             return "RemoteXPC reset HTTP/2 stream \(streamIdentifier) with error code \(errorCode)."
         case let .lockdown(message):
@@ -154,4 +169,9 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     public var errorDescription: String? {
         description
     }
+}
+
+extension RorkDeviceError {
+    /// usbmux result code for a device that is not attached.
+    public static let usbmuxBadDeviceResult = 2
 }

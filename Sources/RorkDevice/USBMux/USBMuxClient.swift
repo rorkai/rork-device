@@ -148,8 +148,9 @@ public final class USBMuxClient: Sendable {
         if let number = response["Number"] as? NSNumber,
             number.intValue != 0
         {
-            throw RorkDeviceError.transport(
-                "usbmux ReadPairRecord failed with code \(number.intValue)."
+            throw RorkDeviceError.usbmuxResult(
+                operation: "ReadPairRecord",
+                code: number.intValue
             )
         }
         guard let recordData = response["PairRecordData"] as? Data else {
@@ -618,7 +619,7 @@ private func validateUSBMuxResult(_ response: [String: Any], operation: String) 
         throw RorkDeviceError.protocolViolation("usbmux \(operation) response was missing Number.")
     }
     if number.intValue != 0 {
-        throw RorkDeviceError.transport("usbmux \(operation) failed with code \(number.intValue).")
+        throw RorkDeviceError.usbmuxResult(operation: operation, code: number.intValue)
     }
 }
 

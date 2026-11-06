@@ -19,6 +19,10 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// No attached device matched the requested selection.
         case deviceNotFound = "device-not-found"
 
+        /// The device was found but detached before a connection to it
+        /// opened: usbmux answered `Connect` with its bad-device result.
+        case deviceDisconnected = "device-disconnected"
+
         /// The device must be unlocked before the request can proceed.
         case deviceLocked = "device-locked"
 
@@ -86,6 +90,12 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// The peer sent malformed or unexpected protocol data.
         case protocolViolation = "protocol-violation"
 
+        /// The device does not advertise a required service, named in
+        /// `details.serviceName`. CoreDevice services such as
+        /// `com.apple.coredevice.appservice` appear only once the Developer
+        /// Disk Image is mounted.
+        case serviceNotAdvertised = "service-not-advertised"
+
         /// Lockdown returned a failure response.
         case lockdown = "lockdown"
 
@@ -98,8 +108,20 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// Heartbeat returned malformed data or reported device sleep.
         case heartbeat = "heartbeat"
 
-        /// InstallationProxy reported an operation error.
+        /// InstallationProxy reported an operation error not classified more
+        /// specifically.
         case installationFailed = "installation-failed"
+
+        /// The device already holds the maximum number of apps signed with
+        /// free developer profiles.
+        case appLimitReached = "app-limit-reached"
+
+        /// The device rejected the app because no valid provisioning profile
+        /// authorizes the executable on it.
+        case provisioningProfileRejected = "provisioning-profile-rejected"
+
+        /// The app requires a newer OS version than the device runs.
+        case osVersionTooLow = "os-version-too-low"
 
         /// MISAgent returned a non-zero status.
         case misagent = "misagent"
@@ -132,7 +154,9 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// HTTP/2 error code the device sent with `RST_STREAM`.
         public var http2ErrorCode: UInt32?
 
-        /// Numeric status reported by AFC or MISAgent.
+        /// Numeric status reported by AFC, MISAgent or usbmux, or the
+        /// MobileInstallation result code behind an InstallationProxy error,
+        /// as an unsigned value such as 3892346901 for `0xE8008015`.
         public var status: Int64?
 
         /// Raw error code reported by the device, such as an InstallationProxy
@@ -148,6 +172,9 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// Local port that could not be bound.
         public var port: UInt16?
 
+        /// Device service the failure concerns.
+        public var serviceName: String?
+
         /// Creates details from the fields that apply.
         public init(
             deviceIdentifier: String? = nil,
@@ -157,7 +184,8 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
             deviceErrorCode: String? = nil,
             rejectionCode: UInt8? = nil,
             retryAfterMilliseconds: Int64? = nil,
-            port: UInt16? = nil
+            port: UInt16? = nil,
+            serviceName: String? = nil
         ) {
             self.deviceIdentifier = deviceIdentifier
             self.streamIdentifier = streamIdentifier
@@ -167,6 +195,7 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
             self.rejectionCode = rejectionCode
             self.retryAfterMilliseconds = retryAfterMilliseconds
             self.port = port
+            self.serviceName = serviceName
         }
 
         /// Whether no field is set, in which case the failure omits details.
@@ -289,8 +318,14 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return underlying.code == .unknown ? .transport : underlying.code
         case .transport:
             return .transport
+        case let .usbmuxResult(operation, code):
+            return operation == "Connect" && code == RorkDeviceError.usbmuxBadDeviceResult
+                ? .deviceDisconnected
+                : .transport
         case .protocolViolation:
             return .protocolViolation
+        case .serviceNotAdvertised:
+            return .serviceNotAdvertised
         case .remoteXPCStreamReset:
             return .streamReset
         case .lockdown:
@@ -305,8 +340,8 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .afc
         case .heartbeat:
             return .heartbeat
-        case .installationProxy:
-            return .installationFailed
+        case let .installationProxy(error):
+            return error.failureCode
         case .misagentStatus:
             return .misagent
         }
@@ -329,7 +364,14 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
         case let .afcStatus(status):
             return .init(status: Int64(clamping: status))
         case let .installationProxy(error):
-            return .init(deviceErrorCode: error.code.rawValue)
+            return .init(
+                status: error.resultCode.map(Int64.init),
+                deviceErrorCode: error.code.rawValue
+            )
+        case let .usbmuxResult(_, code):
+            return .init(status: Int64(code))
+        case let .serviceNotAdvertised(serviceName):
+            return .init(serviceName: serviceName)
         case let .misagentStatus(status):
             return .init(status: Int64(status))
         case .invalidInput, .invalidPairingRecord, .deviceLocked,
@@ -433,3 +475,21 @@ extension CoreDeviceUserspaceGateway.PortUnavailableError: RorkDeviceFailureConv
     }
 }
 #endif
+
+extension InstallationError {
+    /// Classifies by the code and result code the device sent, never by the
+    /// localized description.
+    fileprivate var failureCode: RorkDeviceFailure.Code {
+        if code == .deviceOSVersionTooLow {
+            return .osVersionTooLow
+        }
+        switch resultCode {
+        case Self.freeDeveloperAppLimitResult:
+            return .appLimitReached
+        case Self.missingProvisioningProfileResult:
+            return .provisioningProfileRejected
+        default:
+            return .installationFailed
+        }
+    }
+}

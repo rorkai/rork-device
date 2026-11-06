@@ -137,7 +137,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport("usbmux SavePairRecord failed with code 2.")
+                .usbmuxResult(operation: "SavePairRecord", code: 2)
             )
         }
     }
@@ -171,9 +171,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport(
-                    "usbmux DeletePairRecord failed with code 2."
-                )
+                .usbmuxResult(operation: "DeletePairRecord", code: 2)
             )
         }
     }
@@ -260,7 +258,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport("usbmux ReadPairRecord failed with code 2.")
+                .usbmuxResult(operation: "ReadPairRecord", code: 2)
             )
         }
     }
