@@ -133,7 +133,7 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
 
     /// Creates an InstallationProxy error from decoded protocol fields.
     ///
-    /// When `resultCode` is nil, it is read from the `0xE8xxxxxx` code that
+    /// When `resultCode` is nil, it is read from the `0xE800xxxx` code that
     /// InstallationProxy repeats in `message`.
     public init(code: Code, message: String?, resultCode: UInt32?) {
         self.code = code
@@ -152,7 +152,7 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
     /// The description names the staged bundle path before the result code,
     /// so the last token wins over anything a file name happens to contain.
     private static func resultCode(in message: String) -> UInt32? {
-        let pattern = #"(?<![0-9A-Za-z_])0x[eE]8[0-9a-fA-F]{6}(?![0-9A-Za-z_])"#
+        let pattern = #"(?<![0-9A-Za-z_])0x[eE]800[0-9a-fA-F]{4}(?![0-9A-Za-z_])"#
         var last: Range<String.Index>?
         var searchStart = message.startIndex
         while let range = message.range(

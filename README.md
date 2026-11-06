@@ -430,7 +430,8 @@ English error text. A failure is a JSON object:
 prints. `details` appears when the error carries typed context, such as
 `deviceIdentifier`, `streamIdentifier` and `http2ErrorCode` for a reset
 RemoteXPC stream, `status`, `deviceErrorCode`, `rejectionCode`,
-`retryAfterMilliseconds`, `port`, or `serviceName`. `cause` appears when the
+`retryAfterMilliseconds`, `port`, `serviceName`, or `installationResultCode`.
+`cause` appears when the
 failure reports an earlier one, such as the tunnel loss behind a request that
 ran out of patience. Codes keep their meaning across releases and new codes may be
 added, so treat an unrecognized code like `unknown`. The codes are listed in
@@ -439,7 +440,7 @@ added, so treat an unrecognized code like `unknown`. The codes are listed in
 | Code                            | Meaning                                                                       |
 | ------------------------------- | ----------------------------------------------------------------------------- |
 | `device-not-found`              | No attached device matched the requested selection.                           |
-| `device-disconnected`           | The device detached before a connection to it opened (usbmux bad device).     |
+| `device-disconnected`           | The device detached after it was listed, before a connection to it opened.    |
 | `device-locked`                 | The device must be unlocked first.                                            |
 | `connection-closed`             | The peer closed or reset the connection, or a torn-down tunnel closed it.     |
 | `stream-reset`                  | The device reset a RemoteXPC HTTP/2 stream.                                   |
@@ -463,14 +464,16 @@ A device that detaches while a connection is already open reports
 usually means the Developer Disk Image is not mounted yet; mount it and retry.
 
 InstallationProxy failures carry the device's error identifier in
-`details.deviceErrorCode` (such as `ApplicationVerificationFailed`) and, when
-the device sends one, its MobileInstallation result code in `details.status`
-as an unsigned integer (`0xE8008015` is `3892346901`). The dedicated codes are
-derived from those values, never from the localized description:
+`details.deviceErrorCode` (such as `ApplicationVerificationFailed`) and its
+MobileInstallation result code in `details.installationResultCode` as an
+unsigned integer (`0xE8008015` is `3892346901`). The result code comes from
+the response's `ErrorDetail`, or, when that is absent, from the standalone
+`0xE800xxxx` token the description repeats; the description's wording is
+never read. The dedicated codes are derived from those values:
 `app-limit-reached` is result `0xE8008021`, `provisioning-profile-rejected` is
 result `0xE8008015`, and `os-version-too-low` is error `DeviceOSVersionTooLow`.
 Other values stay `installation-failed`, so match `deviceErrorCode` and
-`status` for them.
+`installationResultCode` for them.
 
 The failure appears in three places:
 

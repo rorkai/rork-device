@@ -57,6 +57,9 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     /// the host-record cleanup stage.
     private let removePairingRecordStatus: Int
 
+    /// Result the daemon answers `Connect` with; non-zero refuses it.
+    private let connectStatus: Int
+
     /// Keeps a Listen socket readable until the client closes it.
     private let keepListenOpenAfterEvents: Bool
 
@@ -242,6 +245,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         systemBUID: String = "fake-system-buid",
         savePairingRecordStatus: Int = 0,
         removePairingRecordStatus: Int = 0,
+        connectStatus: Int = 0,
         devicePublicKey: Data = testDevicePublicKeyPEM,
         wiFiMACAddress: String = "00:11:22:33:44:55",
         pairingResponses: [[String: Any]] = [],
@@ -260,6 +264,7 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
         self.systemBUID = systemBUID
         self.savePairingRecordStatus = savePairingRecordStatus
         self.removePairingRecordStatus = removePairingRecordStatus
+        self.connectStatus = connectStatus
         self.devicePublicKey = devicePublicKey
         self.wiFiMACAddress = wiFiMACAddress
         self.pairingResponses = pairingResponses
@@ -521,10 +526,13 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
                 )
                 daemon.recordConnectedPort(port)
                 sendUSBMuxResponse(
-                    ["Number": 0],
+                    ["Number": daemon.connectStatus],
                     tag: request.packet.tag,
                     context: context
                 )
+                guard daemon.connectStatus == 0 else {
+                    return true
+                }
                 switch port {
                 case 62_078:
                     state = .lockdown

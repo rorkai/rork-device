@@ -37,6 +37,23 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         XCTAssertEqual(daemon.connectedPorts, [62078])
     }
 
+    /// A device that detached after it was listed makes usbmux refuse
+    /// `Connect` as a bad device, which supervisors see as a disconnect.
+    func testConnectToADetachedDeviceIsADisconnect() async throws {
+        let daemon = try FakeUSBMuxDaemon(connectStatus: USBMuxOperation.connectBadDeviceResult)
+        defer { daemon.stop() }
+        let client = USBMuxClient(host: "127.0.0.1", port: daemon.port)
+        let device = USBMuxDevice(deviceID: 1, serialNumber: "fake-device-1", properties: [:])
+
+        await XCTAssertThrowsErrorAsync({
+            _ = try await client.connect(to: device, port: 62078)
+        }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .usbmuxResult(operation: .connect, code: 2))
+            XCTAssertEqual(RorkDeviceFailure(error).code, .deviceDisconnected)
+            XCTAssertEqual(RorkDeviceFailure(error).message, "Transport error: usbmux Connect failed with code 2.")
+        }
+    }
+
     func testReadsPairingRecordAndSuppliesDeviceIdentifier() async throws {
         let recordData = try PropertyListSerialization.data(
             fromPropertyList: [
@@ -137,7 +154,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .usbmuxResult(operation: "SavePairRecord", code: 2)
+                .usbmuxResult(operation: .savePairRecord, code: 2)
             )
         }
     }
@@ -171,7 +188,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .usbmuxResult(operation: "DeletePairRecord", code: 2)
+                .usbmuxResult(operation: .deletePairRecord, code: 2)
             )
         }
     }
@@ -258,7 +275,7 @@ final class USBMuxClientIntegrationTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .usbmuxResult(operation: "ReadPairRecord", code: 2)
+                .usbmuxResult(operation: .readPairRecord, code: 2)
             )
         }
     }

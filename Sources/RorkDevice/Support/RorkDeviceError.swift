@@ -58,9 +58,10 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
 
     /// The usbmux daemon answered `operation` with a non-zero result code.
     ///
-    /// A `Connect` answered with ``usbmuxBadDeviceResult`` means the device
-    /// is no longer attached.
-    case usbmuxResult(operation: String, code: Int)
+    /// The same number means different things per operation, so only
+    /// ``USBMuxOperation/connect`` answered with
+    /// ``USBMuxOperation/connectBadDeviceResult`` means the device detached.
+    case usbmuxResult(operation: USBMuxOperation, code: Int)
 
     /// The peer returned malformed or unexpected protocol data.
     case protocolViolation(String)
@@ -136,7 +137,7 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
         case let .transport(message):
             return "Transport error: \(message)"
         case let .usbmuxResult(operation, code):
-            return "Transport error: usbmux \(operation) failed with code \(code)."
+            return "Transport error: usbmux \(operation.rawValue) failed with code \(code)."
         case let .protocolViolation(message):
             return "Protocol violation: \(message)"
         case let .serviceNotAdvertised(serviceName):
@@ -171,7 +172,21 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     }
 }
 
-extension RorkDeviceError {
-    /// usbmux result code for a device that is not attached.
-    public static let usbmuxBadDeviceResult = 2
+/// A usbmux control request whose result code the client checks.
+public enum USBMuxOperation: String, Equatable, Hashable, Sendable {
+    case connect = "Connect"
+    case listen = "Listen"
+    case readPairRecord = "ReadPairRecord"
+    case savePairRecord = "SavePairRecord"
+    case deletePairRecord = "DeletePairRecord"
+
+    /// usbmux answers `Connect` with this result (BadDevice) when the device
+    /// is no longer attached. Pair-record requests reuse the number for a
+    /// missing record, so it means a detach only for ``connect``.
+    public static let connectBadDeviceResult = 2
+
+    /// Whether `code`, answered to this request, means the device detached.
+    func meansDeviceDetached(_ code: Int) -> Bool {
+        self == .connect && code == Self.connectBadDeviceResult
+    }
 }

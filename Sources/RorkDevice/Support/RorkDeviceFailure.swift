@@ -154,9 +154,8 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// HTTP/2 error code the device sent with `RST_STREAM`.
         public var http2ErrorCode: UInt32?
 
-        /// Numeric status reported by AFC, MISAgent or usbmux, or the
-        /// MobileInstallation result code behind an InstallationProxy error,
-        /// as an unsigned value such as 3892346901 for `0xE8008015`.
+        /// Numeric status reported by AFC, MISAgent, or usbmux. Its meaning
+        /// depends on `code`.
         public var status: Int64?
 
         /// Raw error code reported by the device, such as an InstallationProxy
@@ -175,6 +174,10 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// Device service the failure concerns.
         public var serviceName: String?
 
+        /// MobileInstallation result code behind an InstallationProxy error,
+        /// such as 3892346901 (`0xE8008015`).
+        public var installationResultCode: UInt32?
+
         /// Creates details from the fields that apply.
         public init(
             deviceIdentifier: String? = nil,
@@ -185,7 +188,8 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
             rejectionCode: UInt8? = nil,
             retryAfterMilliseconds: Int64? = nil,
             port: UInt16? = nil,
-            serviceName: String? = nil
+            serviceName: String? = nil,
+            installationResultCode: UInt32? = nil
         ) {
             self.deviceIdentifier = deviceIdentifier
             self.streamIdentifier = streamIdentifier
@@ -196,6 +200,7 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
             self.retryAfterMilliseconds = retryAfterMilliseconds
             self.port = port
             self.serviceName = serviceName
+            self.installationResultCode = installationResultCode
         }
 
         /// Whether no field is set, in which case the failure omits details.
@@ -319,9 +324,7 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
         case .transport:
             return .transport
         case let .usbmuxResult(operation, code):
-            return operation == "Connect" && code == RorkDeviceError.usbmuxBadDeviceResult
-                ? .deviceDisconnected
-                : .transport
+            return operation.meansDeviceDetached(code) ? .deviceDisconnected : .transport
         case .protocolViolation:
             return .protocolViolation
         case .serviceNotAdvertised:
@@ -365,8 +368,8 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .init(status: Int64(clamping: status))
         case let .installationProxy(error):
             return .init(
-                status: error.resultCode.map(Int64.init),
-                deviceErrorCode: error.code.rawValue
+                deviceErrorCode: error.code.rawValue,
+                installationResultCode: error.resultCode
             )
         case let .usbmuxResult(_, code):
             return .init(status: Int64(code))
@@ -477,8 +480,8 @@ extension CoreDeviceUserspaceGateway.PortUnavailableError: RorkDeviceFailureConv
 #endif
 
 extension InstallationError {
-    /// Classifies by the code and result code the device sent, never by the
-    /// localized description.
+    /// Classifies by the error and result codes the device sent, never by
+    /// the description's wording.
     fileprivate var failureCode: RorkDeviceFailure.Code {
         if code == .deviceOSVersionTooLow {
             return .osVersionTooLow
