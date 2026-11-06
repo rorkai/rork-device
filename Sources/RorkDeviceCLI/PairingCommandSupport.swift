@@ -13,7 +13,7 @@ func selectedUSBDevice(
         devices.first { $0.identifier == expected }
     } ?? devices.first
     guard let selected else {
-        throw ValidationError("No matching USB device found.")
+        throw RorkDeviceError.deviceNotFound(identifier: identifier, usbOnly: true)
     }
     return selected
 }
@@ -114,7 +114,8 @@ private func isRetryablePairingActivationError(_ error: Error) -> Bool {
         return false
     }
     switch error {
-    case .transport, .lockdown, .secureSession:
+    case .transport, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
+        .transportStep, .lockdown, .deviceLocked, .secureSession:
         return true
     default:
         return false

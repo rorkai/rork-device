@@ -142,8 +142,9 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
         do {
             return try await openConnection(port)
         } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect \(serviceName) on \(endpointDescription(port)): \(describeDeviceSessionError(error))"
+            throw RorkDeviceError.transportStep(
+                context: "Failed to connect \(serviceName) on \(endpointDescription(port))",
+                underlying: RorkDeviceFailure(error)
             )
         }
     }
@@ -162,8 +163,9 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
                     "Request": "RSDCheckin",
                 ], to: connection)
         } catch {
-            throw RorkDeviceError.transport(
-                "Remote service \(serviceName) on \(endpoint) failed while sending RSDCheckin: \(describeDeviceSessionError(error))"
+            throw RorkDeviceError.transportStep(
+                context: "Remote service \(serviceName) on \(endpoint) failed while sending RSDCheckin",
+                underlying: RorkDeviceFailure(error)
             )
         }
 
@@ -223,8 +225,9 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             )
         }
 
-        return .transport(
-            "Remote service \(serviceName) on \(endpoint) closed while waiting for \(expectedRequest): \(describeDeviceSessionError(error))"
+        return .transportStep(
+            context: "Remote service \(serviceName) on \(endpoint) closed while waiting for \(expectedRequest)",
+            underlying: RorkDeviceFailure(error)
         )
     }
 }

@@ -111,8 +111,9 @@ final class LockdownDeviceSessionBackend: DeviceSessionBackend {
         do {
             connection = try await transport.connect(to: service.port)
         } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect \(service.name) on service port \(service.port): \(describeDeviceSessionError(error))"
+            throw RorkDeviceError.transportStep(
+                context: "Failed to connect \(service.name) on service port \(service.port)",
+                underlying: RorkDeviceFailure(error)
             )
         }
         if service.requiresSecureConnection {

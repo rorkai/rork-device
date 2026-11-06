@@ -153,7 +153,7 @@ struct RemotePairingDiagnoseCommand: AsyncParsableCommand {
                 ),
                 asJSON: json
             )
-            throw ExitCode.failure
+            throw FailureReport.AlreadyReported(underlying: error)
         }
 
         try writeRemotePairingDiagnosticReport(
@@ -384,8 +384,11 @@ private func remotePairingFailureCategory(of error: Error) -> String {
         return "other"
     }
     switch deviceError {
-    case .transport:
+    case .transport, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
+        .transportStep, .tunnelUnavailable:
         return "transport"
+    case .deviceLocked:
+        return "device-locked"
     case .lockdown:
         return "lockdown-start-session"
     case .secureSession, .secureSessionUnsupported:

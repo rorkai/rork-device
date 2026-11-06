@@ -135,7 +135,7 @@ public final class CoreDeviceUserspaceNetwork: DeviceTransport, @unchecked Senda
     /// Opens one TCP stream to a device service port.
     public func connect(to port: UInt16) async throws -> DeviceConnection {
         guard !closeLock.withLock({ isClosed }) else {
-            throw RorkDeviceError.transport(
+            throw RorkDeviceError.localConnectionClosed(
                 "CoreDevice userspace network is closed."
             )
         }

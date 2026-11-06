@@ -147,16 +147,16 @@ public enum TunnelAgentIPC {
     ) {
         switch decodeRequest(from: line) {
         case .malformed(let reason, let id):
-            writer.write(Reply(event: "op-error", id: id, ok: nil, error: reason, payload: nil))
+            writer.write(Reply(event: "op-error", id: id, ok: nil, error: reason, failure: nil, payload: nil))
         case .request(let request):
             guard let handler = handlers[request.operation] else {
                 writer.write(
                     Reply(
-                        event: "op-result",
                         id: request.id,
-                        ok: false,
-                        error: "Unknown operation \(request.operation).",
-                        payload: nil
+                        failure: RorkDeviceFailure(
+                            code: .invalidInput,
+                            message: "Unknown operation \(request.operation)."
+                        )
                     )
                 )
                 return
@@ -165,17 +165,11 @@ public enum TunnelAgentIPC {
                 do {
                     let payload = try await handler(request)
                     writer.write(
-                        Reply(event: "op-result", id: request.id, ok: true, error: nil, payload: payload)
+                        Reply(event: "op-result", id: request.id, ok: true, error: nil, failure: nil, payload: payload)
                     )
                 } catch {
                     writer.write(
-                        Reply(
-                            event: "op-result",
-                            id: request.id,
-                            ok: false,
-                            error: String(describing: error),
-                            payload: nil
-                        )
+                        Reply(id: request.id, failure: RorkDeviceFailure(error))
                     )
                 }
             }
@@ -222,6 +216,10 @@ private struct Reply: Encodable {
     /// Human-readable failure description, absent on success.
     let error: String?
 
+    /// Machine-readable classification of a failed operation, absent on
+    /// success and on lines that never reached a handler.
+    let failure: RorkDeviceFailure?
+
     /// Operation-specific fields flattened into the reply, or nil when the
     /// envelope says everything.
     let payload: (any Encodable & Sendable)?
@@ -233,6 +231,36 @@ private struct Reply: Encodable {
         case id
         case ok
         case error
+        case failure
+    }
+
+    /// Creates the reply of a request whose operation failed.
+    init(id: String, failure: RorkDeviceFailure) {
+        self.init(
+            event: "op-result",
+            id: id,
+            ok: false,
+            error: failure.message,
+            failure: failure,
+            payload: nil
+        )
+    }
+
+    /// Creates a reply from every envelope field.
+    init(
+        event: String,
+        id: String?,
+        ok: Bool?,
+        error: String?,
+        failure: RorkDeviceFailure?,
+        payload: (any Encodable & Sendable)?
+    ) {
+        self.event = event
+        self.id = id
+        self.ok = ok
+        self.error = error
+        self.failure = failure
+        self.payload = payload
     }
 
     func encode(to encoder: Encoder) throws {
@@ -241,6 +269,7 @@ private struct Reply: Encodable {
         try container.encodeIfPresent(id, forKey: .id)
         try container.encodeIfPresent(ok, forKey: .ok)
         try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(failure, forKey: .failure)
         try payload?.encode(to: encoder)
     }
 }

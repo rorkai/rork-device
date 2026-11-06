@@ -337,8 +337,8 @@ up within seconds while prompt-driving failures keep the full ceiling:
 | ------------------- | ---------------------------------------------------------------------------------------------- |
 | `ready`             | The tunnel accepts local clients. Repeated after every re-establishment with fresh parameters. |
 | `waiting-for-trust` | Enrollment is waiting for the device's Trust approval; supervisors should extend their timeout. |
-| `tunnel-lost`       | A ready tunnel died. `reason` carries the terminal error.                                      |
-| `re-establishing`   | The next attempt is scheduled. Carries `attempt`, `delayMs`, and the latest failure `reason`.  |
+| `tunnel-lost`       | A ready tunnel died. `reason` carries the terminal error and `failure` its classification.     |
+| `re-establishing`   | The next attempt is scheduled. Carries `attempt`, `delayMs`, the latest `reason`, and `failure`. |
 
 Re-established tunnels reuse the previous local gateway port when it is still
 available, and always publish new device address and RSD port values, so
@@ -389,6 +389,13 @@ cleanly. `apps-list` remains as a structured alternative that
 accepts the same `type` values as `apps list` and answers with the same
 entry fields as its `--json` output.
 
+A failed operation answers with `"ok":false`, the human-readable `error`, and
+its machine-readable `failure` (see [Machine-Readable Failures](#machine-readable-failures)):
+
+```text
+<- {"id":"5","event":"op-result","ok":false,"error":"RemoteXPC reset HTTP/2 stream 3 with error code 5.","failure":{"code":"stream-reset","message":"RemoteXPC reset HTTP/2 stream 3 with error code 5.","details":{"streamIdentifier":3,"http2ErrorCode":5}}}
+```
+
 Unknown operations answer with `"ok":false` and malformed lines answer with an
 `op-error` event. Neither ends the process. The `ready` event lists the
 accepted operations in a `capabilities` field so supervisors know what they
@@ -402,6 +409,65 @@ input. When the supervisor dies — cleanly or by crashing — the pipe reaches
 end-of-file and the agent stops itself (winding down in an orderly way, with a
 bounded five-second fallback), so a reconnecting agent can never outlive the
 process responsible for it.
+
+### Machine-Readable Failures
+
+Supervisors classify failures by a stable `code` instead of matching the
+English error text. A failure is a JSON object:
+
+```json
+{
+  "code": "tunnel-unavailable",
+  "message": "Transport error: The tunnel is not ready (last failure: Lockdown error: StartService failed: PasswordProtected) and no session became available in time.",
+  "cause": {
+    "code": "device-locked",
+    "message": "Lockdown error: StartService failed: PasswordProtected"
+  }
+}
+```
+
+`code` and `message` are always present. `message` is the same text the CLI
+prints. `details` appears when the error carries typed context, such as
+`deviceIdentifier`, `streamIdentifier` and `http2ErrorCode` for a reset
+RemoteXPC stream, `status`, `deviceErrorCode`, `rejectionCode`,
+`retryAfterMilliseconds`, or `port`. `cause` appears when the failure reports
+an earlier one, such as the tunnel loss behind a request that ran out of
+patience. Codes keep their meaning across releases and new codes may be
+added, so treat an unrecognized code like `unknown`. The codes are listed in
+`RorkDeviceFailure.Code`. These are the ones supervisors usually act on:
+
+| Code                          | Meaning                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `device-not-found`            | No attached device matched the requested selection.                           |
+| `device-locked`               | The device must be unlocked first.                                            |
+| `connection-closed`           | The peer closed or reset the connection, or a torn-down tunnel closed it.     |
+| `stream-reset`                | The device reset a RemoteXPC HTTP/2 stream.                                   |
+| `timeout`                     | An operation inside `rorkdevice` exceeded its deadline.                       |
+| `tunnel-unavailable`          | A served request outlived the tunnel's absence. `cause` says why it was down. |
+| `trust-not-recognized`        | The device does not recognize the remote-pairing identity.                    |
+| `pairing-approval-incomplete` | The user declined the Trust prompt or did not finish the passcode approval.   |
+| `invalid-input`               | The command line or a request was invalid.                                    |
+| `unknown`                     | No more specific classification.                                              |
+
+The failure appears in three places:
+
+- `tunnel start --serve` replies to failed operations with a `failure` field.
+- `tunnel start --reconnect` adds `failure` to `tunnel-lost` and
+  `re-establishing` events.
+- Any command run with `RORKDEVICE_FAILURE_FORMAT=json` in its environment
+  ends a failed run (non-zero exit status) with one extra standard-error line,
+  after the usual error text: `{"failure":{...}}`. Without the variable the
+  output is unchanged.
+
+```console
+$ RORKDEVICE_FAILURE_FORMAT=json rorkdevice info --udid 00008150-TEST
+Error: No matching device found.
+{"failure":{"code":"device-not-found","details":{"deviceIdentifier":"00008150-TEST"},"message":"No matching device found."}}
+```
+
+Swift callers can classify any thrown error with `RorkDeviceFailure(error)`.
+`RorkDeviceFailure` is `Codable`, and decoding a code from a newer release
+yields `.unknown`.
 
 ## Direct Remote-Pairing Tunnel
 

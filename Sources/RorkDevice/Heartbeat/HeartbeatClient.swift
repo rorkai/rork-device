@@ -216,11 +216,11 @@ private func withHeartbeatTimeout<T: Sendable>(
         }
         group.addTask {
             try await Task.sleep(for: timeout)
-            throw RorkDeviceError.heartbeat("Timed out waiting for the first heartbeat message.")
+            throw RorkDeviceError.timedOut("Timed out waiting for the first heartbeat message.")
         }
 
         guard let result = try await group.next() else {
-            throw RorkDeviceError.heartbeat("Timed out waiting for the first heartbeat message.")
+            throw RorkDeviceError.timedOut("Timed out waiting for the first heartbeat message.")
         }
         group.cancelAll()
         return result

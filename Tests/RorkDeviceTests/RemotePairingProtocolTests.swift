@@ -17,6 +17,32 @@ final class RemotePairingProtocolTests: XCTestCase {
         XCTAssertEqual(scenario.connection.sent.count, 3)
     }
 
+    /// A device that ends pair setup without pairing data reports an
+    /// incomplete approval, which supervisors turn into Trust guidance.
+    func testPairSetupWithoutPairingDataIsAnIncompleteApproval() async throws {
+        let fixture = try unknownIdentityPairingFixture(
+            endingSetupWithoutPairingData: true
+        )
+        let client = RemotePairingProtocolClient(
+            connection: FakeConnection(inbound: fixture.inbound),
+            identity: fixture.identity,
+            ephemeralKey: fixture.hostAgreementKey,
+            makeSRPClient: fixture.makeSRPClient
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await client.establishTrustIfNeeded(
+                willEstablishTrust: {},
+                didEnrollIdentity: {}
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remotePairingApprovalIncomplete
+            )
+        }
+    }
+
     func testTrustEstablishmentPairsAnUnknownIdentity() async throws {
         var didEnrollIdentity = false
         let fixture = try unknownIdentityPairingFixture()
@@ -768,7 +794,13 @@ private struct UnknownIdentityPairingFixture {
     let inbound: Data
 }
 
-private func unknownIdentityPairingFixture() throws -> UnknownIdentityPairingFixture {
+/// - Parameter endingSetupWithoutPairingData: Ends the scripted device
+///   after it acknowledges pair setup, answering the first setup step with
+///   a message that carries no pairing data, as a device does when the user
+///   does not approve the Trust prompt.
+private func unknownIdentityPairingFixture(
+    endingSetupWithoutPairingData: Bool = false
+) throws -> UnknownIdentityPairingFixture {
     let signingKey = try Curve25519.Signing.PrivateKey(
         rawRepresentation: Data((1...32).map(UInt8.init))
     )
@@ -832,6 +864,15 @@ private func unknownIdentityPairingFixture() throws -> UnknownIdentityPairingFix
         TLV8Field(type: 0x07, value: Data([0x04])),
     ])))
     inbound.append(try frame(plain: [:]))
+    if endingSetupWithoutPairingData {
+        inbound.append(try frame(plain: [:]))
+        return UnknownIdentityPairingFixture(
+            identity: identity,
+            hostAgreementKey: hostAgreementKey,
+            makeSRPClient: makeFixtureSRPClient,
+            inbound: inbound
+        )
+    }
     inbound.append(try pairingFrame(TLV8.encode([
         TLV8Field(type: 0x06, value: Data([0x02])),
         TLV8Field(
@@ -884,11 +925,12 @@ private func unknownIdentityPairingFixture() throws -> UnknownIdentityPairingFix
     return UnknownIdentityPairingFixture(
         identity: identity,
         hostAgreementKey: hostAgreementKey,
-        makeSRPClient: {
-            try RemotePairingSRPClient(
-                privateKey: Data((1...32).map(UInt8.init))
-            )
-        },
+        makeSRPClient: makeFixtureSRPClient,
         inbound: inbound
     )
+}
+
+/// Builds the SRP client whose fixed key the scripted setup responses expect.
+@Sendable private func makeFixtureSRPClient() throws -> RemotePairingSRPClient {
+    try RemotePairingSRPClient(privateKey: Data((1...32).map(UInt8.init)))
 }

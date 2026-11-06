@@ -33,7 +33,9 @@ final class TunnelAgentSessionGateTests: XCTestCase {
     func testKeepsWaitersPendingAcrossALossUntilTheNextCycle() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: IdleSessionBackend()))
-        gate.markLost(reason: "stream reset")
+        gate.markLost(
+            failure: RorkDeviceError.remoteXPCStreamReset(streamIdentifier: 1, errorCode: 5).failure
+        )
         let replacement = DeviceSession(backend: IdleSessionBackend())
         let waiting = Task {
             try await gate.waitForSession(upTo: .seconds(5))
@@ -49,14 +51,18 @@ final class TunnelAgentSessionGateTests: XCTestCase {
     func testTimesOutWithTheLastLossReasonWhileTheTunnelIsDown() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: IdleSessionBackend()))
-        gate.markLost(reason: "the cable was unplugged")
+        gate.markLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure)
 
         do {
             _ = try await gate.waitForSession(upTo: .milliseconds(50))
             XCTFail("Expected the wait to time out")
         } catch {
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .tunnelUnavailable(lastFailure: RorkDeviceError.connectionClosed("Connection closed.").failure)
+            )
             XCTAssertTrue(
-                String(describing: error).contains("the cable was unplugged"),
+                String(describing: error).contains("Connection closed."),
                 "Expected the last loss reason in \(error)"
             )
         }
@@ -65,16 +71,16 @@ final class TunnelAgentSessionGateTests: XCTestCase {
     func testANilLossReasonKeepsTheLastKnownReason() async throws {
         let gate = TunnelAgentSessionGate()
         gate.publish(DeviceSession(backend: IdleSessionBackend()))
-        gate.markLost(reason: "the cable was unplugged")
-        gate.markLost(reason: nil)
+        gate.markLost(failure: RorkDeviceError.connectionClosed("Connection closed.").failure)
+        gate.markLost(failure: nil)
 
         do {
             _ = try await gate.waitForSession(upTo: .milliseconds(50))
             XCTFail("Expected the wait to time out")
         } catch {
-            XCTAssertTrue(
-                String(describing: error).contains("the cable was unplugged"),
-                "Expected the last loss reason in \(error)"
+            XCTAssertEqual(
+                RorkDeviceFailure(error).cause,
+                RorkDeviceError.connectionClosed("Connection closed.").failure
             )
         }
     }

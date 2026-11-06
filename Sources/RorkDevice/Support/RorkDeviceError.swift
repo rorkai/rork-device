@@ -13,6 +13,46 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// A pairing record is missing required fields or contains invalid data.
     case invalidPairingRecord(String)
 
+    /// No attached device matched the requested selection.
+    ///
+    /// `identifier` is the requested device identifier, or nil when the
+    /// caller asked for the first available device. `usbOnly` records that
+    /// only cable-attached devices were eligible.
+    case deviceNotFound(identifier: String?, usbOnly: Bool)
+
+    /// Lockdown refused `request` because the device is locked with a
+    /// passcode.
+    case deviceLocked(request: String)
+
+    /// The peer closed the connection. The message names the connection.
+    case connectionClosed(String)
+
+    /// This side closed the connection, for example while a tunnel cycle
+    /// was torn down, and an operation still used it. The message names the
+    /// connection.
+    case localConnectionClosed(String)
+
+    /// The peer reset the connection. The message preserves the platform's
+    /// diagnostic detail.
+    case connectionReset(String)
+
+    /// An operation exceeded its deadline.
+    case timedOut(String)
+
+    /// The served tunnel stayed down past a request's patience.
+    ///
+    /// `lastFailure` is the most recent reason the tunnel was lost or failed
+    /// to re-establish, when one was reported.
+    case tunnelUnavailable(lastFailure: RorkDeviceFailure?)
+
+    /// A transport step such as connecting to or checking in with a service
+    /// failed.
+    ///
+    /// `context` names the step and `underlying` keeps the classification of
+    /// the failure that ended it, such as a closed connection, a timeout, or
+    /// a reset stream.
+    case transportStep(context: String, underlying: RorkDeviceFailure)
+
     /// A socket, tunnel, or forwarding transport failed.
     case transport(String)
 
@@ -39,10 +79,17 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// The device rejected a remote-pairing protocol request.
     case remotePairing(RemotePairingRejection)
 
+    /// The device ended manual pair setup without returning pairing data.
+    ///
+    /// The device closes the exchange this way both when the user declines
+    /// the Trust prompt and when the passcode approval is not finished; the
+    /// two are indistinguishable on the wire.
+    case remotePairingApprovalIncomplete
+
     /// AFC returned a non-zero status code.
     case afcStatus(UInt64)
 
-    /// Heartbeat returned malformed data, timed out, or reported device sleep.
+    /// Heartbeat returned malformed data or reported device sleep.
     case heartbeat(String)
 
     /// InstallationProxy returned an operation error.
@@ -58,6 +105,23 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return message
         case let .invalidPairingRecord(message):
             return "Invalid pairing record: \(message)"
+        case let .deviceNotFound(_, usbOnly):
+            return usbOnly ? "No matching USB device found." : "No matching device found."
+        case let .deviceLocked(request):
+            return "Lockdown error: \(request) failed: PasswordProtected"
+        case let .connectionClosed(message), let .localConnectionClosed(message):
+            return "Transport error: \(message)"
+        case let .connectionReset(message):
+            return "Transport error: \(message)"
+        case let .timedOut(message):
+            return message
+        case let .tunnelUnavailable(lastFailure):
+            guard let lastFailure else {
+                return "Transport error: The tunnel is not ready and no session became available in time."
+            }
+            return "Transport error: The tunnel is not ready (last failure: \(lastFailure.message)) and no session became available in time."
+        case let .transportStep(context, underlying):
+            return "Transport error: \(context): \(underlying.message)"
         case let .transport(message):
             return "Transport error: \(message)"
         case let .protocolViolation(message):
@@ -72,6 +136,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Secure session error: \(message)"
         case let .remotePairing(rejection):
             return rejection.description
+        case .remotePairingApprovalIncomplete:
+            return "Protocol violation: Remote pairing response is missing pairing data."
         case let .afcStatus(status):
             return "AFC returned status \(status)."
         case let .heartbeat(message):

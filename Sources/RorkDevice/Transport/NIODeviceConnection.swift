@@ -24,10 +24,10 @@ final class NIODeviceConnection:
     @unchecked Sendable
 {
     /// Error reported to callers once the owner closes the stream locally.
-    static let closedError = RorkDeviceError.transport("Connection is closed.")
+    static let closedError = RorkDeviceError.localConnectionClosed("Connection is closed.")
 
     /// Error reported when the peer closes before a read can be satisfied.
-    static let peerClosedError = RorkDeviceError.transport("Connection closed.")
+    static let peerClosedError = RorkDeviceError.connectionClosed("Connection closed.")
 
     /// Channel handle retained for outbound writes and prompt close.
     private let channel: Channel
@@ -535,5 +535,5 @@ private func normalizedStreamError(_ error: Error) -> Error {
     if error is RorkDeviceError {
         return error
     }
-    return RorkDeviceError.transport(describeTransportError(error))
+    return transportError(from: error)
 }

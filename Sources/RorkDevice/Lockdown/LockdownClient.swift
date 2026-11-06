@@ -432,10 +432,19 @@ public struct LockdownService: Equatable, Sendable {
 /// Validates common Lockdown `Result` and `Error` fields.
 func checkResult(_ response: [String: Any], request: String) throws {
     if let result = response.string("Result"), result != "Success" {
-        let error = response.string("Error") ?? result
-        throw RorkDeviceError.lockdown("\(request) failed: \(error)")
+        throw lockdownFailure(response.string("Error") ?? result, request: request)
     }
     if let error = response.string("Error") {
-        throw RorkDeviceError.lockdown("\(request) failed: \(error)")
+        throw lockdownFailure(error, request: request)
+    }
+}
+
+/// Types the Lockdown error identifiers callers act on.
+private func lockdownFailure(_ error: String, request: String) -> RorkDeviceError {
+    switch error {
+    case "PasswordProtected":
+        return .deviceLocked(request: request)
+    default:
+        return .lockdown("\(request) failed: \(error)")
     }
 }

@@ -99,7 +99,7 @@ final class DeveloperModeSessionTests: XCTestCase {
             { error in
                 XCTAssertEqual(
                     error as? RorkDeviceError,
-                    .transport("Developer Mode reveal timed out.")
+                    .timedOut("Developer Mode reveal timed out.")
                 )
             }
         )

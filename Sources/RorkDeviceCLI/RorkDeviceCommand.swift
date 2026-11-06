@@ -290,7 +290,7 @@ struct ConnectionOptions: ParsableArguments {
             selected = try await client.discoverDevices().first
         }
         guard let selected else {
-            throw ValidationError("No matching device found.")
+            throw RorkDeviceError.deviceNotFound(identifier: udid, usbOnly: false)
         }
         let pairing: PairingRecord
         if pairingRecord != nil {
@@ -1301,7 +1301,7 @@ struct TunnelStartCommand: AsyncParsableCommand {
     /// recovery within seconds instead of the schedule's full ceiling.
     static let passiveFailurePolicy = TunnelReconnectLoop.PassiveFailurePolicy(
         cap: .seconds(10),
-        matches: { reason in reason.contains("PasswordProtected") }
+        matches: { failure in failure.code == .deviceLocked }
     )
 
     /// Opens the packet tunnel, establishes trust, and serves until terminated.
@@ -1495,14 +1495,14 @@ struct TunnelStartCommand: AsyncParsableCommand {
                 }
             },
             emit: { event in
-                // Waiting IPC requests fail with this reason when the
+                // Waiting IPC requests fail with this failure when the
                 // tunnel stays down past their patience. Both event kinds
-                // carry a reason because a tunnel that never establishes
+                // carry one because a tunnel that never establishes
                 // reports its failures through re-establishing alone.
                 switch event {
-                case .tunnelLost(let reason),
-                     .reestablishing(_, _, let reason):
-                    sessionGate?.markLost(reason: reason)
+                case .tunnelLost(let failure),
+                     .reestablishing(_, _, let failure):
+                    sessionGate?.markLost(failure: failure)
                 }
                 writeTunnelLifecycleEvent(
                     event,
@@ -1548,10 +1548,10 @@ struct TunnelStartCommand: AsyncParsableCommand {
         )
         sessionGate.publish(shared)
         defer {
-            // The reason arrives with the loop's tunnel-lost event right
+            // The failure arrives with the loop's tunnel-lost event right
             // after this teardown. Passing nil keeps the gate's last
-            // known reason.
-            sessionGate.markLost(reason: nil)
+            // known failure.
+            sessionGate.markLost(failure: nil)
             shared.close()
         }
         try await serve(cycle)
@@ -1801,8 +1801,10 @@ struct TunnelReadyEvent: Encodable {
 /// Reconnect-mode stdout line for a tunnel lifecycle transition.
 ///
 /// `tunnel-lost` reports why a ready tunnel died. `re-establishing` announces
-/// the next attempt with its schedule position and the latest failure. The
-/// device is omitted while no cycle has identified one yet.
+/// the next attempt with its schedule position and the latest failure. Both
+/// carry the failure twice: `reason` is its human-readable message and
+/// `failure` its machine-readable classification. The device is omitted while
+/// no cycle has identified one yet.
 struct TunnelLifecycleEventLine: Encodable {
     let event: TunnelReconnectLoop.Event
     let udid: String?
@@ -1811,6 +1813,7 @@ struct TunnelLifecycleEventLine: Encodable {
         case event
         case udid
         case reason
+        case failure
         case attempt
         case delayMs
     }
@@ -1819,17 +1822,19 @@ struct TunnelLifecycleEventLine: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(udid, forKey: .udid)
         switch event {
-        case .tunnelLost(let reason):
+        case .tunnelLost(let failure):
             try container.encode("tunnel-lost", forKey: .event)
-            try container.encode(reason, forKey: .reason)
-        case .reestablishing(let attempt, let delay, let reason):
+            try container.encode(failure.message, forKey: .reason)
+            try container.encode(failure, forKey: .failure)
+        case .reestablishing(let attempt, let delay, let failure):
             try container.encode("re-establishing", forKey: .event)
             try container.encode(attempt, forKey: .attempt)
             try container.encode(
                 wholeMilliseconds(of: delay),
                 forKey: .delayMs
             )
-            try container.encode(reason, forKey: .reason)
+            try container.encode(failure.message, forKey: .reason)
+            try container.encode(failure, forKey: .failure)
         }
     }
 }

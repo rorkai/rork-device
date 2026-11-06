@@ -18,14 +18,14 @@ import Foundation
 public enum TunnelReconnectLoop {
     /// Lifecycle transitions reported while the loop keeps a tunnel alive.
     public enum Event: Equatable, Sendable {
-        /// A tunnel that had reported readiness died with the given reason.
-        case tunnelLost(reason: String)
+        /// A tunnel that had reported readiness died with the given failure.
+        case tunnelLost(failure: RorkDeviceFailure)
 
         /// The next establishment attempt starts after the given delay.
         ///
-        /// `reason` carries the most recent failure so consumers can surface
+        /// `failure` carries the most recent failure so consumers can surface
         /// the true root cause while the loop is still converging.
-        case reestablishing(attempt: Int, delay: Duration, reason: String)
+        case reestablishing(attempt: Int, delay: Duration, failure: RorkDeviceFailure)
     }
 
     /// Caps retry delays for failures that prompt nothing on the device.
@@ -41,11 +41,11 @@ public enum TunnelReconnectLoop {
         /// Longest wait before retrying a matching failure.
         public let cap: Duration
 
-        /// Decides whether a failure reason is passive.
-        public let matches: @Sendable (String) -> Bool
+        /// Decides whether a failure is passive.
+        public let matches: @Sendable (RorkDeviceFailure) -> Bool
 
-        /// Creates a policy from a cap and a reason predicate.
-        public init(cap: Duration, matches: @escaping @Sendable (String) -> Bool) {
+        /// Creates a policy from a cap and a failure predicate.
+        public init(cap: Duration, matches: @escaping @Sendable (RorkDeviceFailure) -> Bool) {
             self.cap = cap
             self.matches = matches
         }
@@ -95,7 +95,7 @@ public enum TunnelReconnectLoop {
         var attempt = 0
         while true {
             let becameReady = ReadyFlag()
-            let reason: String
+            let failure: RorkDeviceFailure
             do {
                 try await establishAndServe {
                     becameReady.set()
@@ -108,19 +108,19 @@ public enum TunnelReconnectLoop {
                 if error is CancellationError {
                     throw error
                 }
-                reason = String(describing: error)
+                failure = RorkDeviceFailure(error)
                 if becameReady.isSet {
                     attempt = 0
-                    emit(.tunnelLost(reason: reason))
+                    emit(.tunnelLost(failure: failure))
                 }
             }
 
             attempt += 1
             var delay = backoff.delay(beforeAttempt: attempt)
-            if let policy = passiveFailurePolicy, policy.matches(reason) {
+            if let policy = passiveFailurePolicy, policy.matches(failure) {
                 delay = min(delay, policy.cap)
             }
-            emit(.reestablishing(attempt: attempt, delay: delay, reason: reason))
+            emit(.reestablishing(attempt: attempt, delay: delay, failure: failure))
             try await waitBeforeAttempt(delay)
         }
     }

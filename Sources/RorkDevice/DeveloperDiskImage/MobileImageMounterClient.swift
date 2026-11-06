@@ -319,7 +319,7 @@ private struct MobileImageMounterClient {
 
 /// Returns whether the peer ended a NIO byte stream before sending a response.
 private func isPeerClosedConnectionError(_ error: Error) -> Bool {
-    guard case RorkDeviceError.transport("Connection closed.") = error else {
+    guard case RorkDeviceError.connectionClosed = error else {
         return false
     }
     return true

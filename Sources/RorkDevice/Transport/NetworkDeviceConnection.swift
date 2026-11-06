@@ -171,7 +171,7 @@ final class NetworkDeviceConnection: DeviceConnection {
                 }
                 connection.start(queue: queue)
                 queue.asyncAfter(deadline: .now() + timeout.dispatchTimeInterval) { [connection] in
-                    if waiter.resume(with: .failure(RorkDeviceError.transport(
+                    if waiter.resume(with: .failure(RorkDeviceError.timedOut(
                         "TLS connection timed out."
                     ))) {
                         connection.cancel()
@@ -242,7 +242,7 @@ final class NetworkDeviceConnection: DeviceConnection {
                 return content
             }
             if result.isComplete {
-                throw RorkDeviceError.transport("Network connection closed.")
+                throw RorkDeviceError.connectionClosed("Network connection closed.")
             }
         }
     }

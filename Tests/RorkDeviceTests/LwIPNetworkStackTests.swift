@@ -1,4 +1,5 @@
 import Foundation
+import RorkDeviceLwIP
 import XCTest
 @testable import RorkDevice
 
@@ -69,6 +70,27 @@ final class LwIPNetworkStackTests: XCTestCase {
         _ = try? await connectionTask.value
     }
 
+    /// A peer close classifies like every other closed connection, so a
+    /// supervisor that retries closed connections retries this one too.
+    func testPeerCloseIsAClosedConnection() async throws {
+        let state = LwIPConnectionState()
+        state.handleConnected()
+
+        state.handle(RORK_LWIP_CONNECTION_CLOSED, data: nil, errorCode: 0)
+
+        do {
+            _ = try await state.receive(upTo: 1)
+            XCTFail("Receiving after a peer close should fail.")
+        } catch {
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .connectionClosed("CoreDevice userspace TCP connection closed.")
+            )
+            XCTAssertEqual(RorkDeviceFailure(error).code, .connectionClosed)
+        }
+    }
+
+    /// Closing locally fails later sends as a locally closed connection.
     func testSendingAfterClosingConnectionFails() async throws {
         let packets = LwIPPacketRecorder()
         let stack = try LwIPNetworkStack(
@@ -108,7 +130,9 @@ final class LwIPNetworkStackTests: XCTestCase {
         do {
             try await connection.send(Data("closed".utf8))
             XCTFail("Sending through a closed lwIP connection should fail.")
-        } catch {}
+        } catch {
+            XCTAssertEqual(RorkDeviceFailure(error).code, .connectionClosed)
+        }
     }
 
     func testSYNAdvertisesJumboMSSAndOffersWindowScaling() async throws {

@@ -8,7 +8,7 @@ import Foundation
 /// restarting the device, or confirming the post-restart prompt.
 final class DeveloperModeClient {
     /// Stable error returned when the AMFI response exceeds its deadline.
-    private static let timeoutError = RorkDeviceError.transport(
+    private static let timeoutError = RorkDeviceError.timedOut(
         "Developer Mode reveal timed out."
     )
 
