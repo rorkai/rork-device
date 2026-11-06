@@ -282,4 +282,35 @@ final class RorkDeviceFailureTests: XCTestCase {
         XCTAssertFalse(isConnectionResetError(IOError(errnoCode: ETIMEDOUT, reason: "read")))
         #endif
     }
+
+    /// SwiftNIO reports an elapsed connect timeout as a channel error, not
+    /// a socket error.
+    func testAConnectTimeoutIsATimeout() {
+        let error = transportError(
+            from: ChannelError.connectTimeout(.seconds(5)),
+            context: "connect failed"
+        )
+
+        XCTAssertEqual(RorkDeviceFailure(error).code, .timeout)
+    }
+
+    /// A connect that tried several addresses has one kind only when every
+    /// attempt failed the same way.
+    func testConnectAttemptsClassifyOnlyWhenTheyAgree() {
+        #if os(Windows)
+        let reset = IOError(winsock: WSAECONNRESET, reason: "connect")
+        let timedOut = IOError(winsock: WSAETIMEDOUT, reason: "connect")
+        let refused = IOError(winsock: WSAECONNREFUSED, reason: "connect")
+        #else
+        let reset = IOError(errnoCode: ECONNRESET, reason: "connect")
+        let timedOut = IOError(errnoCode: ETIMEDOUT, reason: "connect")
+        let refused = IOError(errnoCode: ECONNREFUSED, reason: "connect")
+        #endif
+
+        XCTAssertEqual(socketFailure(ofAttempts: [reset, reset]), .reset)
+        XCTAssertEqual(socketFailure(ofAttempts: [timedOut, timedOut]), .timedOut)
+        XCTAssertNil(socketFailure(ofAttempts: [timedOut, refused]))
+        XCTAssertNil(socketFailure(ofAttempts: [refused]))
+        XCTAssertNil(socketFailure(ofAttempts: []))
+    }
 }
