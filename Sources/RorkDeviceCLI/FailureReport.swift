@@ -67,6 +67,31 @@ enum FailureReport {
         )
     }
 
+    /// What a failed run writes to standard error and its exit status, or
+    /// nil when ArgumentParser's own `exit(withError:)` handles the error
+    /// unchanged: the format is not requested, or the error is a clean exit
+    /// such as `--help`.
+    static func termination(
+        for error: Error,
+        phase: Phase,
+        environment: [String: String]
+    ) -> (standardError: Data, status: Int32)? {
+        let exitCode = RorkDeviceCommand.exitCode(for: error)
+        guard exitCode != .success, isEnabled(in: environment) else {
+            return nil
+        }
+        var output = Data()
+        let message = RorkDeviceCommand.fullMessage(for: error)
+        if !message.isEmpty {
+            output.append(Data((message + "\n").utf8))
+        }
+        if let line = try? line(for: failure(for: error, phase: phase)) {
+            output.append(line)
+            output.append(0x0a)
+        }
+        return (output, exitCode.rawValue)
+    }
+
     /// Encodes the final standard-error line, without its newline.
     static func line(for failure: RorkDeviceFailure) throws -> Data {
         let encoder = JSONEncoder()
@@ -83,7 +108,7 @@ enum FailureReport {
 
 extension RorkDeviceCommand {
     /// Runs the selected command, reporting failures through
-    /// ``exit(reporting:)``.
+    /// ``exit(reporting:phase:environment:)``.
     static func main() async {
         var command: any ParsableCommand
         do {
@@ -109,20 +134,14 @@ extension RorkDeviceCommand {
         phase: FailureReport.Phase,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Never {
-        let exitCode = exitCode(for: error)
-        guard exitCode != .success, FailureReport.isEnabled(in: environment) else {
+        guard let termination = FailureReport.termination(
+            for: error,
+            phase: phase,
+            environment: environment
+        ) else {
             exit(withError: error)
         }
-        var output = Data()
-        let message = fullMessage(for: error)
-        if !message.isEmpty {
-            output.append(Data((message + "\n").utf8))
-        }
-        if let line = try? FailureReport.line(for: FailureReport.failure(for: error, phase: phase)) {
-            output.append(line)
-            output.append(0x0a)
-        }
-        try? FileHandle.standardError.write(contentsOf: output)
-        Foundation.exit(exitCode.rawValue)
+        try? FileHandle.standardError.write(contentsOf: termination.standardError)
+        Foundation.exit(termination.status)
     }
 }

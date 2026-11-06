@@ -388,6 +388,26 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(failure["code"] as? String, "device-not-found")
     }
 
+    func testLifecycleEventsEncodeTheFailureCause() throws {
+        let output = try encodedJSONObject(
+            TunnelLifecycleEventLine(
+                event: .tunnelLost(
+                    failure: RorkDeviceError.transportStep(
+                        context: "Failed to connect com.apple.example on [fd00::1]:5000",
+                        underlying: RorkDeviceError.timedOut("TLS connection timed out.").failure
+                    ).failure
+                ),
+                udid: nil
+            )
+        )
+
+        let failure = try XCTUnwrap(output["failure"] as? [String: Any])
+        XCTAssertEqual(failure["code"] as? String, "timeout")
+        let cause = try XCTUnwrap(failure["cause"] as? [String: Any])
+        XCTAssertEqual(cause["code"] as? String, "timeout")
+        XCTAssertEqual(cause["message"] as? String, "TLS connection timed out.")
+    }
+
     func testWaitingForTrustEventEncodesDevice() throws {
         let output = try encodedJSONObject(
             TunnelWaitingForTrustEvent(udid: "00008150-TEST")

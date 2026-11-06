@@ -44,6 +44,11 @@ final class RorkDeviceFailureTests: XCTestCase {
                 "Transport error: Connection closed."
             ),
             (
+                RorkDeviceError.localConnectionClosed,
+                .connectionClosed,
+                "Transport error: Connection is closed."
+            ),
+            (
                 RorkDeviceError.connectionReset("Connection reset by peer."),
                 .connectionClosed,
                 "Transport error: Connection reset by peer."
@@ -143,7 +148,7 @@ final class RorkDeviceFailureTests: XCTestCase {
     func testTransportStepKeepsTheUnderlyingClassification() {
         let failure = RorkDeviceFailure(
             RorkDeviceError.transportStep(
-                    context: "Remote service com.apple.example on [fd00::1]:5000 closed while waiting for StartService",
+                context: "Remote service com.apple.example on [fd00::1]:5000 closed while waiting for StartService",
                 underlying: RorkDeviceError.connectionClosed.failure
             )
         )
@@ -156,12 +161,29 @@ final class RorkDeviceFailureTests: XCTestCase {
         )
     }
 
+    /// A step that inherits its cause's code also carries the cause's
+    /// details, so a code always comes with the details it implies.
+    func testTransportStepCarriesTheUnderlyingDetails() {
+        let failure = RorkDeviceFailure(
+            RorkDeviceError.transportStep(
+                context: "Remote service com.apple.example on [fd00::1]:5000 closed while waiting for StartService",
+                underlying: RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: 3,
+                    errorCode: 5
+                ).failure
+            )
+        )
+
+        XCTAssertEqual(failure.code, .streamReset)
+        XCTAssertEqual(failure.details?.http2ErrorCode, 5)
+    }
+
     func testTransportStepFallsBackToTransportForForeignErrors() {
         struct Foreign: Error {}
 
         let failure = RorkDeviceFailure(
             RorkDeviceError.transportStep(
-                    context: "Remote service com.apple.example on 127.0.0.1:5000 closed while waiting for RSDCheckin",
+                context: "Remote service com.apple.example on 127.0.0.1:5000 closed while waiting for RSDCheckin",
                 underlying: RorkDeviceFailure(Foreign())
             )
         )
@@ -202,6 +224,31 @@ final class RorkDeviceFailureTests: XCTestCase {
             json,
             #"{"cause":{"code":"stream-reset","details":{"http2ErrorCode":5,"streamIdentifier":7},"message":"RemoteXPC reset HTTP/2 stream 7 with error code 5."},"code":"tunnel-unavailable","message":"Transport error: The tunnel is not ready (last failure: RemoteXPC reset HTTP/2 stream 7 with error code 5.) and no session became available in time."}"#
         )
+    }
+
+    /// Consumers built against this release keep decoding failures that
+    /// carry codes added later.
+    func testDecodesRoundTripAndTreatsNewCodesAsUnknown() throws {
+        let failure = RorkDeviceFailure(
+            RorkDeviceError.tunnelUnavailable(
+                lastFailure: RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: 7,
+                    errorCode: 5
+                ).failure
+            )
+        )
+        let decoded = try JSONDecoder().decode(
+            RorkDeviceFailure.self,
+            from: JSONEncoder().encode(failure)
+        )
+        XCTAssertEqual(decoded, failure)
+
+        let future = try JSONDecoder().decode(
+            RorkDeviceFailure.self,
+            from: Data(#"{"code":"added-later","message":"m"}"#.utf8)
+        )
+        XCTAssertEqual(future.code, .unknown)
+        XCTAssertEqual(future.message, "m")
     }
 
     func testEmptyDetailsAreOmitted() {

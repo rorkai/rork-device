@@ -86,4 +86,90 @@ final class FailureReportTests: XCTestCase {
             )
         )
     }
+
+    private static let jsonEnvironment = ["RORKDEVICE_FAILURE_FORMAT": "json"]
+
+    /// Splits rendered standard error into its lines.
+    private func lines(of data: Data) -> [String] {
+        String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
+    func testAParseFailureKeepsUsageAndEndsWithTheFailureLine() throws {
+        var parseError: Error?
+        do {
+            _ = try RorkDeviceCommand.parseAsRoot(["info", "--port", "5"])
+        } catch {
+            parseError = error
+        }
+        let error = try XCTUnwrap(parseError)
+
+        let termination = try XCTUnwrap(
+            FailureReport.termination(for: error, phase: .parsing, environment: Self.jsonEnvironment)
+        )
+
+        XCTAssertEqual(termination.status, ExitCode.validationFailure.rawValue)
+        let output = lines(of: termination.standardError)
+        XCTAssertEqual(output.first, "Error: --port requires --host.")
+        XCTAssertTrue(output.contains { $0.hasPrefix("Usage: rorkdevice info") })
+        XCTAssertEqual(
+            output.last,
+            #"{"failure":{"code":"invalid-input","message":"--port requires --host."}}"#
+        )
+    }
+
+    func testARunFailureExitsOneWithTheTypedLine() throws {
+        let termination = try XCTUnwrap(
+            FailureReport.termination(
+                for: RorkDeviceError.deviceNotFound(identifier: nil, usbOnly: false),
+                phase: .running,
+                environment: Self.jsonEnvironment
+            )
+        )
+
+        XCTAssertEqual(termination.status, 1)
+        XCTAssertEqual(
+            lines(of: termination.standardError),
+            [
+                "Error: No matching device found.",
+                #"{"failure":{"code":"device-not-found","message":"No matching device found."}}"#,
+            ]
+        )
+    }
+
+    /// `remote-pairing diagnose` prints its report and throws a bare
+    /// status; the line still ends its output.
+    func testABareExitCodeStillEndsWithTheFailureLine() throws {
+        let termination = try XCTUnwrap(
+            FailureReport.termination(
+                for: ExitCode.failure,
+                phase: .running,
+                environment: Self.jsonEnvironment
+            )
+        )
+
+        XCTAssertEqual(termination.status, 1)
+        XCTAssertEqual(
+            lines(of: termination.standardError),
+            [#"{"failure":{"code":"unknown","message":"The command failed with exit code 1."}}"#]
+        )
+    }
+
+    func testDefersToArgumentParserWhenNotRequestedOrClean() {
+        XCTAssertNil(
+            FailureReport.termination(
+                for: RorkDeviceError.connectionClosed,
+                phase: .running,
+                environment: [:]
+            )
+        )
+        XCTAssertNil(
+            FailureReport.termination(
+                for: CleanExit.helpRequest(),
+                phase: .parsing,
+                environment: Self.jsonEnvironment
+            )
+        )
+    }
 }

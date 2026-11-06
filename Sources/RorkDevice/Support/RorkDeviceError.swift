@@ -27,6 +27,10 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// The peer closed the connection.
     case connectionClosed
 
+    /// This side closed the connection, for example while a tunnel cycle
+    /// was torn down, and an operation still used it.
+    case localConnectionClosed
+
     /// The peer reset the connection. The message preserves the platform's
     /// diagnostic detail.
     case connectionReset(String)
@@ -106,6 +110,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "Lockdown error: \(request) failed: PasswordProtected"
         case .connectionClosed:
             return "Transport error: Connection closed."
+        case .localConnectionClosed:
+            return "Transport error: Connection is closed."
         case let .connectionReset(message):
             return "Transport error: \(message)"
         case let .timedOut(message):

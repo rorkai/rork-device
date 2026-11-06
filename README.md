@@ -440,7 +440,7 @@ added, so treat an unrecognized code like `unknown`. The codes are listed in
 | ----------------------------- | ----------------------------------------------------------------------------- |
 | `device-not-found`            | No attached device matched the requested selection.                           |
 | `device-locked`               | The device must be unlocked first.                                            |
-| `connection-closed`           | The peer closed or reset the connection.                                      |
+| `connection-closed`           | The peer closed or reset the connection, or a torn-down tunnel closed it.     |
 | `stream-reset`                | The device reset a RemoteXPC HTTP/2 stream.                                   |
 | `timeout`                     | An operation inside `rorkdevice` exceeded its deadline.                       |
 | `tunnel-unavailable`          | A served request outlived the tunnel's absence. `cause` says why it was down. |
@@ -466,6 +466,8 @@ Error: No matching device found.
 ```
 
 Swift callers can classify any thrown error with `RorkDeviceFailure(error)`.
+`RorkDeviceFailure` is `Codable`, and decoding a code from a newer release
+yields `.unknown`.
 
 ## Direct Remote-Pairing Tunnel
 

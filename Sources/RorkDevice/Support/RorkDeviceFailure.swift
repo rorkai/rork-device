@@ -13,16 +13,17 @@ import Foundation
 /// Codes are part of the wire contract: an existing code keeps its meaning,
 /// and new codes may appear in later releases, so consumers must treat a code
 /// they do not recognize like ``Code/unknown``.
-public struct RorkDeviceFailure: Equatable, Sendable, Encodable {
+public struct RorkDeviceFailure: Equatable, Sendable, Codable {
     /// Stable identifier of a failure class.
-    public enum Code: String, CaseIterable, Equatable, Sendable, Encodable {
+    public enum Code: String, CaseIterable, Equatable, Sendable, Codable {
         /// No attached device matched the requested selection.
         case deviceNotFound = "device-not-found"
 
         /// The device must be unlocked before the request can proceed.
         case deviceLocked = "device-locked"
 
-        /// The peer closed or reset the connection.
+        /// The connection closed: the peer closed or reset it, or this side
+        /// tore it down while an operation was still using it.
         case connectionClosed = "connection-closed"
 
         /// The device reset one RemoteXPC HTTP/2 stream.
@@ -111,10 +112,17 @@ public struct RorkDeviceFailure: Equatable, Sendable, Encodable {
 
         /// The failure has no more specific classification.
         case unknown = "unknown"
+
+        /// Decodes a code, reading one from a newer release as ``unknown``
+        /// so consumers never fail on a code added after they were built.
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Code(rawValue: rawValue) ?? .unknown
+        }
     }
 
     /// Typed context for a failure, encoded only when present.
-    public struct Details: Equatable, Sendable, Encodable {
+    public struct Details: Equatable, Sendable, Codable {
         /// Identifier of the device the failure concerns.
         public var deviceIdentifier: String?
 
@@ -219,6 +227,16 @@ public struct RorkDeviceFailure: Equatable, Sendable, Encodable {
         case cause
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            code: try container.decode(Code.self, forKey: .code),
+            message: try container.decode(String.self, forKey: .message),
+            details: try container.decodeIfPresent(Details.self, forKey: .details),
+            cause: try container.decodeIfPresent(RorkDeviceFailure.self, forKey: .cause)
+        )
+    }
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(code, forKey: .code)
@@ -257,7 +275,7 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .deviceNotFound
         case .deviceLocked:
             return .deviceLocked
-        case .connectionClosed, .connectionReset:
+        case .connectionClosed, .localConnectionClosed, .connectionReset:
             return .connectionClosed
         case .timedOut:
             return .timeout
@@ -303,6 +321,9 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             )
         case let .remotePairing(rejection):
             return rejection.failureDetails
+        case let .transportStep(_, underlying):
+            // The code is the underlying one, so its details travel with it.
+            return underlying.details
         case let .afcStatus(status):
             return .init(status: Int64(clamping: status))
         case let .installationProxy(error):
@@ -310,8 +331,8 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
         case let .misagentStatus(status):
             return .init(status: Int64(status))
         case .invalidInput, .invalidPairingRecord, .deviceLocked,
-            .connectionClosed, .connectionReset, .timedOut,
-            .tunnelUnavailable, .transportStep, .transport, .protocolViolation, .lockdown,
+            .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
+            .tunnelUnavailable, .transport, .protocolViolation, .lockdown,
             .secureSessionUnsupported, .secureSession,
             .remotePairingApprovalIncomplete, .heartbeat:
             return nil
