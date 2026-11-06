@@ -120,30 +120,50 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
     /// number of apps signed with free developer profiles.
     public static let freeDeveloperAppLimitResult: UInt32 = 0xE800_8021
 
+    /// Creates an InstallationProxy error from decoded protocol fields,
+    /// reading ``resultCode`` from the description.
+    public init(code: Code, message: String? = nil) {
+        self.init(code: code, message: message, resultCode: nil)
+    }
+
+    /// Creates an InstallationProxy error from a raw protocol code string.
+    public init(code rawCode: String, message: String? = nil) {
+        self.init(code: Code(rawValue: rawCode), message: message, resultCode: nil)
+    }
+
     /// Creates an InstallationProxy error from decoded protocol fields.
     ///
-    /// When `resultCode` is nil, it is read from a `0xE800xxxx` code in
-    /// `message`, where InstallationProxy repeats it.
-    public init(code: Code, message: String? = nil, resultCode: UInt32? = nil) {
+    /// When `resultCode` is nil, it is read from the `0xE8xxxxxx` code that
+    /// InstallationProxy repeats in `message`.
+    public init(code: Code, message: String?, resultCode: UInt32?) {
         self.code = code
         self.message = message
         self.resultCode = resultCode ?? message.flatMap(Self.resultCode(in:))
     }
 
     /// Creates an InstallationProxy error from a raw protocol code string.
-    public init(code rawCode: String, message: String? = nil, resultCode: UInt32? = nil) {
+    public init(code rawCode: String, message: String?, resultCode: UInt32?) {
         self.init(code: Code(rawValue: rawCode), message: message, resultCode: resultCode)
     }
 
-    /// Finds the first MobileInstallation result code written in hex.
+    /// Finds the MobileInstallation result code written as a standalone hex
+    /// token.
+    ///
+    /// The description names the staged bundle path before the result code,
+    /// so the last token wins over anything a file name happens to contain.
     private static func resultCode(in message: String) -> UInt32? {
-        guard let range = message.range(
-            of: #"0x[eE]8[0-9a-fA-F]{6}\b"#,
-            options: .regularExpression
-        ) else {
-            return nil
+        let pattern = #"(?<![0-9A-Za-z_])0x[eE]8[0-9a-fA-F]{6}(?![0-9A-Za-z_])"#
+        var last: Range<String.Index>?
+        var searchStart = message.startIndex
+        while let range = message.range(
+            of: pattern,
+            options: .regularExpression,
+            range: searchStart..<message.endIndex
+        ) {
+            last = range
+            searchStart = range.upperBound
         }
-        return UInt32(message[range].dropFirst(2), radix: 16)
+        return last.flatMap { UInt32(message[$0].dropFirst(2), radix: 16) }
     }
 
     /// Human-readable error text suitable for logs and CLI output.

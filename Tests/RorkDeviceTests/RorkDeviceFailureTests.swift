@@ -152,6 +152,14 @@ final class RorkDeviceFailureTests: XCTestCase {
             .osVersionTooLow
         )
 
+        XCTAssertEqual(
+            failure(InstallationError(
+                code: .applicationVerificationFailed,
+                message: "Failed to verify code signature of App0xe8008021.app and 0xe8008021x.app : 0xe8008015 (A valid provisioning profile for this executable was not found.)"
+            )).code,
+            .provisioningProfileRejected
+        )
+
         let other = failure(InstallationError(
             code: .applicationVerificationFailed,
             message: "Failed to verify code signature of App.app : 0xe8008016 (The executable was signed with invalid entitlements.)"
@@ -192,6 +200,16 @@ final class RorkDeviceFailureTests: XCTestCase {
             failure.message,
             "Protocol violation: Remote service directory does not advertise com.apple.coredevice.appservice."
         )
+    }
+
+    /// The two-argument initializers stay available as function references
+    /// for callers built against earlier releases.
+    func testInstallationErrorKeepsItsEarlierInitializers() {
+        let typed: (InstallationError.Code, String?) -> InstallationError = InstallationError.init(code:message:)
+        let raw: (String, String?) -> InstallationError = InstallationError.init(code:message:)
+
+        XCTAssertEqual(typed(.packageNotFound, nil).code, .packageNotFound)
+        XCTAssertEqual(raw("SomethingNewFailed", "0xe8008015").resultCode, 0xE800_8015)
     }
 
     func testTrustDialogOutcomesMapToDistinctCodes() {
