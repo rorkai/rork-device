@@ -62,3 +62,21 @@ func isTimedOutError(_ error: NIOCore.IOError) -> Bool {
     return error.errnoCode == ETIMEDOUT
     #endif
 }
+
+/// Converts a framework transport failure into the package error surface,
+/// typing the socket failures supervisors act on.
+///
+/// - Parameter context: Names the failed step, prefixed to the diagnostic.
+func transportError(from error: Error, context: String? = nil) -> RorkDeviceError {
+    let detail = describeTransportError(error)
+    let message = context.map { "\($0): \(detail)" } ?? detail
+    if let ioError = error as? NIOCore.IOError {
+        if isConnectionResetError(ioError) {
+            return .connectionReset(message)
+        }
+        if isTimedOutError(ioError) {
+            return .timedOut(message)
+        }
+    }
+    return .transport(message)
+}

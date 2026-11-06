@@ -263,10 +263,9 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .timeout
         case .tunnelUnavailable:
             return .tunnelUnavailable
-        case let .remoteServiceCheckIn(_, _, _, underlying):
-            // The check-in wrapper adds only context, so supervisors see the
-            // failure that ended the connection, such as a closed stream they
-            // retry on.
+        case let .transportStep(_, underlying):
+            // The step adds only context, so supervisors see the failure
+            // that ended it, such as a closed stream they retry on.
             return underlying.code == .unknown ? .transport : underlying.code
         case .transport:
             return .transport
@@ -312,7 +311,7 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .init(status: Int64(status))
         case .invalidInput, .invalidPairingRecord, .deviceLocked,
             .connectionClosed, .connectionReset, .timedOut,
-            .tunnelUnavailable, .remoteServiceCheckIn, .transport, .protocolViolation, .lockdown,
+            .tunnelUnavailable, .transportStep, .transport, .protocolViolation, .lockdown,
             .secureSessionUnsupported, .secureSession,
             .remotePairingApprovalIncomplete, .heartbeat:
             return nil
@@ -323,7 +322,7 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
         switch self {
         case let .tunnelUnavailable(lastFailure):
             return lastFailure
-        case let .remoteServiceCheckIn(_, _, _, underlying):
+        case let .transportStep(_, underlying):
             return underlying
         default:
             return nil
@@ -352,11 +351,7 @@ extension RemotePairingRejection {
     fileprivate var failureDetails: RorkDeviceFailure.Details? {
         switch self {
         case let .backoff(retryDelay?):
-            let components = retryDelay.components
-            return .init(
-                retryAfterMilliseconds: components.seconds * 1_000
-                    + components.attoseconds / 1_000_000_000_000_000
-            )
+            return .init(retryAfterMilliseconds: clampedMilliseconds(of: retryDelay))
         case let .unrecognized(code):
             return .init(rejectionCode: code)
         case .backoff(nil), .unknown, .authentication, .unknownPeer,
@@ -364,6 +359,20 @@ extension RemotePairingRejection {
             return nil
         }
     }
+}
+
+/// Whole milliseconds in `duration`, saturating instead of trapping for
+/// device-supplied delays too large to represent.
+private func clampedMilliseconds(of duration: Duration) -> Int64 {
+    let components = duration.components
+    let (milliseconds, overflow) = components.seconds.multipliedReportingOverflow(by: 1_000)
+    guard !overflow else {
+        return components.seconds < 0 ? .min : .max
+    }
+    let (total, sumOverflow) = milliseconds.addingReportingOverflow(
+        components.attoseconds / 1_000_000_000_000_000
+    )
+    return sumOverflow ? .max : total
 }
 
 extension LockdownPairingError: RorkDeviceFailureConvertible {

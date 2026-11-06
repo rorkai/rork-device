@@ -20,9 +20,29 @@ enum FailureReport {
         environment[formatVariable] == "json"
     }
 
+    /// Where a command failed, which decides how its error classifies.
+    enum Phase {
+        /// Parsing or validating the command line.
+        case parsing
+
+        /// Running the parsed command.
+        case running
+    }
+
     /// Classifies a command failure, including argument-parsing errors that
     /// the library does not know about.
-    static func failure(for error: Error) -> RorkDeviceFailure {
+    ///
+    /// Everything that fails while parsing is invalid input, whatever its
+    /// type. ArgumentParser wraps an error a `validate()` method throws in
+    /// its own internal type, so a library `invalidInput` from validation
+    /// cannot be recognized by type after parsing.
+    static func failure(for error: Error, phase: Phase = .running) -> RorkDeviceFailure {
+        if phase == .parsing {
+            return RorkDeviceFailure(
+                code: .invalidInput,
+                message: RorkDeviceCommand.message(for: error)
+            )
+        }
         if error is any RorkDeviceFailureConvertible || error is CancellationError {
             return RorkDeviceFailure(error)
         }
@@ -41,7 +61,10 @@ enum FailureReport {
                 message: "The command failed with exit code \(exitCode.rawValue)."
             )
         }
-        return RorkDeviceFailure(error)
+        return RorkDeviceFailure(
+            code: .unknown,
+            message: RorkDeviceCommand.message(for: error)
+        )
     }
 
     /// Encodes the final standard-error line, without its newline.
@@ -62,15 +85,20 @@ extension RorkDeviceCommand {
     /// Runs the selected command, reporting failures through
     /// ``exit(reporting:)``.
     static func main() async {
+        var command: any ParsableCommand
         do {
-            var command = try parseAsRoot()
+            command = try parseAsRoot()
+        } catch {
+            exit(reporting: error, phase: .parsing)
+        }
+        do {
             if var asyncCommand = command as? any AsyncParsableCommand {
                 try await asyncCommand.run()
             } else {
                 try command.run()
             }
         } catch {
-            exit(reporting: error)
+            exit(reporting: error, phase: .running)
         }
     }
 
@@ -78,6 +106,7 @@ extension RorkDeviceCommand {
     /// the environment asks for it and the status is a failure.
     static func exit(
         reporting error: Error,
+        phase: FailureReport.Phase,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Never {
         let exitCode = exitCode(for: error)
@@ -89,7 +118,7 @@ extension RorkDeviceCommand {
         if !message.isEmpty {
             output.append(Data((message + "\n").utf8))
         }
-        if let line = try? FailureReport.line(for: FailureReport.failure(for: error)) {
+        if let line = try? FailureReport.line(for: FailureReport.failure(for: error, phase: phase)) {
             output.append(line)
             output.append(0x0a)
         }

@@ -115,7 +115,7 @@ private func isRetryablePairingActivationError(_ error: Error) -> Bool {
     }
     switch error {
     case .transport, .connectionClosed, .connectionReset, .timedOut,
-        .remoteServiceCheckIn, .lockdown, .deviceLocked, .secureSession:
+        .transportStep, .lockdown, .deviceLocked, .secureSession:
         return true
     default:
         return false

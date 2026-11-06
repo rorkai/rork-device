@@ -256,7 +256,7 @@ public enum RemotePairingTrust {
         }
         switch deviceError {
         case .transport, .connectionClosed, .connectionReset, .timedOut,
-            .remoteServiceCheckIn, .remoteXPCStreamReset:
+            .transportStep, .remoteXPCStreamReset:
             return true
         case .remotePairing(let rejection):
             return rejection.allowsPairSetup

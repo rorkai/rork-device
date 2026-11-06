@@ -646,8 +646,9 @@ public final class DeviceClient {
                 port: port
             )
         } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect Remote Service Discovery on \(host):\(port): \(describeDeviceSessionError(error))"
+            throw RorkDeviceError.transportStep(
+                context: "Failed to connect Remote Service Discovery on \(host):\(port)",
+                underlying: RorkDeviceFailure(error)
             )
         }
 
@@ -703,8 +704,9 @@ public final class DeviceClient {
                 to: discoveryPort
             )
         } catch {
-            throw RorkDeviceError.transport(
-                "Failed to connect Remote Service Discovery through the supplied transport on port \(discoveryPort): \(describeDeviceSessionError(error))"
+            throw RorkDeviceError.transportStep(
+                context: "Failed to connect Remote Service Discovery through the supplied transport on port \(discoveryPort)",
+                underlying: RorkDeviceFailure(error)
             )
         }
 

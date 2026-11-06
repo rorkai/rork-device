@@ -40,16 +40,13 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// to re-establish, when one was reported.
     case tunnelUnavailable(lastFailure: RorkDeviceFailure?)
 
-    /// A Remote Service Discovery service connection ended during check-in.
+    /// A transport step such as connecting to or checking in with a service
+    /// failed.
     ///
-    /// `underlying` keeps the classification of the failure that ended it,
-    /// such as a closed connection or a reset stream.
-    case remoteServiceCheckIn(
-        service: String,
-        endpoint: String,
-        request: String,
-        underlying: RorkDeviceFailure
-    )
+    /// `context` names the step and `underlying` keeps the classification of
+    /// the failure that ended it, such as a closed connection, a timeout, or
+    /// a reset stream.
+    case transportStep(context: String, underlying: RorkDeviceFailure)
 
     /// A socket, tunnel, or forwarding transport failed.
     case transport(String)
@@ -118,8 +115,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
                 return "Transport error: The tunnel is not ready and no session became available in time."
             }
             return "Transport error: The tunnel is not ready (last failure: \(lastFailure.message)) and no session became available in time."
-        case let .remoteServiceCheckIn(service, endpoint, request, underlying):
-            return "Transport error: Remote service \(service) on \(endpoint) closed while waiting for \(request): \(underlying.message)"
+        case let .transportStep(context, underlying):
+            return "Transport error: \(context): \(underlying.message)"
         case let .transport(message):
             return "Transport error: \(message)"
         case let .protocolViolation(message):

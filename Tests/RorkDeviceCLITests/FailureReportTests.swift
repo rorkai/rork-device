@@ -38,7 +38,29 @@ final class FailureReportTests: XCTestCase {
             _ = try RorkDeviceCommand.parseAsRoot(["info", "--no-such-option"])
             XCTFail("Expected a parse error")
         } catch {
-            XCTAssertEqual(FailureReport.failure(for: error).code, .invalidInput)
+            XCTAssertEqual(
+                FailureReport.failure(for: error, phase: .parsing).code,
+                .invalidInput
+            )
+        }
+    }
+
+    /// ArgumentParser wraps a library error thrown from `validate()` in an
+    /// internal type, which must still classify as invalid input with the
+    /// rendered message rather than the wrapper's description.
+    func testLibraryErrorsFromValidationAreInvalidInput() {
+        do {
+            _ = try RorkDeviceCommand.parseAsRoot([
+                "image", "auto",
+                "--archive-url", "http://example.invalid/image.zip",
+                "--sha256", "abc",
+            ])
+            XCTFail("Expected a validation error")
+        } catch {
+            let failure = FailureReport.failure(for: error, phase: .parsing)
+            XCTAssertEqual(failure.code, .invalidInput)
+            XCTAssertEqual(failure.message, RorkDeviceCommand.message(for: error))
+            XCTAssertFalse(failure.message.contains("CommandError"))
         }
     }
 

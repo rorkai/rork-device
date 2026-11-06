@@ -535,13 +535,5 @@ private func normalizedStreamError(_ error: Error) -> Error {
     if error is RorkDeviceError {
         return error
     }
-    if let ioError = error as? NIOCore.IOError {
-        if isConnectionResetError(ioError) {
-            return RorkDeviceError.connectionReset(describeTransportError(error))
-        }
-        if isTimedOutError(ioError) {
-            return RorkDeviceError.timedOut(describeTransportError(error))
-        }
-    }
-    return RorkDeviceError.transport(describeTransportError(error))
+    return transportError(from: error)
 }

@@ -96,6 +96,16 @@ final class RorkDeviceFailureTests: XCTestCase {
         )
     }
 
+    /// A device-supplied backoff too large for milliseconds saturates
+    /// instead of trapping while the failure is reported.
+    func testAnUnrepresentableBackoffSaturates() {
+        let failure = RorkDeviceFailure(
+            RorkDeviceError.remotePairing(.backoff(retryDelay: .seconds(Int64.max)))
+        )
+
+        XCTAssertEqual(failure.details?.retryAfterMilliseconds, .max)
+    }
+
     func testTrustDialogOutcomesMapToDistinctCodes() {
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userConfirmationRequired).code, .awaitingTrust)
         XCTAssertEqual(RorkDeviceFailure(LockdownPairingError.userDenied).code, .trustDenied)
@@ -130,12 +140,10 @@ final class RorkDeviceFailureTests: XCTestCase {
 
     /// The check-in wrapper adds context without hiding a closed connection,
     /// which supervisors retry on.
-    func testRemoteServiceCheckInKeepsTheUnderlyingClassification() {
+    func testTransportStepKeepsTheUnderlyingClassification() {
         let failure = RorkDeviceFailure(
-            RorkDeviceError.remoteServiceCheckIn(
-                service: "com.apple.example",
-                endpoint: "[fd00::1]:5000",
-                request: "StartService",
+            RorkDeviceError.transportStep(
+                    context: "Remote service com.apple.example on [fd00::1]:5000 closed while waiting for StartService",
                 underlying: RorkDeviceError.connectionClosed.failure
             )
         )
@@ -148,14 +156,12 @@ final class RorkDeviceFailureTests: XCTestCase {
         )
     }
 
-    func testRemoteServiceCheckInFallsBackToTransportForForeignErrors() {
+    func testTransportStepFallsBackToTransportForForeignErrors() {
         struct Foreign: Error {}
 
         let failure = RorkDeviceFailure(
-            RorkDeviceError.remoteServiceCheckIn(
-                service: "com.apple.example",
-                endpoint: "127.0.0.1:5000",
-                request: "RSDCheckin",
+            RorkDeviceError.transportStep(
+                    context: "Remote service com.apple.example on 127.0.0.1:5000 closed while waiting for RSDCheckin",
                 underlying: RorkDeviceFailure(Foreign())
             )
         )

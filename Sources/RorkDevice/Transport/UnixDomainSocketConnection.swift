@@ -39,7 +39,7 @@ public final class UnixDomainSocketConnection:
             let connection = NIODeviceConnection(asyncChannel: asyncChannel)
             return UnixDomainSocketConnection(connection: connection)
         } catch {
-            throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")
+            throw transportError(from: error, context: "connect failed")
         }
     }
 

@@ -98,7 +98,7 @@ public final class TCPDeviceConnection:
             let connection = NIODeviceConnection(asyncChannel: asyncChannel)
             return TCPDeviceConnection(connection: connection)
         } catch {
-            throw RorkDeviceError.transport("connect failed: \(describeTransportError(error))")
+            throw transportError(from: error, context: "connect failed")
         }
     }
 
