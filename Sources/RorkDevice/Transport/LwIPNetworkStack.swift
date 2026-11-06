@@ -686,7 +686,7 @@ final class LwIPConnectionState: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let error = RorkDeviceError.transport(
+        let error = RorkDeviceError.timedOut(
             "Timed out opening the CoreDevice userspace TCP connection."
         )
         terminalError = error

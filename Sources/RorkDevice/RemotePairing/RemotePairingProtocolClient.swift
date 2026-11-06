@@ -272,7 +272,9 @@ final class RemotePairingProtocolClient {
         _ = try await receivePlain()
 
         let deviceParameters = try TLV8.decode(
-            try await receivePairingData()
+            try await receivePairingData(
+                whenMissing: .remotePairingApprovalIncomplete
+            )
         )
         try validatePairSetupResponse(
             deviceParameters,
@@ -301,7 +303,9 @@ final class RemotePairingProtocolClient {
         )
 
         let proofResponse = try TLV8.decode(
-            try await receivePairingData()
+            try await receivePairingData(
+                whenMissing: .remotePairingApprovalIncomplete
+            )
         )
         try validatePairSetupResponse(
             proofResponse,
@@ -380,7 +384,11 @@ final class RemotePairingProtocolClient {
             sendingHost: Self.pairingHostName
         )
 
-        let response = try TLV8.decode(try await receivePairingData())
+        let response = try TLV8.decode(
+            try await receivePairingData(
+                whenMissing: .remotePairingApprovalIncomplete
+            )
+        )
         try validatePairSetupResponse(response, expectedState: 0x06)
         _ = try decrypt(
             response.value(for: 0x05),
@@ -504,7 +512,15 @@ final class RemotePairingProtocolClient {
     }
 
     /// Receives and base64-decodes one pairing TLV payload.
-    private func receivePairingData() async throws -> Data {
+    ///
+    /// - Parameter missingError: Thrown when the response carries no pairing
+    ///   data. Pair setup passes its own error because the device ends setup
+    ///   that way when the user does not approve it.
+    private func receivePairingData(
+        whenMissing missingError: RorkDeviceError = .protocolViolation(
+            "Remote pairing response is missing pairing data."
+        )
+    ) async throws -> Data {
         let response = try await receivePlain()
         let encodedData = remotePairingNestedValue(
             response,
@@ -518,9 +534,7 @@ final class RemotePairingProtocolClient {
         {
             return data
         }
-        throw RorkDeviceError.protocolViolation(
-            "Remote pairing response is missing pairing data."
-        )
+        throw missingError
     }
 
     /// Runs a pair-verification step, reporting `pairVerifyFailed` to the device

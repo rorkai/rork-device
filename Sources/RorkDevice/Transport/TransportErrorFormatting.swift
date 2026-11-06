@@ -44,3 +44,21 @@ func isAddressInUseError(_ error: NIOCore.IOError) -> Bool {
     return error.errnoCode == EADDRINUSE
     #endif
 }
+
+/// Reports whether the peer reset the connection.
+func isConnectionResetError(_ error: NIOCore.IOError) -> Bool {
+    #if os(Windows)
+    error.winsockErrorCode == WSAECONNRESET
+    #else
+    return error.errnoCode == ECONNRESET
+    #endif
+}
+
+/// Reports whether the operating system timed the operation out.
+func isTimedOutError(_ error: NIOCore.IOError) -> Bool {
+    #if os(Windows)
+    error.winsockErrorCode == WSAETIMEDOUT
+    #else
+    return error.errnoCode == ETIMEDOUT
+    #endif
+}

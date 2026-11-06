@@ -384,8 +384,11 @@ private func remotePairingFailureCategory(of error: Error) -> String {
         return "other"
     }
     switch deviceError {
-    case .transport:
+    case .transport, .connectionClosed, .connectionReset, .timedOut,
+        .remoteServiceCheckIn, .tunnelUnavailable:
         return "transport"
+    case .deviceLocked:
+        return "device-locked"
     case .lockdown:
         return "lockdown-start-session"
     case .secureSession, .secureSessionUnsupported:

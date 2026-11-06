@@ -27,7 +27,7 @@ final class NIODeviceConnection:
     static let closedError = RorkDeviceError.transport("Connection is closed.")
 
     /// Error reported when the peer closes before a read can be satisfied.
-    static let peerClosedError = RorkDeviceError.transport("Connection closed.")
+    static let peerClosedError = RorkDeviceError.connectionClosed
 
     /// Channel handle retained for outbound writes and prompt close.
     private let channel: Channel
@@ -534,6 +534,14 @@ private func normalizedStreamError(_ error: Error) -> Error {
     }
     if error is RorkDeviceError {
         return error
+    }
+    if let ioError = error as? NIOCore.IOError {
+        if isConnectionResetError(ioError) {
+            return RorkDeviceError.connectionReset(describeTransportError(error))
+        }
+        if isTimedOutError(ioError) {
+            return RorkDeviceError.timedOut(describeTransportError(error))
+        }
     }
     return RorkDeviceError.transport(describeTransportError(error))
 }

@@ -278,9 +278,9 @@ final class RorkDeviceCLITests: XCTestCase {
         let policy = TunnelStartCommand.passiveFailurePolicy
 
         XCTAssertEqual(policy.cap, .seconds(10))
-        XCTAssertTrue(policy.matches("Lockdown error: StartService failed: PasswordProtected"))
-        XCTAssertFalse(policy.matches("Pairing was rejected on the device."))
-        XCTAssertFalse(policy.matches("No matching device found."))
+        XCTAssertTrue(policy.matches(RorkDeviceFailure(RorkDeviceError.deviceLocked(request: "StartService"))))
+        XCTAssertFalse(policy.matches(RorkDeviceFailure(LockdownPairingError.userDenied)))
+        XCTAssertFalse(policy.matches(RorkDeviceFailure(RorkDeviceError.deviceNotFound(identifier: nil, usbOnly: false))))
     }
 
     func testTunnelReadyEventListsCapabilitiesWhenServing() throws {
@@ -349,26 +349,32 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertFalse(command.exitWhenStdinCloses)
     }
 
-    func testTunnelLostEventEncodesReasonAndDevice() throws {
+    func testTunnelLostEventEncodesReasonFailureAndDevice() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
-                event: .tunnelLost(reason: "Transport error: link died."),
+                event: .tunnelLost(failure: RorkDeviceError.connectionClosed.failure),
                 udid: "00008150-TEST"
             )
         )
 
         XCTAssertEqual(output["event"] as? String, "tunnel-lost")
-        XCTAssertEqual(output["reason"] as? String, "Transport error: link died.")
+        XCTAssertEqual(output["reason"] as? String, "Transport error: Connection closed.")
+        let failure = try XCTUnwrap(output["failure"] as? [String: Any])
+        XCTAssertEqual(failure["code"] as? String, "connection-closed")
+        XCTAssertEqual(failure["message"] as? String, "Transport error: Connection closed.")
         XCTAssertEqual(output["udid"] as? String, "00008150-TEST")
     }
 
-    func testReEstablishingEventEncodesAttemptDelayAndReason() throws {
+    func testReEstablishingEventEncodesAttemptDelayReasonAndFailure() throws {
         let output = try encodedJSONObject(
             TunnelLifecycleEventLine(
                 event: .reestablishing(
                     attempt: 3,
                     delay: .milliseconds(4_000),
-                    reason: "Transport error: no device."
+                    failure: RorkDeviceError.deviceNotFound(
+                        identifier: nil,
+                        usbOnly: false
+                    ).failure
                 ),
                 udid: "00008150-TEST"
             )
@@ -377,7 +383,9 @@ final class RorkDeviceCLITests: XCTestCase {
         XCTAssertEqual(output["event"] as? String, "re-establishing")
         XCTAssertEqual(output["attempt"] as? Int, 3)
         XCTAssertEqual(output["delayMs"] as? Int, 4_000)
-        XCTAssertEqual(output["reason"] as? String, "Transport error: no device.")
+        XCTAssertEqual(output["reason"] as? String, "No matching device found.")
+        let failure = try XCTUnwrap(output["failure"] as? [String: Any])
+        XCTAssertEqual(failure["code"] as? String, "device-not-found")
     }
 
     func testWaitingForTrustEventEncodesDevice() throws {
@@ -395,7 +403,7 @@ final class RorkDeviceCLITests: XCTestCase {
                 event: .reestablishing(
                     attempt: 1,
                     delay: .seconds(1),
-                    reason: "Transport error: no device."
+                    failure: RorkDeviceError.transport("no device.").failure
                 ),
                 udid: nil
             )

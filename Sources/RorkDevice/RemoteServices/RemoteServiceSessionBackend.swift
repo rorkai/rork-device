@@ -223,8 +223,11 @@ final class RemoteServiceSessionBackend: DeviceSessionBackend {
             )
         }
 
-        return .transport(
-            "Remote service \(serviceName) on \(endpoint) closed while waiting for \(expectedRequest): \(describeDeviceSessionError(error))"
+        return .remoteServiceCheckIn(
+            service: serviceName,
+            endpoint: endpoint,
+            request: expectedRequest,
+            underlying: RorkDeviceFailure(error)
         )
     }
 }

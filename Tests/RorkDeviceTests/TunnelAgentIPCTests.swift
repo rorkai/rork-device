@@ -147,11 +147,55 @@ final class TunnelAgentServeLoopTests: XCTestCase {
         let unknown = try await replies.waitForReply(id: "3")
         XCTAssertEqual(unknown["ok"] as? Bool, false)
         XCTAssertTrue((unknown["error"] as? String ?? "").contains("frobnicate"))
+        let failure = try XCTUnwrap(unknown["failure"] as? [String: Any])
+        XCTAssertEqual(failure["code"] as? String, "invalid-input")
 
         // The loop keeps serving after an unknown operation.
         try stdin.fileHandleForWriting.write(contentsOf: Data(#"{"id":"4","op":"ping"}"#.utf8 + [0x0a]))
         let pong = try await replies.waitForReply(id: "4")
         XCTAssertEqual(pong["ok"] as? Bool, true)
+        try stdin.fileHandleForWriting.close()
+    }
+
+    /// A failed operation carries its typed classification next to the
+    /// human-readable error, so supervisors never parse the text.
+    func testFailedOperationRepliesCarryTheFailureClassification() async throws {
+        let stdin = Pipe()
+        let replies = ReplyRecorder()
+        let handlers: [String: TunnelAgentIPC.Handler] = [
+            "reset": { _ in
+                throw RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: 3,
+                    errorCode: 5
+                )
+            },
+        ]
+
+        let serving = Task {
+            await TunnelAgentIPC.serve(
+                requestsFrom: stdin.fileHandleForReading,
+                handlers: handlers,
+                send: replies.record
+            )
+        }
+        defer {
+            serving.cancel()
+        }
+        try stdin.fileHandleForWriting.write(
+            contentsOf: Data(#"{"id":"r1","op":"reset"}"#.utf8 + [0x0a])
+        )
+
+        let reply = try await replies.waitForReply(id: "r1")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(
+            reply["error"] as? String,
+            "RemoteXPC reset HTTP/2 stream 3 with error code 5."
+        )
+        let failure = try XCTUnwrap(reply["failure"] as? [String: Any])
+        XCTAssertEqual(failure["code"] as? String, "stream-reset")
+        let details = try XCTUnwrap(failure["details"] as? [String: Any])
+        XCTAssertEqual(details["streamIdentifier"] as? Int, 3)
+        XCTAssertEqual(details["http2ErrorCode"] as? Int, 5)
         try stdin.fileHandleForWriting.close()
     }
 

@@ -79,8 +79,10 @@ final class TunnelAgentOperationsTests: XCTestCase {
         // re-establishing ones, and those must still name the failure for
         // requests that time out while the device stays away.
         let gate = TunnelAgentSessionGate()
-        gate.markLost(reason: nil)
-        gate.markLost(reason: "No matching device found.")
+        gate.markLost(failure: nil)
+        gate.markLost(
+            failure: RorkDeviceError.deviceNotFound(identifier: nil, usbOnly: false).failure
+        )
         let handlers = TunnelAgentOperations.handlers(
             sessionGate: gate,
             patience: .milliseconds(50)
@@ -100,7 +102,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
 
     func testAppsListFailsWithTheLastLossReasonWhenTheTunnelStaysDown() async throws {
         let gate = TunnelAgentSessionGate()
-        gate.markLost(reason: "the cable was unplugged")
+        gate.markLost(failure: RorkDeviceError.connectionClosed.failure)
         let handlers = TunnelAgentOperations.handlers(
             sessionGate: gate,
             patience: .milliseconds(50)
@@ -112,7 +114,7 @@ final class TunnelAgentOperationsTests: XCTestCase {
             XCTFail("Expected a timeout error")
         } catch {
             XCTAssertTrue(
-                String(describing: error).contains("the cable was unplugged"),
+                String(describing: error).contains("Connection closed."),
                 "Expected the loss reason in \(error)"
             )
         }

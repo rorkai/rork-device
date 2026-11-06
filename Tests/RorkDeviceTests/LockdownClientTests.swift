@@ -371,6 +371,24 @@ final class LockdownClientTests: XCTestCase {
         }
     }
 
+    /// A locked device is typed so supervisors can wait for the unlock
+    /// instead of matching the Lockdown error identifier in text.
+    func testPasswordProtectedResponseThrowsDeviceLocked() async throws {
+        let inbound = try PropertyListMessageFramer.encode([
+            "Error": "PasswordProtected",
+        ])
+        let connection = FakeConnection(inbound: inbound)
+        let client = LockdownClient(connection: connection)
+
+        await XCTAssertThrowsErrorAsync({ try await client.startService("com.apple.example") }) { error in
+            XCTAssertEqual(error as? RorkDeviceError, .deviceLocked(request: "StartService"))
+            XCTAssertEqual(
+                String(describing: error),
+                "Lockdown error: StartService failed: PasswordProtected"
+            )
+        }
+    }
+
     func testPairReturnsEscrowBagAndSendsPublicPairingMaterial() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Request": "Pair",

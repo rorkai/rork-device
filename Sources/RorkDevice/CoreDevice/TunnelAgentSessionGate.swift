@@ -7,7 +7,7 @@ import Foundation
 /// their synchronized meeting point. Cycles publish a session when they become
 /// ready and withdraw it when the tunnel drops. Handlers wait for a session
 /// with bounded patience, so a request that arrives between cycles rides out
-/// a quick reconnect and fails with the last reported loss reason instead of
+/// a quick reconnect and fails with the last reported loss failure instead of
 /// a bare timeout when the tunnel stays down.
 ///
 /// The unchecked conformance is safe because every stored property is guarded
@@ -17,7 +17,7 @@ import Foundation
 public final class TunnelAgentSessionGate: @unchecked Sendable {
     private let lock = NSLock()
     private var session: DeviceSession?
-    private var lastLossReason: String?
+    private var lastLossFailure: RorkDeviceFailure?
     private var waiters: [UUID: CheckedContinuation<DeviceSession?, Never>] = [:]
 
     /// Creates a gate with no session, which stays closed until the first
@@ -39,14 +39,14 @@ public final class TunnelAgentSessionGate: @unchecked Sendable {
 
     /// Withdraws the current session because its tunnel cycle ended.
     ///
-    /// Waiters keep waiting for the next cycle. A nil reason keeps the last
+    /// Waiters keep waiting for the next cycle. A nil failure keeps the last
     /// known one, so a teardown path that cannot name its cause never erases
-    /// a reason the reconnect loop reported.
-    public func markLost(reason: String?) {
+    /// a failure the reconnect loop reported.
+    public func markLost(failure: RorkDeviceFailure?) {
         lock.withLock {
             session = nil
-            if let reason {
-                lastLossReason = reason
+            if let failure {
+                lastLossFailure = failure
             }
         }
     }
@@ -57,7 +57,8 @@ public final class TunnelAgentSessionGate: @unchecked Sendable {
     /// - Parameter patience: How long a request may wait for the tunnel to
     ///   come back before failing.
     /// - Throws: `CancellationError` when the waiting task is cancelled, or
-    ///   a transport error naming the last known loss reason on timeout.
+    ///   `RorkDeviceError.tunnelUnavailable` carrying the last known loss
+    ///   failure on timeout.
     public func waitForSession(upTo patience: Duration) async throws -> DeviceSession {
         let id = UUID()
         let timeout = Task {
@@ -107,7 +108,9 @@ public final class TunnelAgentSessionGate: @unchecked Sendable {
             return provided
         }
         try Task.checkCancellation()
-        throw RorkDeviceError.transport(timeoutDescription())
+        throw RorkDeviceError.tunnelUnavailable(
+            lastFailure: lock.withLock { lastLossFailure }
+        )
     }
 
     /// Resumes one registered waiter exactly once, whoever gets there first.
@@ -118,12 +121,4 @@ public final class TunnelAgentSessionGate: @unchecked Sendable {
         waiter?.resume(returning: session)
     }
 
-    /// Describes a timed-out wait using the last reported loss reason.
-    private func timeoutDescription() -> String {
-        let reason = lock.withLock { lastLossReason }
-        guard let reason else {
-            return "The tunnel is not ready and no session became available in time."
-        }
-        return "The tunnel is not ready (last failure: \(reason)) and no session became available in time."
-    }
 }

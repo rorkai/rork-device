@@ -123,7 +123,7 @@ final class PartialReceiveConnectionTests: XCTestCase {
         defer { connection.close() }
 
         await XCTAssertThrowsErrorAsync({ _ = try await connection.receive(exactly: 4) }) { error in
-            assertTransportError(error, equals: "Connection closed.")
+            XCTAssertEqual(error as? RorkDeviceError, .connectionClosed)
         }
     }
 

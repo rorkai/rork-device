@@ -191,8 +191,11 @@ final class RemoteServiceSessionTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport(
-                    "Remote service com.apple.mobile.heartbeat.shim.remote on [fd00::2]:51002 closed while waiting for RSDCheckin: Transport error: Fake connection underflow."
+                .remoteServiceCheckIn(
+                    service: "com.apple.mobile.heartbeat.shim.remote",
+                    endpoint: "[fd00::2]:51002",
+                    request: "RSDCheckin",
+                    underlying: RorkDeviceError.transport("Fake connection underflow.").failure
                 )
             )
         }
@@ -222,8 +225,11 @@ final class RemoteServiceSessionTests: XCTestCase {
         }) { error in
             XCTAssertEqual(
                 error as? RorkDeviceError,
-                .transport(
-                    "Remote service com.apple.mobile.heartbeat.shim.remote on [fd00::2]:51003 closed while waiting for StartService: Transport error: Fake connection underflow."
+                .remoteServiceCheckIn(
+                    service: "com.apple.mobile.heartbeat.shim.remote",
+                    endpoint: "[fd00::2]:51003",
+                    request: "StartService",
+                    underlying: RorkDeviceError.transport("Fake connection underflow.").failure
                 )
             )
         }

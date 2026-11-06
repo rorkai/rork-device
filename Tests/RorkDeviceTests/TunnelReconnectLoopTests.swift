@@ -43,8 +43,8 @@ final class TunnelReconnectLoopTests: XCTestCase {
         )
 
         XCTAssertEqual(recorder.events, [
-            .reestablishing(attempt: 1, delay: .seconds(1), reason: "usbmux is empty"),
-            .reestablishing(attempt: 2, delay: .seconds(2), reason: "still empty"),
+            .reestablishing(attempt: 1, delay: .seconds(1), failure: .untyped("usbmux is empty")),
+            .reestablishing(attempt: 2, delay: .seconds(2), failure: .untyped("still empty")),
         ])
         XCTAssertEqual(recorder.waits, [.seconds(1), .seconds(2)])
         XCTAssertEqual(recorder.cycleCount, 3)
@@ -64,8 +64,8 @@ final class TunnelReconnectLoopTests: XCTestCase {
         )
 
         XCTAssertEqual(recorder.events, [
-            .tunnelLost(reason: "device unplugged"),
-            .reestablishing(attempt: 1, delay: .seconds(1), reason: "device unplugged"),
+            .tunnelLost(failure: .untyped("device unplugged")),
+            .reestablishing(attempt: 1, delay: .seconds(1), failure: .untyped("device unplugged")),
         ])
     }
 
@@ -83,7 +83,7 @@ final class TunnelReconnectLoopTests: XCTestCase {
         )
 
         XCTAssertEqual(recorder.events, [
-            .reestablishing(attempt: 1, delay: .seconds(1), reason: "no device"),
+            .reestablishing(attempt: 1, delay: .seconds(1), failure: .untyped("no device")),
         ])
     }
 
@@ -110,11 +110,11 @@ final class TunnelReconnectLoopTests: XCTestCase {
             .seconds(2),
         ])
         XCTAssertEqual(recorder.events, [
-            .reestablishing(attempt: 1, delay: .seconds(1), reason: "first outage a"),
-            .reestablishing(attempt: 2, delay: .seconds(2), reason: "first outage b"),
-            .tunnelLost(reason: "healthy tunnel died"),
-            .reestablishing(attempt: 1, delay: .seconds(1), reason: "healthy tunnel died"),
-            .reestablishing(attempt: 2, delay: .seconds(2), reason: "second outage a"),
+            .reestablishing(attempt: 1, delay: .seconds(1), failure: .untyped("first outage a")),
+            .reestablishing(attempt: 2, delay: .seconds(2), failure: .untyped("first outage b")),
+            .tunnelLost(failure: .untyped("healthy tunnel died")),
+            .reestablishing(attempt: 1, delay: .seconds(1), failure: .untyped("healthy tunnel died")),
+            .reestablishing(attempt: 2, delay: .seconds(2), failure: .untyped("second outage a")),
         ])
     }
 
@@ -215,8 +215,8 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
     /// only delays the recovery the user triggers by unlocking.
     func testAPassiveFailureCapsTheScheduledDelay() async throws {
         let recorder = ReconnectRecorder(cycles: [
-            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
-            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .failWith(RorkDeviceError.deviceLocked(request: "StartService")),
+            .failWith(RorkDeviceError.deviceLocked(request: "StartService")),
             .serveThenClose,
         ])
 
@@ -224,7 +224,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
             backoff: Backoff.delays([.seconds(60), .seconds(60)]),
             passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
                 cap: .seconds(10),
-                matches: { reason in reason.contains("PasswordProtected") }
+                matches: { failure in failure.code == .deviceLocked }
             ),
             waitBeforeAttempt: recorder.wait,
             emit: recorder.emit,
@@ -236,7 +236,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
 
     func testTheCappedDelayIsWhatTheLifecycleEventReports() async throws {
         let recorder = ReconnectRecorder(cycles: [
-            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .failWith(RorkDeviceError.deviceLocked(request: "StartService")),
             .serveThenClose,
         ])
 
@@ -244,7 +244,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
             backoff: Backoff.delays([.seconds(60)]),
             passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
                 cap: .seconds(10),
-                matches: { reason in reason.contains("PasswordProtected") }
+                matches: { failure in failure.code == .deviceLocked }
             ),
             waitBeforeAttempt: recorder.wait,
             emit: recorder.emit,
@@ -257,7 +257,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
                 .reestablishing(
                     attempt: 1,
                     delay: .seconds(10),
-                    reason: "Lockdown error: StartService failed: PasswordProtected"
+                    failure: RorkDeviceError.deviceLocked(request: "StartService").failure
                 ),
             ]
         )
@@ -265,7 +265,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
 
     func testAPromptDrivingFailureKeepsTheFullSchedule() async throws {
         let recorder = ReconnectRecorder(cycles: [
-            .failToEstablish("Pairing was rejected on the device."),
+            .failWith(LockdownPairingError.userDenied),
             .serveThenClose,
         ])
 
@@ -273,7 +273,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
             backoff: Backoff.delays([.seconds(60)]),
             passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
                 cap: .seconds(10),
-                matches: { reason in reason.contains("PasswordProtected") }
+                matches: { failure in failure.code == .deviceLocked }
             ),
             waitBeforeAttempt: recorder.wait,
             emit: recorder.emit,
@@ -285,7 +285,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
 
     func testAShortScheduledDelayIsNotLengthenedToTheCap() async throws {
         let recorder = ReconnectRecorder(cycles: [
-            .failToEstablish("Lockdown error: StartService failed: PasswordProtected"),
+            .failWith(RorkDeviceError.deviceLocked(request: "StartService")),
             .serveThenClose,
         ])
 
@@ -293,7 +293,7 @@ final class TunnelReconnectPassiveFailureTests: XCTestCase {
             backoff: Backoff.delays([.seconds(1)]),
             passiveFailurePolicy: TunnelReconnectLoop.PassiveFailurePolicy(
                 cap: .seconds(10),
-                matches: { reason in reason.contains("PasswordProtected") }
+                matches: { failure in failure.code == .deviceLocked }
             ),
             waitBeforeAttempt: recorder.wait,
             emit: recorder.emit,
@@ -479,6 +479,7 @@ private final class ReconnectRecorder: @unchecked Sendable {
     enum Cycle {
         case failToEstablish(String)
         case serveThenLose(String)
+        case failWith(any Error)
         case serveThenClose
         case throwCancellation
         case serveThenThrowCancellation
@@ -515,6 +516,8 @@ private final class ReconnectRecorder: @unchecked Sendable {
         case .serveThenLose(let message):
             onReady()
             throw ReconnectTestFailure(message: message)
+        case .failWith(let error):
+            throw error
         case .serveThenClose:
             onReady()
         case .throwCancellation:
@@ -526,8 +529,8 @@ private final class ReconnectRecorder: @unchecked Sendable {
     }
 }
 
-/// Failure whose rendered description is exactly its message, pinning the
-/// loop's `String(describing:)` reason contract without error-type prefixes.
+/// Failure from outside the package, which the loop reports as an unknown
+/// failure whose message is exactly the error's description.
 private struct ReconnectTestFailure: Error, CustomStringConvertible {
     let message: String
 
@@ -594,4 +597,11 @@ private func usbDevice(identifier: String) -> Device {
         identifier: identifier,
         connection: .usbmux(deviceID: 1)
     )
+}
+
+extension RorkDeviceFailure {
+    /// The failure the loop reports for a `ReconnectTestFailure`.
+    fileprivate static func untyped(_ message: String) -> RorkDeviceFailure {
+        RorkDeviceFailure(code: .unknown, message: message)
+    }
 }

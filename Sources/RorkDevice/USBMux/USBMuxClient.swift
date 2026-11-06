@@ -624,7 +624,7 @@ private func validateUSBMuxResult(_ response: [String: Any], operation: String) 
 
 /// Returns true when a usbmux listen stream ended because the peer closed it.
 private func isUSBMuxListenClosed(_ error: Error) -> Bool {
-    guard case RorkDeviceError.transport("Connection closed.") = error else {
+    guard case RorkDeviceError.connectionClosed = error else {
         return false
     }
     return true
