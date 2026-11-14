@@ -107,7 +107,7 @@ public struct InstallationError: Equatable, Hashable, Sendable, CustomStringConv
 
     /// MobileInstallation result code behind `code`, such as `0xE8008015`.
     ///
-    /// Several distinct failures share one `code`: a missing provisioning
+    /// Several distinct failures share one `code`. A missing provisioning
     /// profile and the free-profile app limit both report
     /// `ApplicationVerificationFailed`, and only this number tells them apart.
     public let resultCode: UInt32?

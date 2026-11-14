@@ -431,8 +431,9 @@ public final class DeviceSession: @unchecked Sendable {
     ///     this as `nil` unless the specific service flow requires escrow.
     /// - Returns: A connected byte stream ready for the service-specific
     ///   protocol client.
-    /// - Throws: `RorkDeviceError.protocolViolation` when the service is absent
-    ///   or its handshake is invalid, plus lower-level transport errors.
+    /// - Throws: `RorkDeviceError.serviceNotAdvertised` when an RSD session
+    ///   does not advertise the service, `RorkDeviceError.protocolViolation`
+    ///   when its handshake is invalid, plus lower-level transport errors.
     public func startService(named serviceName: String, escrowBag: Data? = nil) async throws -> DeviceConnection {
         try await backend.startService(named: serviceName, escrowBag: escrowBag)
     }

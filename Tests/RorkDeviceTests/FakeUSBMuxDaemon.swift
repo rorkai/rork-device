@@ -57,7 +57,8 @@ final class FakeUSBMuxDaemon: @unchecked Sendable {
     /// the host-record cleanup stage.
     private let removePairingRecordStatus: Int
 
-    /// Result the daemon answers `Connect` with; non-zero refuses it.
+    /// Result the daemon answers `Connect` with. A non-zero result refuses
+    /// the connection.
     private let connectStatus: Int
 
     /// Keeps a Listen socket readable until the client closes it.

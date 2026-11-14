@@ -244,7 +244,8 @@ final class InstallationProxyClientTests: XCTestCase {
     }
 
     /// `ErrorDetail` carries the MobileInstallation result as a signed
-    /// integer; it is what tells failures that share an error code apart.
+    /// integer, and only that number tells apart failures that share an
+    /// error code.
     func testInstallKeepsTheResultCodeFromErrorDetail() async throws {
         let inbound = try PropertyListMessageFramer.encode([
             "Status": "Failed",

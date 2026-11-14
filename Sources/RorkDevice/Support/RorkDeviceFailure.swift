@@ -19,8 +19,9 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// No attached device matched the requested selection.
         case deviceNotFound = "device-not-found"
 
-        /// The device was found but detached before a connection to it
-        /// opened: usbmux answered `Connect` with its bad-device result.
+        /// usbmux answered `Connect` with its bad-device result because the
+        /// device detached after it was listed. A reattached device gets a new
+        /// usbmux device ID, so look it up again before retrying.
         case deviceDisconnected = "device-disconnected"
 
         /// The device must be unlocked before the request can proceed.

@@ -174,10 +174,19 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
 
 /// A usbmux control request whose result code the client checks.
 public enum USBMuxOperation: String, Equatable, Hashable, Sendable {
+    /// Opens a connection to a port on an attached device.
     case connect = "Connect"
+
+    /// Subscribes to device attach and detach events.
     case listen = "Listen"
+
+    /// Reads the stored pairing record for a device.
     case readPairRecord = "ReadPairRecord"
+
+    /// Stores a pairing record for a device.
     case savePairRecord = "SavePairRecord"
+
+    /// Removes the stored pairing record for a device.
     case deletePairRecord = "DeletePairRecord"
 
     /// usbmux answers `Connect` with this result (BadDevice) when the device

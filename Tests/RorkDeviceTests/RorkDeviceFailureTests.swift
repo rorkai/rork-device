@@ -112,7 +112,7 @@ final class RorkDeviceFailureTests: XCTestCase {
     }
 
     /// InstallationProxy reports several distinct failures under one error
-    /// code; the MobileInstallation result code separates them.
+    /// code, and the MobileInstallation result code separates them.
     func testInstallationFailuresClassifyByResultCode() {
         func failure(_ error: InstallationError) -> RorkDeviceFailure {
             RorkDeviceFailure(RorkDeviceError.installationProxy(error))
@@ -185,7 +185,7 @@ final class RorkDeviceFailureTests: XCTestCase {
     }
 
     /// usbmux answers `Connect` with its bad-device result when the device
-    /// detached after it was listed; other results stay transport failures.
+    /// detached after it was listed. Other results stay transport failures.
     func testUSBMuxBadDeviceOnConnectIsADisconnect() {
         let disconnected = RorkDeviceFailure(
             RorkDeviceError.usbmuxResult(operation: .connect, code: 2)
