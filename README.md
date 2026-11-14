@@ -467,7 +467,10 @@ A device that detaches while a connection is already open reports
 Treat `connection-closed` during a long transfer as a possible disconnect.
 
 `service-not-advertised` with `serviceName` `com.apple.coredevice.appservice`
-usually means the Developer Disk Image is not mounted yet. Mount it and retry.
+usually means the Developer Disk Image is not mounted yet. Mount it with
+`rorkdevice image mount` or `rorkdevice image auto`. When the mount reports
+`requiresTunnelRestart`, start a new tunnel before retrying, because Remote
+Service Discovery captures its service list when the tunnel opens.
 
 InstallationProxy failures carry the device's error identifier in
 `details.deviceErrorCode` (such as `ApplicationVerificationFailed`) and its
