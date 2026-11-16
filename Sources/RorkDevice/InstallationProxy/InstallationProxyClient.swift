@@ -55,7 +55,8 @@ public final class InstallationProxyClient {
                 throw RorkDeviceError.installationProxy(
                     InstallationError(
                         code: .init(rawValue: errorCode),
-                        message: response.string("ErrorDescription")
+                        message: response.string("ErrorDescription"),
+                        resultCode: response.installationResultCode
                     )
                 )
             }
@@ -192,7 +193,8 @@ public final class InstallationProxyClient {
                 error: response.string("Error").map {
                     InstallationError(
                         code: $0,
-                        message: response.string("ErrorDescription")
+                        message: response.string("ErrorDescription"),
+                        resultCode: response.installationResultCode
                     )
                 }
             )
@@ -221,5 +223,13 @@ public final class InstallationProxyClient {
             "PackagePath": packagePath,
             "ClientOptions": clientOptions,
         ]
+    }
+}
+
+extension Dictionary where Key == String, Value == Any {
+    /// InstallationProxy's `ErrorDetail`, which carries the MobileInstallation
+    /// result code as a signed integer, such as -402620395 for `0xE8008015`.
+    fileprivate var installationResultCode: UInt32? {
+        int("ErrorDetail").map { UInt32(truncatingIfNeeded: $0) }
     }
 }

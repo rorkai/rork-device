@@ -384,7 +384,7 @@ private func remotePairingFailureCategory(of error: Error) -> String {
         return "other"
     }
     switch deviceError {
-    case .transport, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
+    case .transport, .usbmuxResult, .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
         .transportStep, .tunnelUnavailable:
         return "transport"
     case .deviceLocked:
