@@ -342,6 +342,16 @@ final class RemoteXPCConnection: @unchecked Sendable {
                 )
             }
             guard allowance > 0 else {
+                // A transfer the peer ended before its file-open message was
+                // complete can no longer be accepted.
+                let isEnded = stateLock.withLock {
+                    flowControl.isEndedByPeer(streamIdentifier)
+                }
+                guard !isEnded else {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC stream \(streamIdentifier) ended before its message was sent."
+                    )
+                }
                 try await process(receiveFrame())
                 continue
             }

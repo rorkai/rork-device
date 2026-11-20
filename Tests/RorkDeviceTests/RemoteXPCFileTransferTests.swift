@@ -376,6 +376,33 @@ final class RemoteXPCFileTransferTests: XCTestCase {
         XCTAssertEqual(frames.last?.payload.count, 10)
     }
 
+    func testFileOpenMessageStopsWhenThePeerEndsItsStream() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(initialWindowSettings(10))
+        let connection = FakeConnection(inbound: inbound)
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        // The SETTINGS frame is read while the first receive waits.
+        _ = try? await remoteXPC.receive(on: .reply)
+        connection.enqueue(
+            remoteXPCTestFrame(type: 0x01, flags: 0x05, streamIdentifier: 5)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await remoteXPC.send(
+                uploading: [.data(Data("0".utf8))]
+            ) { values in
+                .array(values)
+            }
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "RemoteXPC stream 5 ended before its message was sent."
+                )
+            )
+        }
+    }
+
     func testRequestIsSplitAtThePeerMaximumFrameSize() async throws {
         var inbound = try remoteXPCSessionHandshakeInbound()
         inbound.append(
