@@ -8,7 +8,8 @@ final class MobileImageMounterClientTests: XCTestCase {
         let fixture = try makeImageFixture(
             boardID: "0x0C",
             chipID: "0x8150",
-            securityDomain: "0x01"
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
         )
         defer { fixture.remove() }
         let ticket = Data([0xAA, 0xBB])
@@ -18,6 +19,7 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
                 [
                     "ImageSignature": ticket,
@@ -36,7 +38,11 @@ final class MobileImageMounterClientTests: XCTestCase {
             openConnection: {
                 try await connections.open()
             },
-            ticketRequester: requester
+            ticketRequester: requester,
+            mountCryptex: { _ in
+                XCTFail("A device with a personalized identity used the cryptex.")
+                return .alreadyMounted
+            }
         )
 
         let result = try await mounter.mount(
@@ -59,7 +65,11 @@ final class MobileImageMounterClientTests: XCTestCase {
             try command(in: connection.sent[0])["Command"] as? String,
             "LookupImage"
         )
-        let manifestRequest = try command(in: connection.sent[2])
+        XCTAssertEqual(
+            try command(in: connection.sent[1])["Command"] as? String,
+            "CopyDevices"
+        )
+        let manifestRequest = try command(in: connection.sent[3])
         XCTAssertEqual(
             manifestRequest["Command"] as? String,
             "QueryPersonalizationManifest"
@@ -68,16 +78,16 @@ final class MobileImageMounterClientTests: XCTestCase {
             (manifestRequest["ImageSignature"] as? Data)?.count,
             48
         )
-        let receiveBytes = try command(in: connection.sent[3])
+        let receiveBytes = try command(in: connection.sent[4])
         XCTAssertEqual(
             receiveBytes["ImageSignature"] as? Data,
             ticket
         )
         XCTAssertEqual(
-            connection.sent[4],
+            connection.sent[5],
             Data("developer-image".utf8)
         )
-        let mount = try command(in: connection.sent[5])
+        let mount = try command(in: connection.sent[6])
         XCTAssertEqual(mount["Command"] as? String, "MountImage")
         XCTAssertEqual(mount["ImageSignature"] as? Data, ticket)
         XCTAssertEqual(
@@ -85,9 +95,150 @@ final class MobileImageMounterClientTests: XCTestCase {
             Data("trust-cache".utf8)
         )
         XCTAssertEqual(
-            try command(in: connection.sent[6])["Command"] as? String,
+            try command(in: connection.sent[7])["Command"] as? String,
             "Hangup"
         )
+    }
+
+    func testMountReportsAnImageOnlyCopyDevicesListsAsMounted()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImageSignature": [Data](),
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(mountPaths: ["/System/Developer"]),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0x02])
+        )
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester
+        )
+
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .alreadyMounted)
+        XCTAssertEqual(connection.sent.count, 2)
+        XCTAssertEqual(requester.requestCount, 0)
+    }
+
+    func testMountInstallsTheCryptexForADeviceTheManifestDoesNotList()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(),
+                iPhone19PersonalizationIdentifiersResponse(),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0x02])
+        )
+        var cryptexMountCount = 0
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester,
+            mountCryptex: { _ in
+                cryptexMountCount += 1
+                return .mounted(ticketSource: .appleTSS)
+            }
+        )
+
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .mounted(ticketSource: .appleTSS))
+        XCTAssertEqual(cryptexMountCount, 1)
+        XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertEqual(connection.sent.count, 3)
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testMountRejectsAnUnlistedDeviceWhenTheImageHasNoCryptexIdentity()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(),
+                iPhone19PersonalizationIdentifiersResponse(),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: RecordingDeveloperDiskImageTicketRequester(
+                ticket: Data([0x02])
+            ),
+            mountCryptex: { _ in
+                XCTFail("An image without a Cryptex1 identity used the cryptex path.")
+                return .alreadyMounted
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                ),
+                ecid: 123
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "The Developer Disk Image does not support board 0xA, chip 0x8160, security domain 1."
+                )
+            )
+        }
     }
 
     func testMountReopensServiceAfterMissingManifestAndRequestsTicket()
@@ -105,9 +256,10 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
             ]),
-            receiveFailureAfterSendCount: 3,
+            receiveFailureAfterSendCount: 4,
             receiveFailure: .connectionClosed("Connection closed.")
         )
         let replacementConnection = FakeConnection(
@@ -212,7 +364,7 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertFalse(result.requiresTunnelRestart)
     }
 
-    func testMountSurfacesPersonalizationManifestDeviceError()
+    func testMountRequestsTicketWhenManifestQueryReturnsAnError()
         async throws
     {
         let fixture = try makeImageFixture(
@@ -221,20 +373,35 @@ final class MobileImageMounterClientTests: XCTestCase {
             securityDomain: "0x01"
         )
         defer { fixture.remove() }
-        let connection = FakeConnection(
+        let initialConnection = FakeConnection(
             inbound: try framedMessages([
                 [
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
                 [
-                    "Error": "PersonalizationFailed",
-                    "DetailedError": "device rejected manifest query",
+                    "Error": "InternalError",
+                    "DetailedError": "Failed to find a cached manifest (im4m)",
                 ],
             ])
         )
-        let connections = ImageMounterConnectionQueue([connection])
+        let replacementConnection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "PersonalizationNonce": Data([0x10, 0x20]),
+                    "Status": "Complete",
+                ],
+                ["Status": "ReceiveBytesAck"],
+                ["Status": "Complete"],
+                ["Status": "Complete"],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([
+            initialConnection,
+            replacementConnection,
+        ])
         let requester = RecordingDeveloperDiskImageTicketRequester(
             ticket: Data([0xCC])
         )
@@ -245,23 +412,17 @@ final class MobileImageMounterClientTests: XCTestCase {
             ticketRequester: requester
         )
 
-        await XCTAssertThrowsErrorAsync({
-            try await mounter.mount(
-                PersonalizedDeveloperDiskImage(
-                    contentsOf: fixture.restoreDirectory
-                ),
-                ecid: 123
-            )
-        }) { error in
-            XCTAssertEqual(
-                error as? RorkDeviceError,
-                .lockdown(
-                    "QueryPersonalizationManifest failed: PersonalizationFailed: device rejected manifest query"
-                )
-            )
-        }
-        XCTAssertEqual(requester.requestCount, 0)
-        XCTAssertTrue(connection.isClosed)
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .mounted(ticketSource: .appleTSS))
+        XCTAssertEqual(requester.requestCount, 1)
+        XCTAssertTrue(initialConnection.isClosed)
+        XCTAssertTrue(replacementConnection.isClosed)
     }
 
     func testMountDoesNotTreatTransportFailureAsMissingManifest()
@@ -279,9 +440,10 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
             ]),
-            receiveFailureAfterSendCount: 3
+            receiveFailureAfterSendCount: 4
         )
         let connections = ImageMounterConnectionQueue([connection])
         let requester = RecordingDeveloperDiskImageTicketRequester(
@@ -481,6 +643,27 @@ private final class RecordingDeveloperDiskImageTicketRequester:
         self.ecid = ecid
         return ticketValue
     }
+}
+
+private func copyDevicesResponse(
+    mountPaths: [String] = []
+) -> [String: Any] {
+    [
+        "EntryList": mountPaths.map { ["MountPath": $0] },
+        "Status": "Complete",
+    ]
+}
+
+/// Identifiers an iPhone19,2 reported on 2026-11-20, absent from Xcode 27's
+/// personalized identities.
+private func iPhone19PersonalizationIdentifiersResponse() -> [String: Any] {
+    [
+        "PersonalizationIdentifiers": [
+            "BoardId": 10,
+            "ChipID": 0x8160,
+            "SecurityDomain": 1,
+        ],
+    ]
 }
 
 private func personalizationIdentifiersResponse() -> [String: Any] {
