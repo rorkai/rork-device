@@ -205,6 +205,22 @@ final class RemoteXPCConnection: @unchecked Sendable {
         }
     }
 
+    /// Sends one request on the control stream once the peer's windows
+    /// allow it.
+    ///
+    /// Unlike `send(_:additionalFlags:)`, which other tasks may call while a
+    /// receive is in progress and which charges its frames after writing
+    /// them, this method waits for WINDOW_UPDATE by reading frames. It owns
+    /// the receive path and must not overlap a `receive`.
+    func sendWithinWindows(
+        _ value: RemoteXPCValue,
+        additionalFlags: UInt32 = 0
+    ) async throws {
+        try await send(uploading: [], additionalFlags: additionalFlags) { _ in
+            value
+        }
+    }
+
     /// Sends a request whose file transfers carry the supplied payloads.
     ///
     /// The request receives the next message identifier and its transfers the

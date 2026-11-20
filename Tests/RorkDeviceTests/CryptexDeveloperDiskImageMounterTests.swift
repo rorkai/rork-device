@@ -290,6 +290,42 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         XCTAssertFalse(uninstalled)
     }
 
+    func testRoutineWaitsForControlStreamCredit() async throws {
+        var settings = Data()
+        settings.appendBigEndian(UInt16(0x4))
+        settings.appendBigEndian(UInt32(0))
+        var inbound = remoteXPCTestFrame(
+            type: 0x04,
+            streamIdentifier: 0,
+            payload: settings
+        )
+        inbound.append(
+            try remoteXPCSessionHandshakeInbound().dropFirst(9)
+        )
+        let connection = FakeConnection(inbound: inbound)
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { connection },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.uninstall()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("Fake connection underflow.")
+            )
+        }
+        let requests = try sentFrames(connection.sent.filter { $0.count >= 9 })
+            .filter { $0.type == 0x00 && $0.streamIdentifier == 1 }
+            .compactMap {
+                try RemoteXPCMessageCodec.decodeFirstMessage(from: $0.payload)?
+                    .message
+            }
+            .filter { $0.messageIdentifier == 1 }
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testUninstallRejectsAMalformedErrorStatus() async throws {
         let connections = CryptexdConnectionQueue([
             try cryptexdConnection(replyingWith: installedReply([

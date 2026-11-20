@@ -177,7 +177,7 @@ private struct CryptexServiceClient {
         defer {
             connection.close()
         }
-        try await connection.send(
+        try await connection.sendWithinWindows(
             Self.request(routine, argv: argv),
             additionalFlags: Self.requestFlag
         )
