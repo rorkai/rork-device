@@ -148,6 +148,24 @@ private struct CryptexServiceClient {
         )
     }
 
+    /// Removes an installed cryptex, unmounting its image.
+    ///
+    /// The routine and its keys are the ones
+    /// `remote_service_create_uninstall_request` in macOS 27's
+    /// libcryptex_interface builds (2026-11-20). cryptexd matches the
+    /// version too and answers a cryptex it does not have with ENOENT
+    /// (2026-11-20, iPhone19,2, iOS 27.2.1).
+    func uninstall(_ cryptex: InstalledCryptex) async throws {
+        var argv: [String: RemoteXPCValue] = [
+            "client-version": Self.clientVersion,
+            "remote-cryptex-identifier": .string(cryptex.identifier),
+        ]
+        if !cryptex.version.isEmpty {
+            argv["remote-cryptex-version"] = .string(cryptex.version)
+        }
+        _ = try await call("uninstall", argv: argv)
+    }
+
     /// Sends one routine on a fresh connection and returns its reply `argv`.
     private func call(
         _ routine: String,
@@ -266,16 +284,17 @@ struct CryptexDeveloperDiskImageMounter {
         self.ticketRequester = ticketRequester
     }
 
-    /// Installs the image's Cryptex1 identity unless a Developer Disk Image
-    /// cryptex is already installed.
+    /// Installs the image's Cryptex1 identity.
+    ///
+    /// Callers first check that nothing is mounted at the Developer Disk
+    /// Image mount path, so a Developer Disk Image cryptex that cryptexd
+    /// still lists is not serving developer services. It is uninstalled
+    /// first, because cryptexd refuses to install over it with EEXIST,
+    /// "cryptex already exists" (2026-11-20, iPhone19,2, iOS 27.2.1).
     func mount(
         _ image: PersonalizedDeveloperDiskImage
     ) async throws -> DeveloperDiskImageMountResult {
-        if try await client.installedCryptexes().contains(where: {
-            $0.identifier == Self.developerDiskImageIdentifier
-        }) {
-            return .alreadyMounted
-        }
+        _ = try await uninstall()
         let identifiers = try await client.personalizationIdentifiers()
         let payload = try image.cryptexPayload(matching: identifiers)
         let nonce = try await client.nonce(domain: payload.nonceDomain)
@@ -286,5 +305,18 @@ struct CryptexDeveloperDiskImageMounter {
         )
         _ = try await client.install(payload, ticket: ticket)
         return .mounted(ticketSource: .appleTSS)
+    }
+
+    /// Uninstalls the Developer Disk Image cryptex, which also unmounts it.
+    ///
+    /// - Returns: Whether cryptexd listed a Developer Disk Image cryptex.
+    func uninstall() async throws -> Bool {
+        guard let installed = try await client.installedCryptexes().first(
+            where: { $0.identifier == Self.developerDiskImageIdentifier }
+        ) else {
+            return false
+        }
+        try await client.uninstall(installed)
+        return true
     }
 }

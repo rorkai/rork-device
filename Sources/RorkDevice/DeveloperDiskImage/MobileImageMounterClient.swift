@@ -8,6 +8,24 @@ import Foundation
 /// reason.
 private struct PersonalizationManifestUnavailable: Error {}
 
+/// A disk image `CopyDevices` lists as mounted.
+private struct MountedDiskImage {
+    /// File the device mounted the image from, when the entry names one.
+    let backingImage: String?
+
+    /// Whether cryptexd installed the image, so only cryptexd can remove it.
+    ///
+    /// A Developer Disk Image that cryptexd installed is backed by
+    /// `/private/var/db/com.apple.security.cryptexd/codex.system/cryptex/com.apple.MobileAsset.DDI/gdmg`,
+    /// and `UnmountImage` refuses it with "Failed to unload launchd jobs"
+    /// (2026-11-20, iPhone19,2, iOS 27.2.1).
+    var isCryptex: Bool {
+        backingImage?.hasPrefix(
+            "/private/var/db/com.apple.security.cryptexd/"
+        ) == true
+    }
+}
+
 /// Protocol client for iOS 17+ personalized image-mounter commands.
 private struct MobileImageMounterClient {
     /// Image type Apple uses for personalized developer services.
@@ -36,11 +54,12 @@ private struct MobileImageMounterClient {
         if try await lookUpPersonalizedImages().isPresent {
             return true
         }
-        return try await mountedPaths().contains(Self.personalizedMountPath)
+        return try await mountedDeveloperImage() != nil
     }
 
-    /// Returns the mount paths of the disk images the device has mounted.
-    private func mountedPaths() async throws -> [String] {
+    /// Returns the disk image `CopyDevices` lists at the Developer Disk Image
+    /// mount path, or `nil` when nothing is mounted there.
+    func mountedDeveloperImage() async throws -> MountedDiskImage? {
         try await send(["Command": "CopyDevices"])
         let response = try await receive(command: "CopyDevices")
         guard let entries = response["EntryList"] as? [[String: Any]] else {
@@ -48,7 +67,10 @@ private struct MobileImageMounterClient {
                 "CopyDevices response did not contain EntryList."
             )
         }
-        return entries.compactMap { $0["MountPath"] as? String }
+        return entries.lazy
+            .filter { $0["MountPath"] as? String == Self.personalizedMountPath }
+            .map { MountedDiskImage(backingImage: $0["BackingImage"] as? String) }
+            .first
     }
 
     /// Reads the hardware values needed to select a matching build identity.
@@ -466,25 +488,56 @@ struct PersonalizedDeveloperDiskImageMounter {
     }
 }
 
-/// Unmounts the personalized Developer Disk Image over one mounter connection.
+/// Unmounts the personalized Developer Disk Image, through cryptexd when
+/// cryptexd installed it.
 struct PersonalizedDeveloperDiskImageUnmounter {
     /// Opens a fresh image-mounter service connection.
     private let openConnection: () async throws -> DeviceConnection
 
-    /// Creates an unmounter with a replaceable connection boundary.
-    init(openConnection: @escaping () async throws -> DeviceConnection) {
+    /// Uninstalls the Developer Disk Image cryptex and reports whether
+    /// cryptexd had one installed.
+    private let uninstallCryptex: (() async throws -> Bool)?
+
+    /// Creates an unmounter with replaceable connection and cryptexd
+    /// boundaries.
+    init(
+        openConnection: @escaping () async throws -> DeviceConnection,
+        uninstallCryptex: (() async throws -> Bool)? = nil
+    ) {
         self.openConnection = openConnection
+        self.uninstallCryptex = uninstallCryptex
     }
 
-    /// Opens the image-mounter service and unmounts the personalized image.
+    /// Removes the image at the Developer Disk Image mount path.
+    ///
+    /// cryptexd is asked when the mounted image is its cryptex and when
+    /// nothing is mounted, since a cryptex it still lists would block the
+    /// next install. Any other image, or no cryptex at all, goes through
+    /// `UnmountImage`, which reports the device's own error when nothing is
+    /// mounted.
     func unmount() async throws {
+        let mounted = try await withClient {
+            try await $0.mountedDeveloperImage()
+        }
+        if mounted?.isCryptex ?? true,
+            let uninstallCryptex,
+            try await uninstallCryptex()
+        {
+            return
+        }
+        try await withClient { try await $0.unmount() }
+    }
+
+    /// Runs one exchange on its own image-mounter connection, so none stays
+    /// open while cryptexd works.
+    private func withClient<Result>(
+        _ body: (MobileImageMounterClient) async throws -> Result
+    ) async throws -> Result {
         let connection = try await openConnection()
         defer {
             connection.close()
         }
-        try await MobileImageMounterClient(
-            connection: connection
-        ).unmount()
+        return try await body(MobileImageMounterClient(connection: connection))
     }
 }
 

@@ -112,7 +112,9 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         }
     }
 
-    func testMountReportsAnInstalledDeveloperDiskImageCryptex() async throws {
+    func testMountReplacesADeveloperDiskImageCryptexThatIsNotMounted()
+        async throws
+    {
         let fixture = try makeImageFixture(
             boardID: "0x0C",
             chipID: "0x8150",
@@ -121,23 +123,27 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         )
         defer { fixture.remove() }
         let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: installedReply([
+                developerDiskImageCryptex,
+            ])),
             try cryptexdConnection(replyingWith: [
-                "argv": .dictionary([
-                    "remote-cryptex-array": .array([
-                        .dictionary([
-                            "remote-cryptex-identifier": .string(
-                                "com.apple.MobileAsset.DDI"
-                            ),
-                            "remote-cryptex-version": .string("27.2.52.0"),
-                        ]),
-                    ]),
-                ]),
+                "argv": .dictionary([:]),
+                "error": .uint64(0),
             ]),
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(sampleChipProperties),
+            ]),
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(["nonce": .data(sampleSerializedNonce)]),
+            ]),
+            try cryptexdConnection(
+                replyingWith: ["argv": .dictionary([:])],
+                after: try installStreamTraffic()
+            ),
         ])
-        let requester = RecordingCryptexTicketRequester(ticket: Data([1]))
         let mounter = CryptexDeveloperDiskImageMounter(
             openConnection: { try await connections.open() },
-            ticketRequester: requester
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
         )
 
         let result = try await mounter.mount(
@@ -146,9 +152,90 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result, .alreadyMounted)
-        XCTAssertNil(requester.nonce)
+        XCTAssertEqual(result, .mounted(ticketSource: .appleTSS))
+        XCTAssertEqual(
+            try connections.opened.map { try routine(sentOn: $0).name },
+            [
+                "copy-installed", "uninstall", "read-personalization-id",
+                "get-nonce", "install",
+            ]
+        )
+        XCTAssertEqual(
+            try routine(sentOn: connections.opened[1]).argv,
+            developerDiskImageUninstallArgv
+        )
+    }
+
+    func testUninstallRemovesOnlyTheDeveloperDiskImageCryptex() async throws {
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: installedReply([
+                .dictionary([
+                    "remote-cryptex-identifier": .string("com.example.other"),
+                    "remote-cryptex-version": .string("1.0"),
+                ]),
+                developerDiskImageCryptex,
+            ])),
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary([:]),
+                "error": .uint64(0),
+            ]),
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        let uninstalled = try await mounter.uninstall()
+
+        XCTAssertTrue(uninstalled)
+        XCTAssertEqual(
+            try connections.opened.map { try routine(sentOn: $0).name },
+            ["copy-installed", "uninstall"]
+        )
+        XCTAssertEqual(
+            try routine(sentOn: connections.opened[1]).argv,
+            developerDiskImageUninstallArgv
+        )
+        XCTAssertTrue(connections.opened.allSatisfy(\.isClosed))
+    }
+
+    func testUninstallReportsThatNoDeveloperDiskImageCryptexIsInstalled()
+        async throws
+    {
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: installedReply([])),
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        let uninstalled = try await mounter.uninstall()
+
+        XCTAssertFalse(uninstalled)
         XCTAssertEqual(connections.opened.count, 1)
+    }
+
+    func testUninstallSurfacesACryptexdRefusal() async throws {
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: installedReply([
+                developerDiskImageCryptex,
+            ])),
+            try cryptexdConnection(replyingWith: ["error": .uint64(2)]),
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.uninstall()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .cryptexd("uninstall failed with errno 2.")
+            )
+        }
     }
 
     func testMountSurfacesAnInstallRefusalSentBeforeAnyUpload() async throws {
@@ -238,6 +325,30 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         invalidLength[52] = 49
         XCTAssertThrowsError(try img4Nonce(from: invalidLength))
     }
+}
+
+/// The Developer Disk Image entry of a `copy-installed` reply from an
+/// iPhone19,2 with iOS 27.2.1 (2026-11-20).
+private let developerDiskImageCryptex = RemoteXPCValue.dictionary([
+    "remote-cryptex-identifier": .string("com.apple.MobileAsset.DDI"),
+    "remote-cryptex-version": .string("27.2.52.0"),
+])
+
+/// The `argv` that uninstalls `developerDiskImageCryptex`.
+private let developerDiskImageUninstallArgv: [String: RemoteXPCValue] = [
+    "client-version": .uint64(3),
+    "remote-cryptex-identifier": .string("com.apple.MobileAsset.DDI"),
+    "remote-cryptex-version": .string("27.2.52.0"),
+]
+
+/// Builds a `copy-installed` reply listing `cryptexes`.
+private func installedReply(
+    _ cryptexes: [RemoteXPCValue]
+) -> [String: RemoteXPCValue] {
+    [
+        "argv": .dictionary(["remote-cryptex-array": .array(cryptexes)]),
+        "error": .uint64(0),
+    ]
 }
 
 /// A serialized `img4_nonce_t` laid out like the 56-byte `get-nonce` reply
