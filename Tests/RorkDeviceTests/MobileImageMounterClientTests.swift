@@ -18,6 +18,7 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
                 [
                     "ImageSignature": ticket,
@@ -59,7 +60,11 @@ final class MobileImageMounterClientTests: XCTestCase {
             try command(in: connection.sent[0])["Command"] as? String,
             "LookupImage"
         )
-        let manifestRequest = try command(in: connection.sent[2])
+        XCTAssertEqual(
+            try command(in: connection.sent[1])["Command"] as? String,
+            "CopyDevices"
+        )
+        let manifestRequest = try command(in: connection.sent[3])
         XCTAssertEqual(
             manifestRequest["Command"] as? String,
             "QueryPersonalizationManifest"
@@ -68,16 +73,16 @@ final class MobileImageMounterClientTests: XCTestCase {
             (manifestRequest["ImageSignature"] as? Data)?.count,
             48
         )
-        let receiveBytes = try command(in: connection.sent[3])
+        let receiveBytes = try command(in: connection.sent[4])
         XCTAssertEqual(
             receiveBytes["ImageSignature"] as? Data,
             ticket
         )
         XCTAssertEqual(
-            connection.sent[4],
+            connection.sent[5],
             Data("developer-image".utf8)
         )
-        let mount = try command(in: connection.sent[5])
+        let mount = try command(in: connection.sent[6])
         XCTAssertEqual(mount["Command"] as? String, "MountImage")
         XCTAssertEqual(mount["ImageSignature"] as? Data, ticket)
         XCTAssertEqual(
@@ -85,9 +90,50 @@ final class MobileImageMounterClientTests: XCTestCase {
             Data("trust-cache".utf8)
         )
         XCTAssertEqual(
-            try command(in: connection.sent[6])["Command"] as? String,
+            try command(in: connection.sent[7])["Command"] as? String,
             "Hangup"
         )
+    }
+
+    func testMountReportsAnImageOnlyCopyDevicesListsAsMounted()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImageSignature": [Data](),
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(mountPaths: ["/System/Developer"]),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0x02])
+        )
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester
+        )
+
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .alreadyMounted)
+        XCTAssertEqual(connection.sent.count, 2)
+        XCTAssertEqual(requester.requestCount, 0)
     }
 
     func testMountReopensServiceAfterMissingManifestAndRequestsTicket()
@@ -105,9 +151,10 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
             ]),
-            receiveFailureAfterSendCount: 3,
+            receiveFailureAfterSendCount: 4,
             receiveFailure: .connectionClosed("Connection closed.")
         )
         let replacementConnection = FakeConnection(
@@ -227,6 +274,7 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
                 [
                     "Error": "InternalError",
@@ -287,9 +335,10 @@ final class MobileImageMounterClientTests: XCTestCase {
                     "ImagePresent": false,
                     "Status": "Complete",
                 ],
+                copyDevicesResponse(),
                 personalizationIdentifiersResponse(),
             ]),
-            receiveFailureAfterSendCount: 3
+            receiveFailureAfterSendCount: 4
         )
         let connections = ImageMounterConnectionQueue([connection])
         let requester = RecordingDeveloperDiskImageTicketRequester(
@@ -489,6 +538,15 @@ private final class RecordingDeveloperDiskImageTicketRequester:
         self.ecid = ecid
         return ticketValue
     }
+}
+
+private func copyDevicesResponse(
+    mountPaths: [String] = []
+) -> [String: Any] {
+    [
+        "EntryList": mountPaths.map { ["MountPath": $0] },
+        "Status": "Complete",
+    ]
 }
 
 private func personalizationIdentifiersResponse() -> [String: Any] {

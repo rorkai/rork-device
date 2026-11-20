@@ -24,9 +24,31 @@ private struct MobileImageMounterClient {
         self.connection = connection
     }
 
-    /// Reports whether any personalized Developer Disk Image is mounted.
-    func isPersonalizedImageMounted() async throws -> Bool {
-        try await lookUpPersonalizedImages().isPresent
+    /// Reports whether a Developer Disk Image is mounted at its mount path.
+    ///
+    /// `LookupImage` misses an image that Xcode installed through cryptexd.
+    /// On an iPhone19,2 with iOS 27.2.1 it returned no signatures while
+    /// `CopyDevices` listed the cryptex-backed image at `/System/Developer`,
+    /// and on an iPhone18,1 with iOS 27 `MountImage` then failed because an
+    /// image was already mounted there (2026-11-20). Both queries are
+    /// consulted so either kind of mount counts.
+    func isDeveloperImageMounted() async throws -> Bool {
+        if try await lookUpPersonalizedImages().isPresent {
+            return true
+        }
+        return try await mountedPaths().contains(Self.personalizedMountPath)
+    }
+
+    /// Returns the mount paths of the disk images the device has mounted.
+    private func mountedPaths() async throws -> [String] {
+        try await send(["Command": "CopyDevices"])
+        let response = try await receive(command: "CopyDevices")
+        guard let entries = response["EntryList"] as? [[String: Any]] else {
+            throw RorkDeviceError.protocolViolation(
+                "CopyDevices response did not contain EntryList."
+            )
+        }
+        return entries.compactMap { $0["MountPath"] as? String }
     }
 
     /// Reads the hardware values needed to select a matching build identity.
@@ -208,7 +230,7 @@ private struct MobileImageMounterClient {
     ///
     /// The device surfaces its own error when nothing is mounted at the path, so
     /// callers that only want a best-effort teardown should check
-    /// `isPersonalizedImageMounted()` first.
+    /// `isDeveloperImageMounted()` first.
     func unmount() async throws {
         try await send([
             "Command": "UnmountImage",
@@ -366,7 +388,7 @@ struct PersonalizedDeveloperDiskImageMounter {
         var client = MobileImageMounterClient(
             connection: initialConnection
         )
-        if try await client.isPersonalizedImageMounted() {
+        if try await client.isDeveloperImageMounted() {
             return .alreadyMounted
         }
 
