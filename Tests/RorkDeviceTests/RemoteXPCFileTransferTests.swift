@@ -301,6 +301,28 @@ final class RemoteXPCFileTransferTests: XCTestCase {
         XCTAssertEqual(connection.sent.count, sentBeforeUpload)
     }
 
+    func testRequestWithoutTransfersIgnoresALoweredStreamLimit() async throws {
+        var settings = Data()
+        settings.appendBigEndian(UInt16(0x3))
+        settings.appendBigEndian(UInt32(1))
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(
+            remoteXPCTestFrame(type: 0x04, streamIdentifier: 0, payload: settings)
+        )
+        let connection = FakeConnection(inbound: inbound)
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        // The SETTINGS frame is read while the first receive waits.
+        _ = try? await remoteXPC.receive(on: .reply)
+        let sentBeforeRequest = connection.sent.count
+
+        try await remoteXPC.sendWithinWindows(.dictionary([:]))
+
+        let frames = try sentFrames(
+            Array(connection.sent.dropFirst(sentBeforeRequest))
+        )
+        XCTAssertEqual(frames.map { "\($0.type)/\($0.streamIdentifier)" }, ["0/1"])
+    }
+
     func testUploadReleasesStreamsBothEndsHaveClosed() async throws {
         var settings = Data()
         settings.appendBigEndian(UInt16(0x3))

@@ -178,8 +178,10 @@ struct RemoteXPCSendFlowControl {
     ///
     /// The fixed RemoteXPC streams count as open because the host never ends
     /// them. A transfer stream stops counting once both ends have closed it.
+    /// A lowered limit never blocks a request that opens no stream, because
+    /// streams that are already open may finish (RFC 9113 5.1.2).
     func requireCapacity(forFileTransfers count: Int) throws {
-        guard let maximumConcurrentStreams else {
+        guard count > 0, let maximumConcurrentStreams else {
             return
         }
         let openStreams = 2 + streamWindows.count
