@@ -321,13 +321,23 @@ private final class RecordingTSSHTTPTransport:
 }
 
 extension Data {
-    /// Decodes an even-length hexadecimal fixture string.
+    /// Decodes an even-length hexadecimal fixture string, stopping the test
+    /// run on a malformed fixture.
     init(hexFixture hexadecimal: String) {
+        precondition(
+            hexadecimal.count.isMultiple(of: 2),
+            "Hex fixture has an odd number of digits."
+        )
         var bytes: [UInt8] = []
         var index = hexadecimal.startIndex
         while index < hexadecimal.endIndex {
             let next = hexadecimal.index(index, offsetBy: 2)
-            bytes.append(UInt8(hexadecimal[index..<next], radix: 16) ?? 0)
+            guard let byte = UInt8(hexadecimal[index..<next], radix: 16) else {
+                preconditionFailure(
+                    "Hex fixture has a non-hex pair \(hexadecimal[index..<next])."
+                )
+            }
+            bytes.append(byte)
             index = next
         }
         self.init(bytes)

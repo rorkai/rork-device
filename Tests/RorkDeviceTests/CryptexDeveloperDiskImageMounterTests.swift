@@ -28,10 +28,10 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         )
         let connections = CryptexdConnectionQueue([
             try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(["remote-cryptex-array": .array([])]),
+                "argv": .dictionary(sampleChipProperties),
             ]),
             try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(sampleChipProperties),
+                "argv": .dictionary(["remote-cryptex-array": .array([])]),
             ]),
             try cryptexdConnection(replyingWith: [
                 "argv": .dictionary(["nonce": .data(sampleSerializedNonce)]),
@@ -55,13 +55,13 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         XCTAssertEqual(
             try connections.opened.map { try routine(sentOn: $0).name },
             [
-                "copy-installed", "read-personalization-id", "get-nonce",
+                "read-personalization-id", "copy-installed", "get-nonce",
                 "install",
             ]
         )
         XCTAssertTrue(connections.opened.allSatisfy(\.isClosed))
         XCTAssertEqual(
-            try routine(sentOn: connections.opened[2]).argv,
+            try routine(sentOn: connections.connection(2)).argv,
             ["nonce-domain-handle": .uint64(4)]
         )
         XCTAssertEqual(requester.nonce, sampleNonce)
@@ -123,15 +123,15 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         )
         defer { fixture.remove() }
         let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(sampleChipProperties),
+            ]),
             try cryptexdConnection(replyingWith: installedReply([
                 developerDiskImageCryptex,
             ])),
             try cryptexdConnection(replyingWith: [
                 "argv": .dictionary([:]),
                 "error": .uint64(0),
-            ]),
-            try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(sampleChipProperties),
             ]),
             try cryptexdConnection(replyingWith: [
                 "argv": .dictionary(["nonce": .data(sampleSerializedNonce)]),
@@ -156,12 +156,12 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         XCTAssertEqual(
             try connections.opened.map { try routine(sentOn: $0).name },
             [
-                "copy-installed", "uninstall", "read-personalization-id",
+                "read-personalization-id", "copy-installed", "uninstall",
                 "get-nonce", "install",
             ]
         )
         XCTAssertEqual(
-            try routine(sentOn: connections.opened[1]).argv,
+            try routine(sentOn: connections.connection(2)).argv,
             developerDiskImageUninstallArgv
         )
     }
@@ -193,7 +193,7 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
             ["copy-installed", "uninstall"]
         )
         XCTAssertEqual(
-            try routine(sentOn: connections.opened[1]).argv,
+            try routine(sentOn: connections.connection(1)).argv,
             developerDiskImageUninstallArgv
         )
         XCTAssertTrue(connections.opened.allSatisfy(\.isClosed))
@@ -238,6 +238,82 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         }
     }
 
+    func testMountKeepsTheInstalledCryptexWhenTheImageCannotReplaceIt()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
+        )
+        defer { fixture.remove() }
+        var otherChip = sampleChipProperties
+        otherChip["img4_chip_fchp"] = .uint64(0xFF11)
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(otherChip),
+            ]),
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                )
+            )
+        }) { error in
+            XCTAssertNotNil(error as? RorkDeviceError)
+        }
+        XCTAssertEqual(
+            try connections.opened.map { try routine(sentOn: $0).name },
+            ["read-personalization-id"]
+        )
+    }
+
+    func testUninstallFindsNothingWhenCryptexdIsNotAdvertised() async throws {
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: {
+                throw RorkDeviceError.serviceNotAdvertised(
+                    CryptexDeveloperDiskImageMounter.serviceName
+                )
+            },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        let uninstalled = try await mounter.uninstall()
+
+        XCTAssertFalse(uninstalled)
+    }
+
+    func testUninstallRejectsAMalformedErrorStatus() async throws {
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: installedReply([
+                developerDiskImageCryptex,
+            ])),
+            try cryptexdConnection(replyingWith: ["error": .string("ok")]),
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.uninstall()
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .protocolViolation(
+                    "cryptexd answered uninstall with a malformed error status \(String(describing: RemoteXPCValue.string("ok")))."
+                )
+            )
+        }
+    }
+
     func testMountSurfacesAnInstallRefusalSentBeforeAnyUpload() async throws {
         let fixture = try makeImageFixture(
             boardID: "0x0C",
@@ -251,10 +327,10 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         ])
         let connections = CryptexdConnectionQueue([
             try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(["remote-cryptex-array": .array([])]),
+                "argv": .dictionary(sampleChipProperties),
             ]),
             try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(sampleChipProperties),
+                "argv": .dictionary(["remote-cryptex-array": .array([])]),
             ]),
             try cryptexdConnection(replyingWith: [
                 "argv": .dictionary(["nonce": .data(sampleSerializedNonce)]),
@@ -291,9 +367,6 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         )
         defer { fixture.remove() }
         let connections = CryptexdConnectionQueue([
-            try cryptexdConnection(replyingWith: [
-                "argv": .dictionary(["remote-cryptex-array": .array([])]),
-            ]),
             try cryptexdConnection(replyingWith: ["error": .uint64(1)]),
         ])
         let mounter = CryptexDeveloperDiskImageMounter(
@@ -462,6 +535,16 @@ private final class CryptexdConnectionQueue: @unchecked Sendable {
 
     init(_ connections: [FakeConnection]) {
         pending = connections
+    }
+
+    /// Returns the connection opened at `index`, failing the test without
+    /// trapping when fewer were opened.
+    func connection(_ index: Int) throws -> FakeConnection {
+        guard opened.indices.contains(index) else {
+            XCTFail("Only \(opened.count) cryptexd connections were opened.")
+            throw RorkDeviceError.transport("Missing cryptexd connection.")
+        }
+        return opened[index]
     }
 
     func open() async throws -> DeviceConnection {

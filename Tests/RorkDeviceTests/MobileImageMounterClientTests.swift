@@ -364,6 +364,59 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertFalse(result.requiresTunnelRestart)
     }
 
+    func testMountSurfacesAManifestQueryDetailedErrorWithoutAnError()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(),
+                personalizationIdentifiersResponse(),
+                [
+                    "DetailedError": "manifest store unavailable",
+                    "ImageSignature": Data([0xAA]),
+                ],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0xCC])
+        )
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                ),
+                ecid: 123
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .lockdown(
+                    "QueryPersonalizationManifest failed: manifest store unavailable"
+                )
+            )
+        }
+        XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertEqual(connection.sent.count, 4)
+    }
+
     func testMountRequestsTicketWhenManifestQueryReturnsAnError()
         async throws
     {

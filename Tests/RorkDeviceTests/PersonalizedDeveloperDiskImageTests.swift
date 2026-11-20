@@ -406,10 +406,11 @@ private func makeCryptexIdentity(
     ]
 }
 
-/// cryptexd identifiers of an iPhone19,2, as read on 2026-11-20.
+/// cryptexd identifiers of an iPhone19,2, as read on 2026-11-20, with a
+/// made-up ECID.
 let iPhone19CryptexIdentifiers = CryptexPersonalizationIdentifiers(
     chipID: 0x8160,
-    ecid: 7_434_683_448_033_290,
+    ecid: 0x0012_3456_78AB_CDEF,
     cryptexChipID: 0xFF10,
     cryptexType: 3,
     productClass: 0xF2,

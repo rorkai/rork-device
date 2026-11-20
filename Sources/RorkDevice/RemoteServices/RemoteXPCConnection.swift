@@ -127,6 +127,10 @@ final class RemoteXPCConnection: @unchecked Sendable {
     /// Whether one task currently owns frame reads and stream buffers.
     private var isReceiving = false
 
+    /// Whether an upload stopped with transfer streams the host opened but
+    /// never ended, which leaves their stream accounting unknown.
+    private var hasUnfinishedUpload = false
+
     /// Flow-control state for payloads sent on file-transfer streams.
     private var flowControl = RemoteXPCSendFlowControl(
         initialWindowSize: defaultWindowSize,
@@ -220,10 +224,15 @@ final class RemoteXPCConnection: @unchecked Sendable {
     ///   - makeRequest: Builds the request from one `.fileTransfer` value per
     ///     payload, in the same order.
     /// - Returns: Whether every payload was sent or the peer answered first.
+    /// An upload that stops before every stream is ended leaves those
+    /// streams open, so later uploads on the connection are refused. Open a
+    /// new connection instead.
+    ///
     /// - Throws: An input error when a payload cannot be read, a stream-reset
     ///   error when the peer abandons a transfer, a protocol error when the
     ///   peer ends a transfer stream without accepting it or allows too few
-    ///   concurrent streams, or transport errors.
+    ///   concurrent streams, or when an earlier upload did not finish, or
+    ///   transport errors.
     @discardableResult
     func send(
         uploading payloads: [RemoteXPCUploadPayload],
@@ -237,6 +246,11 @@ final class RemoteXPCConnection: @unchecked Sendable {
 
         let sizes = try payloads.map { try $0.size() }
         try stateLock.withLock {
+            guard !hasUnfinishedUpload else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC connection has file-transfer streams an earlier upload left open."
+                )
+            }
             try flowControl.requireCapacity(forFileTransfers: payloads.count)
         }
         let requestIdentifier = stateLock.withLock {
@@ -244,34 +258,44 @@ final class RemoteXPCConnection: @unchecked Sendable {
             nextMessageIdentifier &+= UInt64(payloads.count) + 1
             return identifier
         }
-        let transfers = sizes.enumerated().map { index, size in
-            (
-                identifier: requestIdentifier + UInt64(index) + 1,
-                size: size,
-                stream: stateLock.withLock {
-                    flowControl.openStream()
-                }
-            )
+        let transferIdentifiers = sizes.indices.map {
+            requestIdentifier + UInt64($0) + 1
         }
         let request = try makeRequest(
-            transfers.map {
-                .fileTransfer(identifier: $0.identifier, size: $0.size)
+            zip(transferIdentifiers, sizes).map {
+                .fileTransfer(identifier: $0, size: $1)
             }
         )
 
-        for transfer in transfers {
+        var isFinished = false
+        defer {
+            if !isFinished {
+                stateLock.withLock {
+                    hasUnfinishedUpload = true
+                }
+            }
+        }
+        var transfers: [(identifier: UInt64, size: UInt64, stream: UInt32)] = []
+        for (identifier, size) in zip(transferIdentifiers, sizes) {
+            // A SETTINGS frame read while an earlier file-open message waited
+            // for credit may have lowered the peer's stream limit.
+            let stream = try stateLock.withLock {
+                try flowControl.requireCapacity(forFileTransfers: 1)
+                return flowControl.openStream()
+            }
+            transfers.append((identifier, size, stream))
             try await sendFrame(
                 type: .headers,
                 flags: Self.endHeadersFlag,
-                streamIdentifier: transfer.stream
+                streamIdentifier: stream
             )
             try await sendWithinWindows(
                 RemoteXPCMessageCodec.encode(
                     value: nil,
                     flags: Self.alwaysSetFlag | Self.fileOpenFlag,
-                    messageIdentifier: transfer.identifier
+                    messageIdentifier: identifier
                 ),
-                on: transfer.stream
+                on: stream
             )
         }
         try await sendWithinWindows(
@@ -295,29 +319,40 @@ final class RemoteXPCConnection: @unchecked Sendable {
                 return .answeredBeforeUploadFinished
             }
         }
+        isFinished = true
         return .uploaded
     }
 
-    /// Sends one DATA frame once the peer's windows hold all of it, reading
-    /// frames while it waits for WINDOW_UPDATE.
+    /// Sends a RemoteXPC message in DATA frames the peer's windows and frame
+    /// size allow, reading frames while it waits for WINDOW_UPDATE.
     ///
-    /// Only a caller that owns the receive path may wait like this, so other
-    /// sends keep charging their frames after writing them.
+    /// A message that fits goes out as one frame. Only a caller that owns the
+    /// receive path may wait like this, so other sends keep charging their
+    /// frames after writing them.
     private func sendWithinWindows(
         _ payload: Data,
         on streamIdentifier: UInt32
     ) async throws {
-        while try !stateLock.withLock({
-            try flowControl.reserveWhole(payload.count, on: streamIdentifier)
-        }) {
-            try await process(receiveFrame())
+        var offset = payload.startIndex
+        while offset < payload.endIndex {
+            let allowance = try stateLock.withLock {
+                try flowControl.reserve(
+                    upTo: payload.endIndex - offset,
+                    on: streamIdentifier
+                )
+            }
+            guard allowance > 0 else {
+                try await process(receiveFrame())
+                continue
+            }
+            try await sendFrame(
+                type: .data,
+                streamIdentifier: streamIdentifier,
+                payload: payload.subdata(in: offset..<(offset + allowance)),
+                isFlowControlled: false
+            )
+            offset += allowance
         }
-        try await sendFrame(
-            type: .data,
-            streamIdentifier: streamIdentifier,
-            payload: payload,
-            isFlowControlled: false
-        )
     }
 
     /// Reads frames until the peer accepts the transfer announced on a stream.
@@ -346,6 +381,11 @@ final class RemoteXPCConnection: @unchecked Sendable {
                     "RemoteXPC file transfer \(transferIdentifier) ended on stream \(streamIdentifier) before the peer accepted it."
                 )
             }
+            // Any message on the reply stream counts as the routine's
+            // answer. The connection carries one request, and it does not set
+            // `enable-install-events`, the install key in macOS 27's
+            // libcryptex_interface that asks cryptexd for progress messages
+            // (2026-11-20).
             if try hasBufferedMessage(on: Stream.reply.identifier) {
                 return false
             }
@@ -424,11 +464,10 @@ final class RemoteXPCConnection: @unchecked Sendable {
             streamBuffers[frame.streamIdentifier, default: Data()].append(
                 frame.payload
             )
-            if isFileTransferStream, frame.flags & Self.endStreamFlag != 0 {
-                stateLock.withLock {
-                    flowControl.endedByPeer(frame.streamIdentifier)
-                }
-            }
+            recordEndOfStream(frame)
+
+        case .headers:
+            recordEndOfStream(frame)
 
         case .settings:
             if frame.flags & Self.acknowledgementFlag == 0 {
@@ -488,15 +527,28 @@ final class RemoteXPCConnection: @unchecked Sendable {
             let increment: UInt32 = try frame.payload.bigEndianInteger(
                 at: 0
             )
-            stateLock.withLock {
-                flowControl.grant(
+            try stateLock.withLock {
+                try flowControl.grant(
                     Int64(increment & 0x7fff_ffff),
                     on: frame.streamIdentifier
                 )
             }
 
-        case .headers, .none:
+        case .none:
             break
+        }
+    }
+
+    /// Records that the peer ended a file-transfer stream with a DATA or
+    /// HEADERS frame carrying END_STREAM.
+    private func recordEndOfStream(_ frame: Frame) {
+        guard frame.flags & Self.endStreamFlag != 0 else {
+            return
+        }
+        stateLock.withLock {
+            if flowControl.isFileTransferStream(frame.streamIdentifier) {
+                flowControl.endedByPeer(frame.streamIdentifier)
+            }
         }
     }
 

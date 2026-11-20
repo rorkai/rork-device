@@ -114,9 +114,12 @@ enum RemoteXPCUploadOutcome: Equatable {
 /// HTTP/2 lets the receiver bound how much unacknowledged DATA a sender may
 /// have in flight, per stream and for the whole connection (RFC 9113 6.9).
 /// Uploads larger than the peer's initial window must wait for its
-/// WINDOW_UPDATE frames, while short control messages never come near the
-/// limit and only count against the connection window.
+/// WINDOW_UPDATE frames. The fixed RemoteXPC streams have windows too, so a
+/// request waits for credit like any other DATA.
 struct RemoteXPCSendFlowControl {
+    /// Largest window HTTP/2 allows (RFC 9113 6.9.1).
+    private static let maximumWindowSize: Int64 = 0x7fff_ffff
+
     /// Send window every newly opened stream starts with.
     private var initialWindowSize: Int64
 
@@ -128,6 +131,9 @@ struct RemoteXPCSendFlowControl {
 
     /// Bytes each open file-transfer stream may still send.
     private var streamWindows: [UInt32: Int64] = [:]
+
+    /// Bytes the fixed control and reply streams may still send.
+    private var fixedStreamWindows: [UInt32: Int64]
 
     /// File-transfer streams whose uploads have ended, kept so late resets
     /// and acknowledgements on them are recognized.
@@ -152,6 +158,7 @@ struct RemoteXPCSendFlowControl {
         self.initialWindowSize = initialWindowSize
         self.maximumFrameSize = maximumFrameSize
         connectionWindow = initialWindowSize
+        fixedStreamWindows = [1: initialWindowSize, 3: initialWindowSize]
     }
 
     /// Allocates a new file-transfer stream with the peer's initial window.
@@ -219,9 +226,9 @@ struct RemoteXPCSendFlowControl {
     ///   wait for a WINDOW_UPDATE.
     mutating func reserve(upTo count: Int, on identifier: UInt32) throws -> Int {
         try requireOpen(identifier)
-        guard let streamWindow = streamWindows[identifier] else {
+        guard let streamWindow = window(of: identifier) else {
             throw RorkDeviceError.protocolViolation(
-                "RemoteXPC stream \(identifier) is not an open file transfer."
+                "RemoteXPC stream \(identifier) is not open for sending."
             )
         }
         let allowance = min(
@@ -233,29 +240,9 @@ struct RemoteXPCSendFlowControl {
         guard allowance > 0 else {
             return 0
         }
-        streamWindows[identifier] = streamWindow - allowance
+        setWindow(streamWindow - allowance, of: identifier)
         connectionWindow -= allowance
         return Int(allowance)
-    }
-
-    /// Reserves `count` bytes of both windows at once for a message that
-    /// cannot be split, such as a file-open message or a request.
-    ///
-    /// Streams without a tracked window, such as the fixed RemoteXPC
-    /// streams, are limited by the connection window alone.
-    ///
-    /// - Returns: `false` when the caller must wait for a WINDOW_UPDATE.
-    mutating func reserveWhole(_ count: Int, on identifier: UInt32) throws -> Bool {
-        try requireOpen(identifier)
-        let streamWindow = streamWindows[identifier]
-        guard Int64(count) <= min(streamWindow ?? .max, connectionWindow) else {
-            return false
-        }
-        if let streamWindow {
-            streamWindows[identifier] = streamWindow - Int64(count)
-        }
-        connectionWindow -= Int64(count)
-        return true
     }
 
     /// Charges DATA sent outside an upload reservation, such as a transfer's
@@ -263,8 +250,8 @@ struct RemoteXPCSendFlowControl {
     /// the stream it travels on.
     mutating func charge(_ count: Int, on identifier: UInt32) {
         connectionWindow -= Int64(count)
-        if let window = streamWindows[identifier] {
-            streamWindows[identifier] = window - Int64(count)
+        if let window = window(of: identifier) {
+            setWindow(window - Int64(count), of: identifier)
         }
     }
 
@@ -287,12 +274,57 @@ struct RemoteXPCSendFlowControl {
         return true
     }
 
-    /// Applies a WINDOW_UPDATE to the connection or one upload stream.
-    mutating func grant(_ increment: Int64, on identifier: UInt32) {
+    /// Applies a WINDOW_UPDATE to the connection or one stream the host
+    /// sends on.
+    ///
+    /// A zero increment, or one that lifts a window above 2,147,483,647, is
+    /// an error (RFC 9113 6.9 and 6.9.1), and the window stays unchanged.
+    mutating func grant(_ increment: Int64, on identifier: UInt32) throws {
+        guard increment > 0 else {
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC HTTP/2 WINDOW_UPDATE on stream \(identifier) has a zero increment."
+            )
+        }
         if identifier == 0 {
-            connectionWindow += increment
-        } else if let window = streamWindows[identifier] {
-            streamWindows[identifier] = window + increment
+            connectionWindow = try Self.grown(
+                connectionWindow,
+                by: increment,
+                on: identifier
+            )
+        } else if let window = window(of: identifier) {
+            setWindow(
+                try Self.grown(window, by: increment, on: identifier),
+                of: identifier
+            )
+        }
+    }
+
+    /// Returns `window` plus `increment`, or throws when that passes the
+    /// largest window HTTP/2 allows.
+    private static func grown(
+        _ window: Int64,
+        by increment: Int64,
+        on identifier: UInt32
+    ) throws -> Int64 {
+        guard window + increment <= maximumWindowSize else {
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC HTTP/2 flow-control window of stream \(identifier) would exceed 2,147,483,647."
+            )
+        }
+        return window + increment
+    }
+
+    /// Returns the send window of a file-transfer or fixed stream.
+    private func window(of identifier: UInt32) -> Int64? {
+        streamWindows[identifier] ?? fixedStreamWindows[identifier]
+    }
+
+    /// Stores the send window of a file-transfer or fixed stream.
+    private mutating func setWindow(_ window: Int64, of identifier: UInt32) {
+        if streamWindows[identifier] != nil {
+            streamWindows[identifier] = window
+        } else {
+            fixedStreamWindows[identifier] = window
         }
     }
 
@@ -322,9 +354,22 @@ struct RemoteXPCSendFlowControl {
                     )
                 }
                 let delta = Int64(value) - initialWindowSize
+                let shifted = streamWindows.merging(fixedStreamWindows) {
+                    current, _ in current
+                }.mapValues { $0 + delta }
+                if let stream = shifted.first(where: {
+                    $0.value > Self.maximumWindowSize
+                })?.key {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC HTTP/2 SETTINGS_INITIAL_WINDOW_SIZE \(value) lifts the window of stream \(stream) above 2,147,483,647."
+                    )
+                }
                 initialWindowSize = Int64(value)
-                for (stream, window) in streamWindows {
-                    streamWindows[stream] = window + delta
+                for stream in streamWindows.keys {
+                    streamWindows[stream] = shifted[stream]
+                }
+                for stream in fixedStreamWindows.keys {
+                    fixedStreamWindows[stream] = shifted[stream]
                 }
             case 0x5:
                 guard (16_384...16_777_215).contains(value) else {

@@ -135,6 +135,11 @@ private struct MobileImageMounterClient {
         if response.string("Error") != nil {
             throw PersonalizationManifestUnavailable()
         }
+        if let detail = response.string("DetailedError") {
+            throw RorkDeviceError.lockdown(
+                "QueryPersonalizationManifest failed: \(detail)"
+            )
+        }
         guard let signature = response["ImageSignature"] as? Data,
             !signature.isEmpty
         else {

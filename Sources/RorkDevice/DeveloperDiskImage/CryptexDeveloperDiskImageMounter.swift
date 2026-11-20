@@ -200,10 +200,17 @@ private struct CryptexServiceClient {
                 "\(routine) failed: \(String(describing: error))"
             )
         }
-        if let code = root["error"]?.unsignedIntegerValue, code != 0 {
-            throw RorkDeviceError.cryptexd(
-                "\(routine) failed with errno \(code)."
-            )
+        if let status = root["error"] {
+            guard let code = status.unsignedIntegerValue else {
+                throw RorkDeviceError.protocolViolation(
+                    "cryptexd answered \(routine) with a malformed error status \(String(describing: status))."
+                )
+            }
+            guard code == 0 else {
+                throw RorkDeviceError.cryptexd(
+                    "\(routine) failed with errno \(code)."
+                )
+            }
         }
         return root["argv"]?.dictionaryValue ?? [:]
     }
@@ -289,14 +296,15 @@ struct CryptexDeveloperDiskImageMounter {
     /// Callers first check that nothing is mounted at the Developer Disk
     /// Image mount path, so a Developer Disk Image cryptex that cryptexd
     /// still lists is not serving developer services. It is uninstalled
-    /// first, because cryptexd refuses to install over it with EEXIST,
-    /// "cryptex already exists" (2026-11-20, iPhone19,2, iOS 27.2.1).
+    /// once the image has proved it can replace it, because cryptexd refuses
+    /// to install over it with EEXIST, "cryptex already exists" (2026-11-20,
+    /// iPhone19,2, iOS 27.2.1).
     func mount(
         _ image: PersonalizedDeveloperDiskImage
     ) async throws -> DeveloperDiskImageMountResult {
-        _ = try await uninstall()
         let identifiers = try await client.personalizationIdentifiers()
         let payload = try image.cryptexPayload(matching: identifiers)
+        _ = try await uninstall()
         let nonce = try await client.nonce(domain: payload.nonceDomain)
         let ticket = try await ticketRequester.cryptexTicket(
             for: payload,
@@ -309,9 +317,18 @@ struct CryptexDeveloperDiskImageMounter {
 
     /// Uninstalls the Developer Disk Image cryptex, which also unmounts it.
     ///
+    /// A device whose Remote Service Discovery does not advertise cryptexd
+    /// has no cryptex to uninstall.
+    ///
     /// - Returns: Whether cryptexd listed a Developer Disk Image cryptex.
     func uninstall() async throws -> Bool {
-        guard let installed = try await client.installedCryptexes().first(
+        let installedCryptexes: [InstalledCryptex]
+        do {
+            installedCryptexes = try await client.installedCryptexes()
+        } catch RorkDeviceError.serviceNotAdvertised(Self.serviceName) {
+            return false
+        }
+        guard let installed = installedCryptexes.first(
             where: { $0.identifier == Self.developerDiskImageIdentifier }
         ) else {
             return false
