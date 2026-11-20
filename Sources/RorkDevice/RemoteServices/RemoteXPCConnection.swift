@@ -207,28 +207,38 @@ final class RemoteXPCConnection: @unchecked Sendable {
     /// identifiers after it, the layout CoreDevice uses for cryptexd installs.
     /// Each payload is announced on its own stream before the request is sent,
     /// then uploaded once the peer accepts that stream. The method returns
-    /// after every payload has been sent, and the peer's reply arrives on the
-    /// stream its service uses. Waiting for window updates reads frames, so
-    /// the method owns the receive path and must not overlap a `receive`.
+    /// after every payload has been sent, or as soon as a reply waits on the
+    /// reply stream, since a service that answers mid-upload has refused the
+    /// request and will accept no more of it. Read that reply with
+    /// `receive(on: .reply)`. Waiting for acceptances and window updates
+    /// reads frames, so the method owns the receive path and must not overlap
+    /// a `receive`.
     ///
     /// - Parameters:
     ///   - payloads: Payload sources in the order their transfers are listed.
     ///   - additionalFlags: Wrapper flags added to the request message.
     ///   - makeRequest: Builds the request from one `.fileTransfer` value per
     ///     payload, in the same order.
+    /// - Returns: Whether every payload was sent or the peer answered first.
     /// - Throws: An input error when a payload cannot be read, a stream-reset
-    ///   error when the peer abandons a transfer, or transport errors.
+    ///   error when the peer abandons a transfer, a protocol error when the
+    ///   peer ends a transfer stream without accepting it or allows too few
+    ///   concurrent streams, or transport errors.
+    @discardableResult
     func send(
         uploading payloads: [RemoteXPCUploadPayload],
         additionalFlags: UInt32 = 0,
         makeRequest: ([RemoteXPCValue]) throws -> RemoteXPCValue
-    ) async throws {
+    ) async throws -> RemoteXPCUploadOutcome {
         try beginReceiving()
         defer {
             endReceiving()
         }
 
         let sizes = try payloads.map { try $0.size() }
+        try stateLock.withLock {
+            try flowControl.requireCapacity(forFileTransfers: payloads.count)
+        }
         let requestIdentifier = stateLock.withLock {
             let identifier = nextMessageIdentifier
             nextMessageIdentifier &+= UInt64(payloads.count) + 1
@@ -273,23 +283,27 @@ final class RemoteXPCConnection: @unchecked Sendable {
         )
 
         for (transfer, payload) in zip(transfers, payloads) {
-            try await waitForAcceptance(
+            guard try await waitForAcceptance(
                 of: transfer.identifier,
                 on: transfer.stream
-            )
-            try await upload(
+            ), try await upload(
                 payload,
                 size: transfer.size,
                 on: transfer.stream
-            )
+            ) else {
+                return .answeredBeforeUploadFinished
+            }
         }
+        return .uploaded
     }
 
     /// Reads frames until the peer accepts the transfer announced on a stream.
+    ///
+    /// - Returns: `false` when a reply arrived before the acceptance.
     private func waitForAcceptance(
         of transferIdentifier: UInt64,
         on streamIdentifier: UInt32
-    ) async throws {
+    ) async throws -> Bool {
         while true {
             if let message = try decodeBufferedMessage(on: streamIdentifier) {
                 guard message.flags & Self.fileOpenReplyFlag != 0,
@@ -298,10 +312,19 @@ final class RemoteXPCConnection: @unchecked Sendable {
                         "RemoteXPC file transfer \(transferIdentifier) received flags 0x\(String(message.flags, radix: 16)) for message \(message.messageIdentifier) instead of its acceptance."
                     )
                 }
-                return
+                return true
             }
-            try stateLock.withLock {
+            let isEnded = try stateLock.withLock {
                 try flowControl.requireOpen(streamIdentifier)
+                return flowControl.isEndedByPeer(streamIdentifier)
+            }
+            guard !isEnded else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC file transfer \(transferIdentifier) ended on stream \(streamIdentifier) before the peer accepted it."
+                )
+            }
+            if try hasBufferedMessage(on: Stream.reply.identifier) {
+                return false
             }
             try await process(receiveFrame())
         }
@@ -309,11 +332,14 @@ final class RemoteXPCConnection: @unchecked Sendable {
 
     /// Sends one payload in DATA frames the peer's windows allow, then ends
     /// the stream.
+    ///
+    /// - Returns: `false` when a reply arrived while the upload waited for
+    ///   window credit.
     private func upload(
         _ payload: RemoteXPCUploadPayload,
         size: UInt64,
         on streamIdentifier: UInt32
-    ) async throws {
+    ) async throws -> Bool {
         let reader = try payload.openReader()
         defer {
             reader.close()
@@ -327,6 +353,9 @@ final class RemoteXPCConnection: @unchecked Sendable {
                 )
             }
             guard allowance > 0 else {
+                if try hasBufferedMessage(on: Stream.reply.identifier) {
+                    return false
+                }
                 try await process(receiveFrame())
                 continue
             }
@@ -352,6 +381,7 @@ final class RemoteXPCConnection: @unchecked Sendable {
         stateLock.withLock {
             flowControl.finish(streamIdentifier)
         }
+        return true
     }
 
     /// Applies one received frame to stream buffers and connection state.
@@ -371,6 +401,11 @@ final class RemoteXPCConnection: @unchecked Sendable {
             streamBuffers[frame.streamIdentifier, default: Data()].append(
                 frame.payload
             )
+            if isFileTransferStream, frame.flags & Self.endStreamFlag != 0 {
+                stateLock.withLock {
+                    flowControl.endedByPeer(frame.streamIdentifier)
+                }
+            }
 
         case .settings:
             if frame.flags & Self.acknowledgementFlag == 0 {
@@ -531,6 +566,14 @@ final class RemoteXPCConnection: @unchecked Sendable {
         )
     }
 
+    /// Whether a complete message waits on a stream, leaving it buffered.
+    private func hasBufferedMessage(on streamIdentifier: UInt32) throws -> Bool {
+        guard let buffer = streamBuffers[streamIdentifier] else {
+            return false
+        }
+        return try RemoteXPCMessageCodec.decodeFirstMessage(from: buffer) != nil
+    }
+
     /// Decodes one message already accumulated for a stream, if complete.
     private func decodeBufferedMessage(
         on streamIdentifier: UInt32
@@ -549,9 +592,9 @@ final class RemoteXPCConnection: @unchecked Sendable {
 
     /// Writes one HTTP/2 frame after validating its 24-bit payload length.
     ///
-    /// DATA frames count against the peer's connection window. Uploads reserve
-    /// their share before sending and pass `isFlowControlled: false` so it is
-    /// not charged twice.
+    /// DATA frames count against the peer's connection window and the window
+    /// of their stream. Uploads reserve their share before sending and pass
+    /// `isFlowControlled: false` so it is not charged twice.
     private func sendFrame(
         type: FrameType,
         flags: UInt8 = 0,
@@ -566,7 +609,7 @@ final class RemoteXPCConnection: @unchecked Sendable {
         }
         if type == .data, isFlowControlled {
             stateLock.withLock {
-                flowControl.charge(payload.count)
+                flowControl.charge(payload.count, on: streamIdentifier)
             }
         }
 

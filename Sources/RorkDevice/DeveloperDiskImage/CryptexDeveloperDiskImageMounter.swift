@@ -111,7 +111,7 @@ private struct CryptexServiceClient {
         defer {
             connection.close()
         }
-        try await connection.send(
+        let outcome = try await connection.send(
             uploading: uploads.map(\.payload),
             additionalFlags: Self.requestFlag
         ) { transfers in
@@ -140,6 +140,11 @@ private struct CryptexServiceClient {
             return Self.request("install", argv: argv)
         }
         let argv = try await reply(to: "install", on: connection)
+        guard outcome == .uploaded else {
+            throw RorkDeviceError.protocolViolation(
+                "cryptexd answered install before its files were uploaded."
+            )
+        }
         return argv["remote-cryptex"]?.dictionaryValue.flatMap(
             Self.installedCryptex
         )

@@ -100,6 +100,15 @@ final class RemoteXPCUploadReader {
     }
 }
 
+/// How a RemoteXPC upload ended.
+enum RemoteXPCUploadOutcome: Equatable {
+    /// Every payload was sent.
+    case uploaded
+
+    /// The peer replied before every payload was sent.
+    case answeredBeforeUploadFinished
+}
+
 /// Peer flow-control windows for the streams a RemoteXPC connection uploads on.
 ///
 /// HTTP/2 lets the receiver bound how much unacknowledged DATA a sender may
@@ -127,6 +136,12 @@ struct RemoteXPCSendFlowControl {
     /// Error codes of file-transfer streams the peer reset.
     private var resetStreams: [UInt32: UInt32] = [:]
 
+    /// File-transfer streams the peer ended with END_STREAM.
+    private var streamsEndedByPeer: Set<UInt32> = []
+
+    /// Streams the peer lets the host have open at once, when it set a limit.
+    private var maximumConcurrentStreams: Int?
+
     /// Identifier the next host-initiated stream receives. Streams 1 and 3
     /// are the fixed RemoteXPC streams.
     private var nextStreamIdentifier: UInt32 = 5
@@ -151,14 +166,50 @@ struct RemoteXPCSendFlowControl {
         streamWindows[identifier] != nil || finishedStreams.contains(identifier)
     }
 
-    /// Throws when the peer has reset an upload stream.
-    func requireOpen(_ identifier: UInt32) throws {
-        if let errorCode = resetStreams[identifier] {
-            throw RorkDeviceError.remoteXPCStreamReset(
-                streamIdentifier: identifier,
-                errorCode: errorCode
+    /// Throws when the peer would refuse more file-transfer streams.
+    ///
+    /// The fixed RemoteXPC streams and every transfer stream opened on the
+    /// connection count as open, because the host never ends the fixed
+    /// streams and cannot tell when the peer closed a finished transfer.
+    func requireCapacity(forFileTransfers count: Int) throws {
+        guard let maximumConcurrentStreams else {
+            return
+        }
+        let openStreams = 2 + streamWindows.count + finishedStreams.count
+        guard openStreams + count <= maximumConcurrentStreams else {
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC peer allows \(maximumConcurrentStreams) concurrent streams, too few for \(count) file transfers beside \(openStreams) open streams."
             )
         }
+    }
+
+    /// Throws when the peer has reset an upload stream, or any other
+    /// transfer that has not finished uploading.
+    ///
+    /// The stream named by `identifier` is checked first so its own reset is
+    /// the one reported.
+    func requireOpen(_ identifier: UInt32) throws {
+        let pendingResets = resetStreams.keys
+            .filter { streamWindows[$0] != nil }
+            .sorted()
+        for stream in [identifier] + pendingResets {
+            if let errorCode = resetStreams[stream] {
+                throw RorkDeviceError.remoteXPCStreamReset(
+                    streamIdentifier: stream,
+                    errorCode: errorCode
+                )
+            }
+        }
+    }
+
+    /// Records that the peer ended its side of a file-transfer stream.
+    mutating func endedByPeer(_ identifier: UInt32) {
+        streamsEndedByPeer.insert(identifier)
+    }
+
+    /// Whether the peer ended its side of a file-transfer stream.
+    func isEndedByPeer(_ identifier: UInt32) -> Bool {
+        streamsEndedByPeer.contains(identifier)
     }
 
     /// Reserves up to `count` bytes of both windows for one DATA frame.
@@ -186,9 +237,14 @@ struct RemoteXPCSendFlowControl {
         return Int(allowance)
     }
 
-    /// Charges DATA sent outside an upload against the connection window.
-    mutating func charge(_ count: Int) {
+    /// Charges DATA sent outside an upload reservation, such as a transfer's
+    /// file-open message, against the connection window and the window of
+    /// the stream it travels on.
+    mutating func charge(_ count: Int, on identifier: UInt32) {
         connectionWindow -= Int64(count)
+        if let window = streamWindows[identifier] {
+            streamWindows[identifier] = window - Int64(count)
+        }
     }
 
     /// Marks an upload stream as fully sent.
@@ -220,7 +276,8 @@ struct RemoteXPCSendFlowControl {
     /// Applies the peer's SETTINGS payload.
     ///
     /// A new initial window size shifts every open stream window by the
-    /// difference (RFC 9113 6.9.2).
+    /// difference (RFC 9113 6.9.2). Window and frame sizes outside the ranges
+    /// RFC 9113 6.5.2 allows are connection errors.
     mutating func apply(settings payload: Data) throws {
         guard payload.count % 6 == 0 else {
             throw RorkDeviceError.protocolViolation(
@@ -233,13 +290,25 @@ struct RemoteXPCSendFlowControl {
             let value: UInt32 = try payload.bigEndianInteger(at: offset + 2)
             offset += 6
             switch identifier {
+            case 0x3:
+                maximumConcurrentStreams = Int(value)
             case 0x4:
+                guard value <= 0x7fff_ffff else {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC HTTP/2 SETTINGS_INITIAL_WINDOW_SIZE \(value) exceeds 2,147,483,647."
+                    )
+                }
                 let delta = Int64(value) - initialWindowSize
                 initialWindowSize = Int64(value)
                 for (stream, window) in streamWindows {
                     streamWindows[stream] = window + delta
                 }
             case 0x5:
+                guard (16_384...16_777_215).contains(value) else {
+                    throw RorkDeviceError.protocolViolation(
+                        "RemoteXPC HTTP/2 SETTINGS_MAX_FRAME_SIZE \(value) is outside 16,384 to 16,777,215."
+                    )
+                }
                 maximumFrameSize = Int(value)
             default:
                 continue

@@ -162,6 +162,50 @@ final class CryptexDeveloperDiskImageMounterTests: XCTestCase {
         )
     }
 
+    func testMountSurfacesAnInstallRefusalSentBeforeAnyUpload() async throws {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
+        )
+        defer { fixture.remove() }
+        let install = try cryptexdConnection(replyingWith: [
+            "cferr": .string("ticket rejected"),
+        ])
+        let connections = CryptexdConnectionQueue([
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(["remote-cryptex-array": .array([])]),
+            ]),
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(capturedChipProperties),
+            ]),
+            try cryptexdConnection(replyingWith: [
+                "argv": .dictionary(["nonce": .data(capturedSerializedNonce)]),
+            ]),
+            install,
+        ])
+        let mounter = CryptexDeveloperDiskImageMounter(
+            openConnection: { try await connections.open() },
+            ticketRequester: RecordingCryptexTicketRequester(ticket: Data([1]))
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                )
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .cryptexd("install failed: \(String(describing: RemoteXPCValue.string("ticket rejected")))")
+            )
+        }
+        XCTAssertTrue(install.isClosed)
+        XCTAssertTrue(try uploadedPayloads(on: install).values.allSatisfy(\.isEmpty))
+    }
+
     func testUninstallRemovesTheDeveloperDiskImageCryptex() async throws {
         let uninstall = try cryptexdConnection(replyingWith: [
             "argv": .dictionary([:]),
