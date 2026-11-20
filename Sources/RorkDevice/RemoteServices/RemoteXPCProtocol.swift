@@ -35,6 +35,13 @@ enum RemoteXPCValue: Equatable {
     /// String-keyed collection of RemoteXPC values.
     case dictionary([String: RemoteXPCValue])
 
+    /// Reference to a payload carried on a dedicated HTTP/2 stream.
+    ///
+    /// The message holds only the transfer's identifier and byte count. The
+    /// bytes follow on a stream that announces the same identifier, which
+    /// `RemoteXPCConnection.send(_:additionalFlags:uploading:)` opens.
+    case fileTransfer(identifier: UInt64, size: UInt64)
+
     /// Returns the associated dictionary without forcing callers to pattern match.
     var dictionaryValue: [String: RemoteXPCValue]? {
         guard case let .dictionary(value) = self else {
@@ -49,6 +56,26 @@ enum RemoteXPCValue: Equatable {
             return nil
         }
         return value
+    }
+
+    /// Returns the associated byte buffer without forcing callers to pattern match.
+    var dataValue: Data? {
+        guard case let .data(value) = self else {
+            return nil
+        }
+        return value
+    }
+
+    /// Returns the associated unsigned integer, accepting nonnegative signed values.
+    var unsignedIntegerValue: UInt64? {
+        switch self {
+        case let .uint64(value):
+            return value
+        case let .int64(value):
+            return UInt64(exactly: value)
+        default:
+            return nil
+        }
     }
 
     /// Returns the associated Boolean without forcing callers to pattern match.
@@ -138,6 +165,9 @@ enum RemoteXPCMessageCodec {
 
         /// Length-prefixed dictionary container.
         case dictionary = 0x0000f000
+
+        /// Transfer identifier followed by a dictionary holding the size.
+        case fileTransfer = 0x0001a000
     }
 
     /// Encodes one wrapper and its optional RemoteXPC value.
@@ -306,6 +336,11 @@ enum RemoteXPCMessageCodec {
             data.appendLittleEndian(ObjectType.dictionary.rawValue)
             data.appendLittleEndian(UInt32(payload.count))
             data.append(payload)
+
+        case let .fileTransfer(identifier, size):
+            data.appendLittleEndian(ObjectType.fileTransfer.rawValue)
+            data.appendLittleEndian(identifier)
+            try encode(.dictionary(["s": .uint64(size)]), into: &data)
         }
     }
 
@@ -407,6 +442,16 @@ enum RemoteXPCMessageCodec {
                 }
             )
 
+        case .fileTransfer:
+            let identifier: UInt64 = try reader.readLittleEndian()
+            guard let size = try decodeValue(from: &reader)
+                .dictionaryValue?["s"]?.unsignedIntegerValue
+            else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC file transfer does not carry its size."
+                )
+            }
+            return .fileTransfer(identifier: identifier, size: size)
         }
     }
 

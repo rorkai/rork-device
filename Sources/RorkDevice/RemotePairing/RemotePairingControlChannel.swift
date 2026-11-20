@@ -302,6 +302,11 @@ private func foundationValue(_ value: RemoteXPCValue) -> Any {
         return values.map(foundationValue)
     case let .dictionary(values):
         return foundationDictionary(values)
+    case let .fileTransfer(identifier, size):
+        return [
+            "identifier": NSNumber(value: identifier),
+            "size": NSNumber(value: size),
+        ]
     }
 }
 

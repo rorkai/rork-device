@@ -1,0 +1,214 @@
+import Foundation
+import XCTest
+
+@testable import RorkDevice
+
+final class RemoteXPCFileTransferTests: XCTestCase {
+    func testFileTransferValueRoundTripsWithItsIdentifierAndSize() throws {
+        let value = RemoteXPCValue.dictionary([
+            "image": .fileTransfer(identifier: 2, size: 70_000),
+        ])
+
+        let encoded = try RemoteXPCMessageCodec.encode(
+            value: value,
+            flags: 0x00000101,
+            messageIdentifier: 1
+        )
+        let decoded = try XCTUnwrap(
+            RemoteXPCMessageCodec.decodeFirstMessage(from: encoded)
+        ).message
+
+        XCTAssertEqual(decoded.value, value)
+        var tagAndIdentifier = Data()
+        tagAndIdentifier.appendLittleEndian(UInt32(0x0001_a000))
+        tagAndIdentifier.appendLittleEndian(UInt64(2))
+        XCTAssertNotNil(encoded.range(of: tagAndIdentifier))
+    }
+
+    func testUploadAnnouncesStreamsAndWaitsForWindowUpdates() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(initialWindowSettings(4))
+        inbound.append(try fileOpenReply(identifier: 2, on: 5))
+        inbound.append(windowUpdate(4, on: 5))
+        inbound.append(windowUpdate(4, on: 5))
+        inbound.append(try fileOpenReply(identifier: 3, on: 7))
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x03,
+                streamIdentifier: 5,
+                payload: Data([0, 0, 0, 0])
+            )
+        )
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x00,
+                streamIdentifier: 3,
+                payload: try RemoteXPCMessageCodec.encode(
+                    value: .dictionary(["argv": .dictionary([:])]),
+                    flags: 0x00020101,
+                    messageIdentifier: 1
+                )
+            )
+        )
+        let connection = FakeConnection(inbound: inbound)
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        let handshakeFrameCount = connection.sent.count
+        var transfers: [RemoteXPCValue] = []
+
+        try await remoteXPC.send(
+            uploading: [
+                .data(Data("0123456789".utf8)),
+                .data(Data("abc".utf8)),
+            ],
+            additionalFlags: 0x00010000
+        ) { values in
+            transfers = values
+            return .dictionary(["files": .array(values)])
+        }
+        let reply = try await remoteXPC.receive(on: .reply)
+
+        XCTAssertEqual(reply.value, .dictionary(["argv": .dictionary([:])]))
+        XCTAssertEqual(
+            transfers,
+            [
+                .fileTransfer(identifier: 2, size: 10),
+                .fileTransfer(identifier: 3, size: 3),
+            ]
+        )
+        let frames = try sentFrames(
+            Array(connection.sent.dropFirst(handshakeFrameCount))
+        )
+        XCTAssertEqual(
+            frames.map { "\($0.type)/\($0.streamIdentifier)" },
+            [
+                "1/5", "0/5", "1/7", "0/7", "0/1", "4/0",
+                "0/5", "0/5", "0/5", "0/5", "0/7", "0/7",
+            ]
+        )
+        let fileOpen = try XCTUnwrap(
+            RemoteXPCMessageCodec.decodeFirstMessage(from: frames[1].payload)
+        ).message
+        XCTAssertEqual(fileOpen.flags, 0x00100001)
+        XCTAssertEqual(fileOpen.messageIdentifier, 2)
+        let request = try XCTUnwrap(
+            RemoteXPCMessageCodec.decodeFirstMessage(from: frames[4].payload)
+        ).message
+        XCTAssertEqual(request.messageIdentifier, 1)
+        XCTAssertEqual(request.flags, 0x00010101)
+        XCTAssertEqual(
+            frames[6...8].map { String(decoding: $0.payload, as: UTF8.self) },
+            ["0123", "4567", "89"]
+        )
+        XCTAssertEqual(frames[9].flags, 0x01)
+        XCTAssertTrue(frames[9].payload.isEmpty)
+        XCTAssertEqual(String(decoding: frames[10].payload, as: UTF8.self), "abc")
+        XCTAssertEqual(frames[11].flags, 0x01)
+    }
+
+    func testUploadFailsWhenThePeerResetsItsStream() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(initialWindowSettings(4))
+        inbound.append(try fileOpenReply(identifier: 2, on: 5))
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x03,
+                streamIdentifier: 5,
+                payload: Data([0, 0, 0, 8])
+            )
+        )
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await remoteXPC.send(
+                uploading: [.data(Data("0123456789".utf8))]
+            ) { values in
+                .array(values)
+            }
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .remoteXPCStreamReset(streamIdentifier: 5, errorCode: 8)
+            )
+        }
+    }
+
+    func testUploadRejectsAStreamAcceptedForAnotherTransfer() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(try fileOpenReply(identifier: 9, on: 5))
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await remoteXPC.send(
+                uploading: [.data(Data("0".utf8))]
+            ) { values in
+                .array(values)
+            }
+        }) { error in
+            guard case .protocolViolation? = error as? RorkDeviceError else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+}
+
+/// One HTTP/2 frame the host wrote.
+struct SentHTTP2Frame {
+    let type: UInt8
+    let flags: UInt8
+    let streamIdentifier: UInt32
+    let payload: Data
+}
+
+/// Decodes the frames a RemoteXPC connection wrote, one per send call.
+func sentFrames(_ writes: [Data]) throws -> [SentHTTP2Frame] {
+    try writes.map { write in
+        guard write.count >= 9 else {
+            throw RorkDeviceError.protocolViolation(
+                "Captured write is not an HTTP/2 frame."
+            )
+        }
+        let stream: UInt32 = try write.bigEndianInteger(at: 5)
+        return SentHTTP2Frame(
+            type: write[write.startIndex + 3],
+            flags: write[write.startIndex + 4],
+            streamIdentifier: stream & 0x7fff_ffff,
+            payload: Data(write.dropFirst(9))
+        )
+    }
+}
+
+/// Builds the peer's acceptance of the file transfer on a stream.
+func fileOpenReply(identifier: UInt64, on stream: UInt32) throws -> Data {
+    remoteXPCTestFrame(
+        type: 0x00,
+        streamIdentifier: stream,
+        payload: try RemoteXPCMessageCodec.encode(
+            value: nil,
+            flags: 0x00200001,
+            messageIdentifier: identifier
+        )
+    )
+}
+
+/// Builds a SETTINGS frame announcing an initial stream window.
+private func initialWindowSettings(_ size: UInt32) -> Data {
+    var payload = Data()
+    payload.appendBigEndian(UInt16(0x4))
+    payload.appendBigEndian(size)
+    return remoteXPCTestFrame(type: 0x04, streamIdentifier: 0, payload: payload)
+}
+
+/// Builds a WINDOW_UPDATE frame for a stream.
+private func windowUpdate(_ increment: UInt32, on stream: UInt32) -> Data {
+    var payload = Data()
+    payload.appendBigEndian(increment)
+    return remoteXPCTestFrame(
+        type: 0x08,
+        streamIdentifier: stream,
+        payload: payload
+    )
+}

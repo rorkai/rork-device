@@ -8,6 +8,9 @@ import Foundation
 /// startup exchanges acknowledgements on both streams before either becomes
 /// available to service-specific code.
 ///
+/// Requests that carry file transfers send each payload on an extra
+/// host-initiated stream, honoring the peer's HTTP/2 flow-control windows.
+///
 /// Callers may send from multiple tasks while one task owns the receive path.
 /// A lock protects message and receive state, and an actor serializes complete
 /// HTTP/2 writes. Instances only wrap package-owned connections whose send,
@@ -91,6 +94,21 @@ final class RemoteXPCConnection: @unchecked Sendable {
     /// RemoteXPC wrapper flag used to initialize the reply stream.
     private static let initializeReplyStreamFlag: UInt32 = 0x00400000
 
+    /// RemoteXPC wrapper flag announcing the transfer a new stream carries.
+    private static let fileOpenFlag: UInt32 = 0x00100000
+
+    /// RemoteXPC wrapper flag the peer uses to accept a file transfer.
+    private static let fileOpenReplyFlag: UInt32 = 0x00200000
+
+    /// HTTP/2 flag ending the sender's half of a stream.
+    private static let endStreamFlag: UInt8 = 0x01
+
+    /// HTTP/2 flow-control window that applies until the peer's SETTINGS.
+    private static let defaultWindowSize: Int64 = 65_535
+
+    /// HTTP/2 DATA frame size limit that applies until the peer's SETTINGS.
+    private static let defaultMaximumFrameSize = 16_384
+
     /// Connected byte stream carrying the HTTP/2 session.
     private let connection: DeviceConnection
 
@@ -108,6 +126,12 @@ final class RemoteXPCConnection: @unchecked Sendable {
 
     /// Whether one task currently owns frame reads and stream buffers.
     private var isReceiving = false
+
+    /// Flow-control state for payloads sent on file-transfer streams.
+    private var flowControl = RemoteXPCSendFlowControl(
+        initialWindowSize: defaultWindowSize,
+        maximumFrameSize: defaultMaximumFrameSize
+    )
 
     /// Creates a protocol driver without starting the RemoteXPC handshake.
     private init(connection: DeviceConnection) {
@@ -173,59 +197,248 @@ final class RemoteXPCConnection: @unchecked Sendable {
             if let decoded = try decodeBufferedMessage(on: stream.identifier) {
                 return decoded
             }
+            try await process(receiveFrame())
+        }
+    }
 
-            let frame = try await receiveFrame()
-            switch FrameType(rawValue: frame.type) {
-            case .data:
-                guard frame.streamIdentifier == Stream.control.identifier
-                        || frame.streamIdentifier == Stream.reply.identifier else {
-                    throw RorkDeviceError.protocolViolation(
-                        "RemoteXPC received DATA on unexpected HTTP/2 stream \(frame.streamIdentifier)."
-                    )
+    /// Sends a request whose file transfers carry the supplied payloads.
+    ///
+    /// The request receives the next message identifier and its transfers the
+    /// identifiers after it, the layout CoreDevice uses for cryptexd installs.
+    /// Each payload is announced on its own stream before the request is sent,
+    /// then uploaded once the peer accepts that stream. The method returns
+    /// after every payload has been sent, and the peer's reply arrives on the
+    /// stream its service uses. Waiting for window updates reads frames, so
+    /// the method owns the receive path and must not overlap a `receive`.
+    ///
+    /// - Parameters:
+    ///   - payloads: Payload sources in the order their transfers are listed.
+    ///   - additionalFlags: Wrapper flags added to the request message.
+    ///   - makeRequest: Builds the request from one `.fileTransfer` value per
+    ///     payload, in the same order.
+    /// - Throws: An input error when a payload cannot be read, a stream-reset
+    ///   error when the peer abandons a transfer, or transport errors.
+    func send(
+        uploading payloads: [RemoteXPCUploadPayload],
+        additionalFlags: UInt32 = 0,
+        makeRequest: ([RemoteXPCValue]) throws -> RemoteXPCValue
+    ) async throws {
+        try beginReceiving()
+        defer {
+            endReceiving()
+        }
+
+        let sizes = try payloads.map { try $0.size() }
+        let requestIdentifier = stateLock.withLock {
+            let identifier = nextMessageIdentifier
+            nextMessageIdentifier &+= UInt64(payloads.count) + 1
+            return identifier
+        }
+        let transfers = sizes.enumerated().map { index, size in
+            (
+                identifier: requestIdentifier + UInt64(index) + 1,
+                size: size,
+                stream: stateLock.withLock {
+                    flowControl.openStream()
                 }
-                streamBuffers[frame.streamIdentifier, default: Data()].append(
-                    frame.payload
+            )
+        }
+        let request = try makeRequest(
+            transfers.map {
+                .fileTransfer(identifier: $0.identifier, size: $0.size)
+            }
+        )
+
+        for transfer in transfers {
+            try await sendFrame(
+                type: .headers,
+                flags: Self.endHeadersFlag,
+                streamIdentifier: transfer.stream
+            )
+            try await sendFrame(
+                type: .data,
+                streamIdentifier: transfer.stream,
+                payload: RemoteXPCMessageCodec.encode(
+                    value: nil,
+                    flags: Self.alwaysSetFlag | Self.fileOpenFlag,
+                    messageIdentifier: transfer.identifier
                 )
+            )
+        }
+        try await send(
+            request,
+            flags: Self.alwaysSetFlag | Self.dataFlag | additionalFlags,
+            messageIdentifier: requestIdentifier,
+            on: .control
+        )
 
-            case .settings:
-                if frame.flags & Self.acknowledgementFlag == 0 {
-                    try await sendFrame(
-                        type: .settings,
-                        flags: Self.acknowledgementFlag
-                    )
-                }
+        for (transfer, payload) in zip(transfers, payloads) {
+            try await waitForAcceptance(
+                of: transfer.identifier,
+                on: transfer.stream
+            )
+            try await upload(
+                payload,
+                size: transfer.size,
+                on: transfer.stream
+            )
+        }
+    }
 
-            case .ping:
-                if frame.flags & Self.acknowledgementFlag == 0 {
-                    try await sendFrame(
-                        type: .ping,
-                        flags: Self.acknowledgementFlag,
-                        payload: frame.payload
-                    )
-                }
-
-            case .streamReset:
-                guard frame.payload.count == MemoryLayout<UInt32>.size else {
+    /// Reads frames until the peer accepts the transfer announced on a stream.
+    private func waitForAcceptance(
+        of transferIdentifier: UInt64,
+        on streamIdentifier: UInt32
+    ) async throws {
+        while true {
+            if let message = try decodeBufferedMessage(on: streamIdentifier) {
+                guard message.flags & Self.fileOpenReplyFlag != 0,
+                      message.messageIdentifier == transferIdentifier else {
                     throw RorkDeviceError.protocolViolation(
-                        "RemoteXPC HTTP/2 RST_STREAM payload must contain a 32-bit error code."
+                        "RemoteXPC file transfer \(transferIdentifier) received flags 0x\(String(message.flags, radix: 16)) for message \(message.messageIdentifier) instead of its acceptance."
                     )
                 }
-                let errorCode: UInt32 = try frame.payload.bigEndianInteger(
-                    at: 0
+                return
+            }
+            try stateLock.withLock {
+                try flowControl.requireOpen(streamIdentifier)
+            }
+            try await process(receiveFrame())
+        }
+    }
+
+    /// Sends one payload in DATA frames the peer's windows allow, then ends
+    /// the stream.
+    private func upload(
+        _ payload: RemoteXPCUploadPayload,
+        size: UInt64,
+        on streamIdentifier: UInt32
+    ) async throws {
+        let reader = try payload.openReader()
+        defer {
+            reader.close()
+        }
+        var remaining = size
+        while remaining > 0 {
+            let allowance = try stateLock.withLock {
+                try flowControl.reserve(
+                    upTo: Int(clamping: remaining),
+                    on: streamIdentifier
                 )
+            }
+            guard allowance > 0 else {
+                try await process(receiveFrame())
+                continue
+            }
+            let chunk = try reader.read(upToCount: allowance)
+            guard chunk.count == allowance else {
+                throw RorkDeviceError.invalidInput(
+                    "A RemoteXPC upload ended before its announced \(size) bytes."
+                )
+            }
+            try await sendFrame(
+                type: .data,
+                streamIdentifier: streamIdentifier,
+                payload: chunk,
+                isFlowControlled: false
+            )
+            remaining -= UInt64(allowance)
+        }
+        try await sendFrame(
+            type: .data,
+            flags: Self.endStreamFlag,
+            streamIdentifier: streamIdentifier
+        )
+        stateLock.withLock {
+            flowControl.finish(streamIdentifier)
+        }
+    }
+
+    /// Applies one received frame to stream buffers and connection state.
+    private func process(_ frame: Frame) async throws {
+        switch FrameType(rawValue: frame.type) {
+        case .data:
+            let isFileTransferStream = stateLock.withLock {
+                flowControl.isFileTransferStream(frame.streamIdentifier)
+            }
+            guard frame.streamIdentifier == Stream.control.identifier
+                    || frame.streamIdentifier == Stream.reply.identifier
+                    || isFileTransferStream else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC received DATA on unexpected HTTP/2 stream \(frame.streamIdentifier)."
+                )
+            }
+            streamBuffers[frame.streamIdentifier, default: Data()].append(
+                frame.payload
+            )
+
+        case .settings:
+            if frame.flags & Self.acknowledgementFlag == 0 {
+                try stateLock.withLock {
+                    try flowControl.apply(settings: frame.payload)
+                }
+                try await sendFrame(
+                    type: .settings,
+                    flags: Self.acknowledgementFlag
+                )
+            }
+
+        case .ping:
+            if frame.flags & Self.acknowledgementFlag == 0 {
+                try await sendFrame(
+                    type: .ping,
+                    flags: Self.acknowledgementFlag,
+                    payload: frame.payload
+                )
+            }
+
+        case .streamReset:
+            guard frame.payload.count == MemoryLayout<UInt32>.size else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC HTTP/2 RST_STREAM payload must contain a 32-bit error code."
+                )
+            }
+            let errorCode: UInt32 = try frame.payload.bigEndianInteger(
+                at: 0
+            )
+            // A file-transfer stream belongs to one upload, so its reset is
+            // reported to that upload rather than to unrelated receives.
+            let isFileTransferStream = stateLock.withLock {
+                flowControl.reset(
+                    frame.streamIdentifier,
+                    errorCode: errorCode
+                )
+            }
+            if !isFileTransferStream {
                 throw RorkDeviceError.remoteXPCStreamReset(
                     streamIdentifier: frame.streamIdentifier,
                     errorCode: errorCode
                 )
-
-            case .goAway:
-                throw RorkDeviceError.protocolViolation(
-                    "RemoteXPC closed the HTTP/2 connection."
-                )
-
-            case .headers, .windowUpdate, .none:
-                continue
             }
+
+        case .goAway:
+            throw RorkDeviceError.protocolViolation(
+                "RemoteXPC closed the HTTP/2 connection."
+            )
+
+        case .windowUpdate:
+            guard frame.payload.count == MemoryLayout<UInt32>.size else {
+                throw RorkDeviceError.protocolViolation(
+                    "RemoteXPC HTTP/2 WINDOW_UPDATE payload must contain a 32-bit increment."
+                )
+            }
+            let increment: UInt32 = try frame.payload.bigEndianInteger(
+                at: 0
+            )
+            stateLock.withLock {
+                flowControl.grant(
+                    Int64(increment & 0x7fff_ffff),
+                    on: frame.streamIdentifier
+                )
+            }
+
+        case .headers, .none:
+            break
         }
     }
 
@@ -335,16 +548,26 @@ final class RemoteXPCConnection: @unchecked Sendable {
     }
 
     /// Writes one HTTP/2 frame after validating its 24-bit payload length.
+    ///
+    /// DATA frames count against the peer's connection window. Uploads reserve
+    /// their share before sending and pass `isFlowControlled: false` so it is
+    /// not charged twice.
     private func sendFrame(
         type: FrameType,
         flags: UInt8 = 0,
         streamIdentifier: UInt32 = 0,
-        payload: Data = Data()
+        payload: Data = Data(),
+        isFlowControlled: Bool = true
     ) async throws {
         guard payload.count <= 0x00ff_ffff else {
             throw RorkDeviceError.invalidInput(
                 "HTTP/2 frame payload exceeds 16,777,215 bytes."
             )
+        }
+        if type == .data, isFlowControlled {
+            stateLock.withLock {
+                flowControl.charge(payload.count)
+            }
         }
 
         var frame = Data([
