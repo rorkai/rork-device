@@ -49,7 +49,82 @@ struct PersonalizedDeveloperDiskImagePayload {
     let buildIdentity: DeveloperDiskImageBuildIdentity
 }
 
+/// Hardware values cryptexd reports for Cryptex1 personalization.
+///
+/// cryptexd names them after Image4 chip properties, so `img4_chip_fchp` is
+/// the Cryptex1 chip identifier and `img4_chip_chip` the application
+/// processor's.
+struct CryptexPersonalizationIdentifiers: Equatable {
+    /// Application processor chip identifier, part of `Cryptex1,UDID`.
+    let chipID: UInt64
+
+    /// Device ECID, part of `Cryptex1,UDID`.
+    let ecid: UInt64
+
+    /// Cryptex1 chip identifier matched against `Cryptex1,ChipID`.
+    let cryptexChipID: UInt64
+
+    /// Cryptex1 type matched against `Cryptex1,Type`.
+    let cryptexType: UInt64
+
+    /// Product class matched against `Cryptex1,ProductClass`.
+    let productClass: UInt64
+
+    /// Whether the device runs in production mode.
+    let isProductionMode: Bool
+
+    /// Whether the device enforces secure boot.
+    let isSecureMode: Bool
+
+    /// The 16-byte `Cryptex1,UDID`: four zero bytes, then the big-endian chip
+    /// identifier and ECID.
+    var cryptexUDID: Data {
+        var udid = Data(repeating: 0, count: 4)
+        udid.appendBigEndian(UInt32(truncatingIfNeeded: chipID))
+        udid.appendBigEndian(ecid)
+        return udid
+    }
+}
+
+/// Files and manifest values of the Cryptex1 Developer Disk Image identity.
+struct CryptexDeveloperDiskImagePayload {
+    /// Disk image installed as the cryptex.
+    let imageURL: URL
+
+    /// Root hash of the image's sealed volume.
+    let volumeHashURL: URL
+
+    /// `cryptex_info` property list naming the cryptex and its version.
+    let infoURL: URL
+
+    /// Trust cache for the image's executables.
+    let trustCacheURL: URL
+
+    /// Validated SHA-384 digests of the entries Apple personalizes, keyed by
+    /// their manifest names.
+    let personalizedDigests: [String: Data]
+
+    /// `Cryptex1,NonceDomain`, which selects the device nonce to sign.
+    let nonceDomain: UInt64
+
+    /// `Cryptex1,SubType` of the identity.
+    let subType: UInt64
+
+    /// `Cryptex1,UseProductClass` of the identity.
+    let usesProductClass: Bool
+
+    /// `Cryptex1,Version` of the identity.
+    let version: String
+
+    /// `Cryptex1,PreauthorizationVersion` of the identity.
+    let preauthorizationVersion: String
+}
+
 /// Parsed iOS 17+ personalized Developer Disk Image Restore directory.
+///
+/// The manifest lists one personalized identity per supported board, plus a
+/// Cryptex1 identity that iOS installs through cryptexd. Devices newer than
+/// the image's board list can only use the Cryptex1 identity.
 struct PersonalizedDeveloperDiskImage {
     /// Root containing the build manifest and all referenced files.
     private let restoreDirectory: URL
@@ -85,6 +160,18 @@ struct PersonalizedDeveloperDiskImage {
         self.buildIdentities = buildIdentities
     }
 
+    /// Whether the manifest has a personalized identity for the hardware.
+    func hasPersonalizedIdentity(
+        matching identifiers: PersonalizationIdentifiers
+    ) -> Bool {
+        personalizedIdentity(matching: identifiers) != nil
+    }
+
+    /// Whether the manifest has a Cryptex1 identity for any hardware.
+    var hasCryptexIdentity: Bool {
+        buildIdentities.contains { $0["Cryptex1,ChipID"] != nil }
+    }
+
     /// Selects and authenticates the files for the connected hardware.
     ///
     /// - Throws: An input error when no build identity matches, a manifest
@@ -92,12 +179,7 @@ struct PersonalizedDeveloperDiskImage {
     func payload(
         matching identifiers: PersonalizationIdentifiers
     ) throws -> PersonalizedDeveloperDiskImagePayload {
-        guard let values = buildIdentities.first(where: {
-            propertyListUInt64($0["ApBoardID"]) == identifiers.boardID
-                && propertyListUInt64($0["ApChipID"]) == identifiers.chipID
-                && propertyListUInt64($0["ApSecurityDomain"])
-                    == identifiers.securityDomain
-        }),
+        guard let values = personalizedIdentity(matching: identifiers),
             let manifest = values["Manifest"] as? [String: Any]
         else {
             throw RorkDeviceError.invalidInput(
@@ -144,6 +226,106 @@ struct PersonalizedDeveloperDiskImage {
                 manifestEntries: manifest
             )
         )
+    }
+
+    /// Selects and authenticates the Cryptex1 files for the connected hardware.
+    ///
+    /// An identity matches when its chip identifier and type equal the
+    /// device's, and its product class too when it sets
+    /// `Cryptex1,UseProductClass`.
+    ///
+    /// - Throws: An input error when no Cryptex1 identity matches, a manifest
+    ///   entry or property is missing, a path escapes `Restore`, or a digest
+    ///   differs.
+    func cryptexPayload(
+        matching identifiers: CryptexPersonalizationIdentifiers
+    ) throws -> CryptexDeveloperDiskImagePayload {
+        guard let values = buildIdentities.first(where: { values in
+            guard propertyListUInt64(values["Cryptex1,ChipID"])
+                    == identifiers.cryptexChipID,
+                propertyListUInt64(values["Cryptex1,Type"])
+                    == identifiers.cryptexType
+            else {
+                return false
+            }
+            return values["Cryptex1,UseProductClass"] as? Bool != true
+                || propertyListUInt64(values["Cryptex1,ProductClass"])
+                    == identifiers.productClass
+        }),
+            let manifest = values["Manifest"] as? [String: Any]
+        else {
+            throw RorkDeviceError.invalidInput(
+                "The Developer Disk Image has no Cryptex1 identity for chip \(hexadecimal(identifiers.cryptexChipID)), type \(identifiers.cryptexType), product class \(hexadecimal(identifiers.productClass))."
+            )
+        }
+        guard let nonceDomain = propertyListUInt64(
+            values["Cryptex1,NonceDomain"]
+        ),
+            let subType = propertyListUInt64(values["Cryptex1,SubType"]),
+            let version = values["Cryptex1,Version"] as? String,
+            let preauthorizationVersion = values[
+                "Cryptex1,PreauthorizationVersion"
+            ] as? String
+        else {
+            throw RorkDeviceError.invalidInput(
+                "Developer Disk Image Cryptex1 identity is missing its nonce domain, subtype, or version."
+            )
+        }
+
+        var personalizedDigests: [String: Data] = [:]
+        func validatedFile(_ key: String) throws -> URL {
+            guard let entry = manifest[key] as? [String: Any] else {
+                throw RorkDeviceError.invalidInput(
+                    "Developer Disk Image Cryptex1 identity is missing \(key)."
+                )
+            }
+            let url = try fileURL(for: entry)
+            let digest = try validatedDigest(
+                for: url,
+                manifestEntry: entry,
+                description: "Developer Disk Image \(key)"
+            )
+            if (entry["Info"] as? [String: Any])?["Personalize"] as? Bool
+                == true
+            {
+                personalizedDigests[key] = digest
+            }
+            return url
+        }
+        let imageURL = try validatedFile("Cryptex1,GenericDmg")
+        let volumeHashURL = try validatedFile("Cryptex1,GenericVolume")
+        let infoURL = try validatedFile("Cryptex1,CryptexInfoPlist")
+        let trustCacheURL = try validatedFile("Cryptex1,GenericTrustCache")
+        guard !personalizedDigests.isEmpty else {
+            throw RorkDeviceError.invalidInput(
+                "Developer Disk Image Cryptex1 identity has no entries to personalize."
+            )
+        }
+        return CryptexDeveloperDiskImagePayload(
+            imageURL: imageURL,
+            volumeHashURL: volumeHashURL,
+            infoURL: infoURL,
+            trustCacheURL: trustCacheURL,
+            personalizedDigests: personalizedDigests,
+            nonceDomain: nonceDomain,
+            subType: subType,
+            usesProductClass: values["Cryptex1,UseProductClass"] as? Bool
+                ?? false,
+            version: version,
+            preauthorizationVersion: preauthorizationVersion
+        )
+    }
+
+    /// Returns the personalized identity for the hardware, if listed.
+    private func personalizedIdentity(
+        matching identifiers: PersonalizationIdentifiers
+    ) -> [String: Any]? {
+        buildIdentities.first {
+            propertyListUInt64($0["ApBoardID"]) == identifiers.boardID
+                && propertyListUInt64($0["ApChipID"]) == identifiers.chipID
+                && propertyListUInt64($0["ApSecurityDomain"])
+                    == identifiers.securityDomain
+        }
     }
 
     /// Resolves one manifest path without allowing traversal or symlink escape.

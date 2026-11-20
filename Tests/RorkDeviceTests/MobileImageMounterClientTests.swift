@@ -8,7 +8,8 @@ final class MobileImageMounterClientTests: XCTestCase {
         let fixture = try makeImageFixture(
             boardID: "0x0C",
             chipID: "0x8150",
-            securityDomain: "0x01"
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
         )
         defer { fixture.remove() }
         let ticket = Data([0xAA, 0xBB])
@@ -37,7 +38,11 @@ final class MobileImageMounterClientTests: XCTestCase {
             openConnection: {
                 try await connections.open()
             },
-            ticketRequester: requester
+            ticketRequester: requester,
+            mountCryptex: { _ in
+                XCTFail("A device with a personalized identity used the cryptex.")
+                return .alreadyMounted
+            }
         )
 
         let result = try await mounter.mount(
@@ -134,6 +139,106 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertEqual(result, .alreadyMounted)
         XCTAssertEqual(connection.sent.count, 2)
         XCTAssertEqual(requester.requestCount, 0)
+    }
+
+    func testMountInstallsTheCryptexForADeviceTheManifestDoesNotList()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01",
+            includesCryptexIdentity: true
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(),
+                iPhone19PersonalizationIdentifiersResponse(),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let requester = RecordingDeveloperDiskImageTicketRequester(
+            ticket: Data([0x02])
+        )
+        var cryptexMountCount = 0
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: requester,
+            mountCryptex: { _ in
+                cryptexMountCount += 1
+                return .mounted(ticketSource: .appleTSS)
+            }
+        )
+
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .mounted(ticketSource: .appleTSS))
+        XCTAssertEqual(cryptexMountCount, 1)
+        XCTAssertEqual(requester.requestCount, 0)
+        XCTAssertEqual(connection.sent.count, 3)
+        XCTAssertTrue(connection.isClosed)
+    }
+
+    func testMountRejectsAnUnlistedDeviceWhenTheImageHasNoCryptexIdentity()
+        async throws
+    {
+        let fixture = try makeImageFixture(
+            boardID: "0x0C",
+            chipID: "0x8150",
+            securityDomain: "0x01"
+        )
+        defer { fixture.remove() }
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "ImagePresent": false,
+                    "Status": "Complete",
+                ],
+                copyDevicesResponse(),
+                iPhone19PersonalizationIdentifiersResponse(),
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([connection])
+        let mounter = PersonalizedDeveloperDiskImageMounter(
+            openConnection: {
+                try await connections.open()
+            },
+            ticketRequester: RecordingDeveloperDiskImageTicketRequester(
+                ticket: Data([0x02])
+            ),
+            mountCryptex: { _ in
+                XCTFail("An image without a Cryptex1 identity used the cryptex path.")
+                return .alreadyMounted
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync({
+            try await mounter.mount(
+                PersonalizedDeveloperDiskImage(
+                    contentsOf: fixture.restoreDirectory
+                ),
+                ecid: 123
+            )
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .invalidInput(
+                    "The Developer Disk Image does not support board 0xA, chip 0x8160, security domain 1."
+                )
+            )
+        }
     }
 
     func testMountReopensServiceAfterMissingManifestAndRequestsTicket()
@@ -546,6 +651,18 @@ private func copyDevicesResponse(
     [
         "EntryList": mountPaths.map { ["MountPath": $0] },
         "Status": "Complete",
+    ]
+}
+
+/// Identifiers an iPhone19,2 reported on 2026-11-20, absent from Xcode 27's
+/// personalized identities.
+private func iPhone19PersonalizationIdentifiersResponse() -> [String: Any] {
+    [
+        "PersonalizationIdentifiers": [
+            "BoardId": 10,
+            "ChipID": 0x8160,
+            "SecurityDomain": 1,
+        ],
     ]
 }
 

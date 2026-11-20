@@ -45,6 +45,16 @@ protocol DeveloperDiskImageTicketRequesting: Sendable {
     ) async throws -> Data
 }
 
+/// Ticket boundary used by the Cryptex Developer Disk Image workflow.
+protocol CryptexTicketRequesting: Sendable {
+    /// Requests the `Cryptex1,Ticket` for one device, nonce, and image.
+    func cryptexTicket(
+        for payload: CryptexDeveloperDiskImagePayload,
+        identifiers: CryptexPersonalizationIdentifiers,
+        nonce: Data
+    ) async throws -> Data
+}
+
 /// URLSession transport that retains the platform's default certificate checks.
 #if canImport(FoundationNetworking) || canImport(Darwin)
 private struct URLSessionTSSHTTPTransport: TSSHTTPTransport {
@@ -157,17 +167,72 @@ struct AppleTSSRequest {
     }
 }
 
+/// Builds the property list Apple TSS signs into a `Cryptex1,Ticket`.
+///
+/// The request follows what CryptexKitHost sends, as go-ios reproduced it in
+/// `ios/imagemounter/cryptex.go` (2026-11-20). Unlike an `ApImg4Ticket`
+/// request it identifies the device by `Cryptex1,UDID` and carries no
+/// `ApECID`, `ApChipID`, or `ApBoardID`, and each entry holds only a digest.
+struct CryptexTSSRequest {
+    /// Request body ready for XML property-list serialization.
+    let propertyList: [String: Any]
+
+    /// Builds a `Cryptex1,Ticket` request for one device and image.
+    ///
+    /// - Parameters:
+    ///   - payload: Matching Cryptex1 identity and its validated digests.
+    ///   - identifiers: Hardware values reported by cryptexd.
+    ///   - nonce: Fresh nonce cryptexd reported for the identity's domain.
+    ///   - requestIdentifier: Unique request identifier sent to Apple.
+    init(
+        payload: CryptexDeveloperDiskImagePayload,
+        identifiers: CryptexPersonalizationIdentifiers,
+        nonce: Data,
+        requestIdentifier: UUID = UUID()
+    ) {
+        var propertyList: [String: Any] = [
+            "@Cryptex1,Ticket": true,
+            "@HostPlatformInfo": "mac",
+            "@VersionInfo": "libauthinstall-1104.0.9",
+            "@UUID": requestIdentifier.uuidString.uppercased(),
+            "ApSecurityMode": identifiers.isSecureMode,
+            "Cryptex1,ChipID": identifiers.cryptexChipID,
+            "Cryptex1,Nonce": nonce,
+            "Cryptex1,NonceDomain": payload.nonceDomain,
+            "Cryptex1,PreauthorizationVersion":
+                payload.preauthorizationVersion,
+            "Cryptex1,ProductClass": identifiers.productClass,
+            "Cryptex1,ProductionMode": identifiers.isProductionMode,
+            "Cryptex1,SubType": payload.subType,
+            "Cryptex1,Type": identifiers.cryptexType,
+            "Cryptex1,UDID": identifiers.cryptexUDID,
+            // go-ios found that Apple omits the ticket's `uniq` tag without
+            // this key (2026-11-20, ios/imagemounter/cryptex.go).
+            "Cryptex1,UniqueTagList": Data(),
+            "Cryptex1,UseProductClass": payload.usesProductClass,
+            "Cryptex1,Version": payload.version,
+        ]
+        for (key, digest) in payload.personalizedDigests {
+            propertyList[key] = ["Digest": digest]
+        }
+        self.propertyList = propertyList
+    }
+}
+
 /// Parsed response from Apple's key-value-prefixed TSS protocol.
 struct AppleTSSResponse {
-    /// IMG4 ticket returned by Apple.
+    /// Ticket returned by Apple under the requested key.
     let ticket: Data
 
     /// Parses and validates a bounded Apple TSS response.
     ///
-    /// - Parameter data: Raw HTTP response body.
+    /// - Parameters:
+    ///   - data: Raw HTTP response body.
+    ///   - ticketKey: Response key holding the ticket, `ApImg4Ticket` for
+    ///     personalized images and `Cryptex1,Ticket` for cryptexes.
     /// - Throws: A protocol violation when the response is malformed, rejected,
-    ///   oversized, or missing `ApImg4Ticket`.
-    init(data: Data) throws {
+    ///   oversized, or missing the ticket.
+    init(data: Data, ticketKey: String = "ApImg4Ticket") throws {
         guard data.count <= 16 * 1024 * 1024 else {
             throw RorkDeviceError.protocolViolation(
                 "Apple TSS response exceeded the 16 MiB limit."
@@ -222,11 +287,11 @@ struct AppleTSSResponse {
             }
         }
         guard let propertyList = decoded as? [String: Any],
-            let ticket = propertyList["ApImg4Ticket"] as? Data,
+            let ticket = propertyList[ticketKey] as? Data,
             !ticket.isEmpty
         else {
             throw RorkDeviceError.protocolViolation(
-                "Apple TSS response did not contain ApImg4Ticket."
+                "Apple TSS response did not contain \(ticketKey)."
             )
         }
         self.ticket = ticket
@@ -234,7 +299,9 @@ struct AppleTSSResponse {
 }
 
 /// Requests personalized Developer Disk Image tickets from Apple.
-struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
+struct AppleTSSClient: DeveloperDiskImageTicketRequesting,
+    CryptexTicketRequesting
+{
     /// Apple's production signing endpoint.
     private static let endpoint = URL(
         string: "https://gs.apple.com/TSS/controller?action=2"
@@ -268,12 +335,42 @@ struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
         nonce: Data,
         ecid: UInt64
     ) async throws -> Data {
-        let propertyList = try AppleTSSRequest(
-            buildIdentity: buildIdentity,
-            identifiers: identifiers,
-            nonce: nonce,
-            ecid: ecid
-        ).propertyList
+        try await signedTicket(
+            for: AppleTSSRequest(
+                buildIdentity: buildIdentity,
+                identifiers: identifiers,
+                nonce: nonce,
+                ecid: ecid
+            ).propertyList,
+            ticketKey: "ApImg4Ticket"
+        )
+    }
+
+    /// Requests a `Cryptex1,Ticket` for the Cryptex Developer Disk Image.
+    ///
+    /// - Returns: Nonempty ticket bytes accepted by cryptexd as the `im4m`.
+    /// - Throws: A protocol error when Apple rejects or malforms the response,
+    ///   or a transport error when Apple TSS cannot be reached successfully.
+    func cryptexTicket(
+        for payload: CryptexDeveloperDiskImagePayload,
+        identifiers: CryptexPersonalizationIdentifiers,
+        nonce: Data
+    ) async throws -> Data {
+        try await signedTicket(
+            for: CryptexTSSRequest(
+                payload: payload,
+                identifiers: identifiers,
+                nonce: nonce
+            ).propertyList,
+            ticketKey: "Cryptex1,Ticket"
+        )
+    }
+
+    /// Posts one signing request and extracts the ticket under `ticketKey`.
+    private func signedTicket(
+        for propertyList: [String: Any],
+        ticketKey: String
+    ) async throws -> Data {
         let body = try PropertyListCodec.encode(propertyList)
         let request = TSSHTTPRequest(
             url: Self.endpoint,
@@ -301,7 +398,10 @@ struct AppleTSSClient: DeveloperDiskImageTicketRequesting {
                 "Apple TSS returned HTTP status \(response.statusCode)."
             )
         }
-        return try AppleTSSResponse(data: response.body).ticket
+        return try AppleTSSResponse(
+            data: response.body,
+            ticketKey: ticketKey
+        ).ticket
     }
 }
 

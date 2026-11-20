@@ -259,6 +259,12 @@ public final class DeviceSession: @unchecked Sendable {
     /// identity, reuses a device-side personalization manifest when possible,
     /// and otherwise requests a fresh ticket from Apple TSS.
     ///
+    /// A device the manifest lists no personalized identity for, such as a
+    /// model newer than the image, gets the image's Cryptex1 identity
+    /// instead. The session installs it through cryptexd over a CoreDevice
+    /// tunnel it opens for the operation and closes afterwards, with a ticket
+    /// from Apple TSS.
+    ///
     /// Call this through a Lockdown-backed session before opening a CoreDevice
     /// tunnel. If `requiresTunnelRestart` is `true`, any existing tunnel must
     /// be recreated so Remote Service Discovery advertises the mounted image's
@@ -389,15 +395,90 @@ public final class DeviceSession: @unchecked Sendable {
         _ image: PersonalizedDeveloperDiskImage,
         ecid: UInt64
     ) async throws -> DeveloperDiskImageMountResult {
+        #if canImport(RorkDeviceLwIP)
+        let mountCryptex = mountCryptexDeveloperDiskImage
+        #else
+        let mountCryptex:
+            ((PersonalizedDeveloperDiskImage) async throws
+                -> DeveloperDiskImageMountResult)? = nil
+        #endif
         return try await PersonalizedDeveloperDiskImageMounter(
             openConnection: {
                 try await self.startService(
                     named: Self.personalizedDeveloperDiskImageServiceName
                 )
             },
-            ticketRequester: AppleTSSClient()
+            ticketRequester: AppleTSSClient(),
+            mountCryptex: mountCryptex
         ).mount(image, ecid: ecid)
     }
+
+    #if canImport(RorkDeviceLwIP)
+    /// Installs the image's Cryptex1 identity through cryptexd.
+    ///
+    /// cryptexd is advertised only by Remote Service Discovery, so the
+    /// install runs on a CoreDevice tunnel opened from this Lockdown session.
+    private func mountCryptexDeveloperDiskImage(
+        _ image: PersonalizedDeveloperDiskImage
+    ) async throws -> DeveloperDiskImageMountResult {
+        try await withRemoteServiceDiscovery { remoteServices in
+            try await CryptexDeveloperDiskImageMounter(
+                openConnection: {
+                    try await remoteServices.backend.startRemoteService(
+                        named: CryptexDeveloperDiskImageMounter.serviceName
+                    )
+                },
+                ticketRequester: AppleTSSClient()
+            ).mount(image)
+        }
+    }
+
+    /// Runs an operation against Remote Service Discovery on a CoreDevice
+    /// tunnel that lives only for the operation.
+    ///
+    /// The device serves this tunnel alongside any other it keeps open, and
+    /// closing it leaves the others working, as two CoreDeviceProxy tunnels
+    /// on an iPhone19,2 with iOS 27.2.1 showed (2026-11-20).
+    private func withRemoteServiceDiscovery<Result>(
+        _ operation: (DeviceSession) async throws -> Result
+    ) async throws -> Result {
+        let tunnel = try await openCoreDeviceTunnel()
+        let network: CoreDeviceUserspaceNetwork
+        do {
+            network = try CoreDeviceUserspaceNetwork(tunnel: tunnel)
+        } catch {
+            tunnel.close()
+            throw error
+        }
+        defer {
+            network.close()
+        }
+        let discoveryPort = network.configuration.serviceDiscoveryPort
+        let discovery: RemoteServiceDiscoverySession
+        do {
+            discovery = try await RemoteServiceDiscoverySession.open(
+                over: network.connect(to: discoveryPort)
+            )
+        } catch {
+            throw RorkDeviceError.transportStep(
+                context: "Failed to open Remote Service Discovery on the Developer Disk Image tunnel",
+                underlying: RorkDeviceFailure(error)
+            )
+        }
+        let remoteServices = DeviceSession(
+            backend: RemoteServiceSessionBackend(
+                transport: network,
+                directory: discovery.directory,
+                label: "rorkdevice-image",
+                retaining: discovery
+            )
+        )
+        defer {
+            remoteServices.close()
+        }
+        return try await operation(remoteServices)
+    }
+    #endif
 
     /// Opens a modeled device service on the active session route.
     ///

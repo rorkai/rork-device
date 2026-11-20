@@ -176,6 +176,89 @@ final class AppleTSSClientTests: XCTestCase {
         XCTAssertFalse(request.body.isEmpty)
     }
 
+    func testCryptexRequestIdentifiesTheDeviceByItsCryptexUDID() throws {
+        let nonce = Data(repeating: 0xE5, count: 48)
+        let payload = CryptexDeveloperDiskImagePayload(
+            imageURL: URL(fileURLWithPath: "/cryptex.dmg"),
+            volumeHashURL: URL(fileURLWithPath: "/cryptex.dmg.root_hash"),
+            infoURL: URL(fileURLWithPath: "/cryptex.dmg.cryptex_info"),
+            trustCacheURL: URL(fileURLWithPath: "/cryptex.dmg.trustcache"),
+            personalizedDigests: [
+                "Cryptex1,GenericVolume": Data(repeating: 0x11, count: 48),
+            ],
+            nonceDomain: 4,
+            subType: 2,
+            usesProductClass: true,
+            version: "39.999.999.0.0,0",
+            preauthorizationVersion: "39.999.999.0.0,0"
+        )
+        // go-ios checked this UDID against the ticket Apple issued for an
+        // iPhone with chip 0x8140 (2026-11-20, ios/imagemounter/cryptex_test.go).
+        let identifiers = CryptexPersonalizationIdentifiers(
+            chipID: 0x8140,
+            ecid: 7_388_792_203_870_236,
+            cryptexChipID: 0xFF10,
+            cryptexType: 3,
+            productClass: 0xF2,
+            isProductionMode: true,
+            isSecureMode: true
+        )
+
+        let request = CryptexTSSRequest(
+            payload: payload,
+            identifiers: identifiers,
+            nonce: nonce
+        ).propertyList
+
+        XCTAssertEqual(
+            request["Cryptex1,UDID"] as? Data,
+            Data(hexFixture: "0000000000008140001a40113ea1801c")
+        )
+        XCTAssertEqual(request["@Cryptex1,Ticket"] as? Bool, true)
+        XCTAssertEqual(request["Cryptex1,Nonce"] as? Data, nonce)
+        XCTAssertEqual(request["Cryptex1,NonceDomain"] as? UInt64, 4)
+        XCTAssertEqual(request["Cryptex1,ChipID"] as? UInt64, 0xFF10)
+        XCTAssertEqual(request["Cryptex1,ProductClass"] as? UInt64, 0xF2)
+        XCTAssertEqual(request["Cryptex1,Type"] as? UInt64, 3)
+        XCTAssertEqual(request["Cryptex1,SubType"] as? UInt64, 2)
+        XCTAssertEqual(request["Cryptex1,UseProductClass"] as? Bool, true)
+        XCTAssertEqual(request["Cryptex1,ProductionMode"] as? Bool, true)
+        XCTAssertEqual(request["ApSecurityMode"] as? Bool, true)
+        XCTAssertEqual(request["Cryptex1,UniqueTagList"] as? Data, Data())
+        XCTAssertEqual(
+            (request["Cryptex1,GenericVolume"] as? [String: Any])?["Digest"]
+                as? Data,
+            Data(repeating: 0x11, count: 48)
+        )
+        for key in [
+            "@ApImg4Ticket", "ApECID", "ApChipID", "ApBoardID",
+            "ApNonce", "SepNonce", "Cryptex1,GenericDmg",
+        ] {
+            XCTAssertNil(request[key], key)
+        }
+        XCTAssertNoThrow(try PropertyListCodec.encode(request))
+    }
+
+    func testCryptexTicketIsReadFromItsOwnResponseKey() throws {
+        let ticket = Data([0x30, 0x82])
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: ["Cryptex1,Ticket": ticket],
+            format: .xml,
+            options: 0
+        )
+        var response = Data("STATUS=0&MESSAGE=SUCCESS&REQUEST_STRING=".utf8)
+        response.append(plist)
+
+        XCTAssertEqual(
+            try AppleTSSResponse(
+                data: response,
+                ticketKey: "Cryptex1,Ticket"
+            ).ticket,
+            ticket
+        )
+        XCTAssertThrowsError(try AppleTSSResponse(data: response))
+    }
+
     func testClientRejectsNonSuccessfulHTTPStatus() async throws {
         let transport = RecordingTSSHTTPTransport(
             response: TSSHTTPResponse(
@@ -233,5 +316,19 @@ private final class RecordingTSSHTTPTransport:
     ) async throws -> TSSHTTPResponse {
         self.request = request
         return response
+    }
+}
+
+extension Data {
+    /// Decodes an even-length hexadecimal fixture string.
+    init(hexFixture hexadecimal: String) {
+        var bytes: [UInt8] = []
+        var index = hexadecimal.startIndex
+        while index < hexadecimal.endIndex {
+            let next = hexadecimal.index(index, offsetBy: 2)
+            bytes.append(UInt8(hexadecimal[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        self.init(bytes)
     }
 }

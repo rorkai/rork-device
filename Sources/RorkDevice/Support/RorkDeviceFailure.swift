@@ -109,6 +109,10 @@ public struct RorkDeviceFailure: Equatable, Sendable, Codable {
         /// Heartbeat returned malformed data or reported device sleep.
         case heartbeat = "heartbeat"
 
+        /// cryptexd refused a routine, such as installing the Developer Disk
+        /// Image cryptex.
+        case cryptexd = "cryptexd"
+
         /// InstallationProxy reported an operation error not classified more
         /// specifically.
         case installationFailed = "installation-failed"
@@ -344,6 +348,8 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             return .afc
         case .heartbeat:
             return .heartbeat
+        case .cryptexd:
+            return .cryptexd
         case let .installationProxy(error):
             return error.failureCode
         case .misagentStatus:
@@ -382,7 +388,7 @@ extension RorkDeviceError: RorkDeviceFailureConvertible {
             .connectionClosed, .localConnectionClosed, .connectionReset, .timedOut,
             .tunnelUnavailable, .transport, .protocolViolation, .lockdown,
             .secureSessionUnsupported, .secureSession,
-            .remotePairingApprovalIncomplete, .heartbeat:
+            .remotePairingApprovalIncomplete, .heartbeat, .cryptexd:
             return nil
         }
     }

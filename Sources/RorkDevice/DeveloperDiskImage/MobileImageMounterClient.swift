@@ -362,19 +362,32 @@ struct PersonalizedDeveloperDiskImageMounter {
     /// Requests an Apple ticket when the device has no reusable manifest.
     private let ticketRequester: any DeveloperDiskImageTicketRequesting
 
+    /// Installs the image's Cryptex1 identity, used when the manifest lists
+    /// no personalized identity for the device.
+    private let mountCryptex:
+        ((PersonalizedDeveloperDiskImage) async throws
+            -> DeveloperDiskImageMountResult)?
+
     /// Creates a mounter with replaceable connection and ticket boundaries.
     init(
         openConnection: @escaping () async throws -> DeviceConnection,
-        ticketRequester: any DeveloperDiskImageTicketRequesting
+        ticketRequester: any DeveloperDiskImageTicketRequesting,
+        mountCryptex: (
+            (PersonalizedDeveloperDiskImage) async throws
+                -> DeveloperDiskImageMountResult
+        )? = nil
     ) {
         self.openConnection = openConnection
         self.ticketRequester = ticketRequester
+        self.mountCryptex = mountCryptex
     }
 
     /// Reuses a cached ticket when possible, otherwise requests one from TSS.
     ///
     /// A manifest cache miss closes the initial service, so the nonce and
-    /// upload sequence must continue on a freshly opened connection.
+    /// upload sequence must continue on a freshly opened connection. A device
+    /// the manifest lists no personalized identity for gets the Cryptex1
+    /// identity instead, when the manifest has one.
     func mount(
         _ image: PersonalizedDeveloperDiskImage,
         ecid: UInt64
@@ -393,6 +406,14 @@ struct PersonalizedDeveloperDiskImageMounter {
         }
 
         let identifiers = try await client.personalizationIdentifiers()
+        if !image.hasPersonalizedIdentity(matching: identifiers),
+            image.hasCryptexIdentity,
+            let mountCryptex
+        {
+            connection?.close()
+            connection = nil
+            return try await mountCryptex(image)
+        }
         let payload = try image.payload(matching: identifiers)
         let ticket: Data
         let ticketSource: DeveloperDiskImageMountResult.TicketSource

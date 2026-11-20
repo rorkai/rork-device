@@ -104,6 +104,9 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
     /// Heartbeat returned malformed data or reported device sleep.
     case heartbeat(String)
 
+    /// cryptexd refused a routine, such as installing a cryptex.
+    case cryptexd(String)
+
     /// InstallationProxy returned an operation error.
     case installationProxy(InstallationError)
 
@@ -158,6 +161,8 @@ public enum RorkDeviceError: Error, Equatable, CustomStringConvertible, Localize
             return "AFC returned status \(status)."
         case let .heartbeat(message):
             return "Heartbeat error: \(message)"
+        case let .cryptexd(message):
+            return "cryptexd error: \(message)"
         case let .installationProxy(error):
             return "InstallationProxy \(error)"
         case let .misagentStatus(status):
