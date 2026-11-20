@@ -8,6 +8,24 @@ import Foundation
 /// reason.
 private struct PersonalizationManifestUnavailable: Error {}
 
+/// One disk image `CopyDevices` reports mounted.
+struct MountedDiskImage: Equatable {
+    /// Device path of the file backing the mount, when reported.
+    let backingImagePath: String?
+
+    /// Whether cryptexd installed the image as the Developer Disk Image
+    /// cryptex.
+    ///
+    /// Xcode's install on an iPhone19,2 with iOS 27.2.1 was backed by
+    /// `/private/var/db/com.apple.security.cryptexd/codex.system/cryptex/com.apple.MobileAsset.DDI/gdmg`
+    /// (2026-11-20).
+    var isDeveloperDiskImageCryptex: Bool {
+        backingImagePath?.contains(
+            "/codex.system/cryptex/com.apple.MobileAsset.DDI/"
+        ) == true
+    }
+}
+
 /// Protocol client for iOS 17+ personalized image-mounter commands.
 private struct MobileImageMounterClient {
     /// Image type Apple uses for personalized developer services.
@@ -36,11 +54,11 @@ private struct MobileImageMounterClient {
         if try await lookUpPersonalizedImages().isPresent {
             return true
         }
-        return try await mountedPaths().contains(Self.personalizedMountPath)
+        return try await mountedDeveloperImage() != nil
     }
 
-    /// Returns the mount paths of the disk images the device has mounted.
-    private func mountedPaths() async throws -> [String] {
+    /// Returns the disk image mounted at the Developer Disk Image mount path.
+    func mountedDeveloperImage() async throws -> MountedDiskImage? {
         try await send(["Command": "CopyDevices"])
         let response = try await receive(command: "CopyDevices")
         guard let entries = response["EntryList"] as? [[String: Any]] else {
@@ -48,7 +66,10 @@ private struct MobileImageMounterClient {
                 "CopyDevices response did not contain EntryList."
             )
         }
-        return entries.compactMap { $0["MountPath"] as? String }
+        return entries.lazy
+            .filter { $0["MountPath"] as? String == Self.personalizedMountPath }
+            .map { MountedDiskImage(backingImagePath: $0["BackingImage"] as? String) }
+            .first
     }
 
     /// Reads the hardware values needed to select a matching build identity.
@@ -466,18 +487,54 @@ struct PersonalizedDeveloperDiskImageMounter {
     }
 }
 
-/// Unmounts the personalized Developer Disk Image over one mounter connection.
+/// Unmounts the Developer Disk Image the way it was mounted.
+///
+/// An image mounted through `mobile_image_mounter` is unmounted there. A
+/// Developer Disk Image cryptex is uninstalled through cryptexd instead,
+/// because `UnmountImage` would leave the cryptex installed and a later
+/// install over it fails with EEXIST, as pymobiledevice3 observed on an
+/// iPhone19,4 with iOS 27.2.1 (2026-11-20, services/cryptexd.py).
 struct PersonalizedDeveloperDiskImageUnmounter {
     /// Opens a fresh image-mounter service connection.
     private let openConnection: () async throws -> DeviceConnection
 
-    /// Creates an unmounter with a replaceable connection boundary.
-    init(openConnection: @escaping () async throws -> DeviceConnection) {
+    /// Uninstalls the Developer Disk Image cryptex and reports whether one
+    /// was installed, or `nil` when cryptexd is unreachable on this platform.
+    private let uninstallCryptex: (() async throws -> Bool)?
+
+    /// Creates an unmounter with replaceable connection and cryptex
+    /// boundaries.
+    init(
+        openConnection: @escaping () async throws -> DeviceConnection,
+        uninstallCryptex: (() async throws -> Bool)? = nil
+    ) {
         self.openConnection = openConnection
+        self.uninstallCryptex = uninstallCryptex
     }
 
-    /// Opens the image-mounter service and unmounts the personalized image.
+    /// Unmounts the image at `/System/Developer`.
+    ///
+    /// When nothing is mounted there, an installed Developer Disk Image
+    /// cryptex is still uninstalled. Otherwise the device's own error for an
+    /// empty mount path is surfaced.
     func unmount() async throws {
+        let mounted: MountedDiskImage?
+        do {
+            let connection = try await openConnection()
+            defer {
+                connection.close()
+            }
+            mounted = try await MobileImageMounterClient(
+                connection: connection
+            ).mountedDeveloperImage()
+        }
+        if mounted == nil || mounted?.isDeveloperDiskImageCryptex == true,
+            let uninstallCryptex,
+            try await uninstallCryptex()
+        {
+            return
+        }
+
         let connection = try await openConnection()
         defer {
             connection.close()

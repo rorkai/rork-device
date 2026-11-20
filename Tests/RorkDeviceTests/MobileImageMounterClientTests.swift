@@ -474,30 +474,119 @@ final class MobileImageMounterClientTests: XCTestCase {
     }
 
     func testUnmountSendsUnmountImageCommand() async throws {
+        let lookup = try copyDevicesConnection(
+            backingImagePath: Self.imageMounterBackingPath
+        )
         let connection = FakeConnection(
             inbound: try framedMessages([
                 ["Status": "Complete"],
             ])
         )
-        let connections = ImageMounterConnectionQueue([connection])
+        let connections = ImageMounterConnectionQueue([lookup, connection])
+        let cryptexUninstalls = CryptexUninstallRecorder(result: true)
         let unmounter = PersonalizedDeveloperDiskImageUnmounter(
             openConnection: {
                 try await connections.open()
+            },
+            uninstallCryptex: {
+                await cryptexUninstalls.uninstall()
             }
         )
 
         try await unmounter.unmount()
 
+        XCTAssertTrue(lookup.isClosed)
         XCTAssertTrue(connection.isClosed)
+        XCTAssertEqual(try command(in: lookup.sent[0])["Command"] as? String, "CopyDevices")
         let request = try command(in: connection.sent[0])
         XCTAssertEqual(request["Command"] as? String, "UnmountImage")
         XCTAssertEqual(
             request["MountPath"] as? String,
             "/System/Developer"
         )
+        let uninstallCount = await cryptexUninstalls.count
+        XCTAssertEqual(uninstallCount, 0)
+    }
+
+    func testUnmountUninstallsDeveloperDiskImageCryptex() async throws {
+        let lookup = try copyDevicesConnection(
+            backingImagePath: Self.cryptexBackingPath
+        )
+        let connections = ImageMounterConnectionQueue([lookup])
+        let cryptexUninstalls = CryptexUninstallRecorder(result: true)
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            },
+            uninstallCryptex: {
+                await cryptexUninstalls.uninstall()
+            }
+        )
+
+        try await unmounter.unmount()
+
+        XCTAssertTrue(lookup.isClosed)
+        XCTAssertEqual(lookup.sent.count, 1)
+        let uninstallCount = await cryptexUninstalls.count
+        XCTAssertEqual(uninstallCount, 1)
+    }
+
+    func testUnmountUninstallsCryptexInstalledWithoutMountedImage() async throws {
+        let lookup = FakeConnection(
+            inbound: try framedMessages([copyDevicesResponse()])
+        )
+        let connections = ImageMounterConnectionQueue([lookup])
+        let cryptexUninstalls = CryptexUninstallRecorder(result: true)
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            },
+            uninstallCryptex: {
+                await cryptexUninstalls.uninstall()
+            }
+        )
+
+        try await unmounter.unmount()
+
+        let uninstallCount = await cryptexUninstalls.count
+        XCTAssertEqual(uninstallCount, 1)
+    }
+
+    func testUnmountFallsBackToImageMounterWhenNoCryptexIsInstalled() async throws {
+        let lookup = try copyDevicesConnection(
+            backingImagePath: Self.cryptexBackingPath
+        )
+        let connection = FakeConnection(
+            inbound: try framedMessages([
+                ["Status": "Complete"],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([lookup, connection])
+        let cryptexUninstalls = CryptexUninstallRecorder(result: false)
+        let unmounter = PersonalizedDeveloperDiskImageUnmounter(
+            openConnection: {
+                try await connections.open()
+            },
+            uninstallCryptex: {
+                await cryptexUninstalls.uninstall()
+            }
+        )
+
+        try await unmounter.unmount()
+
+        let uninstallCount = await cryptexUninstalls.count
+        XCTAssertEqual(uninstallCount, 1)
+        XCTAssertEqual(
+            try command(in: connection.sent[0])["Command"] as? String,
+            "UnmountImage"
+        )
+        XCTAssertTrue(connection.isClosed)
     }
 
     func testUnmountSurfacesDeviceError() async throws {
+        let lookup = FakeConnection(
+            inbound: try framedMessages([copyDevicesResponse()])
+        )
         let connection = FakeConnection(
             inbound: try framedMessages([
                 [
@@ -506,7 +595,7 @@ final class MobileImageMounterClientTests: XCTestCase {
                 ],
             ])
         )
-        let connections = ImageMounterConnectionQueue([connection])
+        let connections = ImageMounterConnectionQueue([lookup, connection])
         let unmounter = PersonalizedDeveloperDiskImageUnmounter(
             openConnection: {
                 try await connections.open()
@@ -527,12 +616,15 @@ final class MobileImageMounterClientTests: XCTestCase {
     }
 
     func testUnmountRejectsResponseWithoutCompletion() async throws {
+        let lookup = try copyDevicesConnection(
+            backingImagePath: Self.imageMounterBackingPath
+        )
         let connection = FakeConnection(
             inbound: try framedMessages([
                 ["Status": "Busy"],
             ])
         )
-        let connections = ImageMounterConnectionQueue([connection])
+        let connections = ImageMounterConnectionQueue([lookup, connection])
         let unmounter = PersonalizedDeveloperDiskImageUnmounter(
             openConnection: {
                 try await connections.open()
@@ -550,6 +642,27 @@ final class MobileImageMounterClientTests: XCTestCase {
             )
         }
         XCTAssertTrue(connection.isClosed)
+    }
+
+    /// Backing image of Xcode's Developer Disk Image cryptex on an iPhone19,2
+    /// with iOS 27.2.1 (2026-11-20).
+    private static let cryptexBackingPath =
+        "/private/var/db/com.apple.security.cryptexd/codex.system/cryptex/com.apple.MobileAsset.DDI/gdmg"
+
+    private static let imageMounterBackingPath =
+        "/private/var/mobile/Library/MobileImageMounter/personalized.dmg"
+
+    private func copyDevicesConnection(
+        backingImagePath: String
+    ) throws -> FakeConnection {
+        FakeConnection(
+            inbound: try framedMessages([
+                copyDevicesResponse(
+                    mountPaths: ["/System/Developer"],
+                    backingImagePath: backingImagePath
+                ),
+            ])
+        )
     }
 
     func testListReturnsMountedImageSignatures() async throws {
@@ -646,12 +759,31 @@ private final class RecordingDeveloperDiskImageTicketRequester:
 }
 
 private func copyDevicesResponse(
-    mountPaths: [String] = []
+    mountPaths: [String] = [],
+    backingImagePath: String? = nil
 ) -> [String: Any] {
     [
-        "EntryList": mountPaths.map { ["MountPath": $0] },
+        "EntryList": mountPaths.map { mountPath -> [String: Any] in
+            var entry: [String: Any] = ["MountPath": mountPath]
+            entry["BackingImage"] = backingImagePath
+            return entry
+        },
         "Status": "Complete",
     ]
+}
+
+private actor CryptexUninstallRecorder {
+    private let result: Bool
+    private(set) var count = 0
+
+    init(result: Bool) {
+        self.result = result
+    }
+
+    func uninstall() -> Bool {
+        count += 1
+        return result
+    }
 }
 
 /// Identifiers an iPhone19,2 reported on 2026-11-20, absent from Xcode 27's

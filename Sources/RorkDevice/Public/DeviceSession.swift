@@ -323,20 +323,27 @@ public final class DeviceSession: @unchecked Sendable {
     /// Unmounts the personalized Developer Disk Image, if one is mounted.
     ///
     /// Developer services remain available only while an image is mounted, so
-    /// this is mainly for forcing a clean re-mount; the device also clears a
-    /// mounted image on reboot. The device reports its own error when nothing is
-    /// mounted, so call `mountedPersonalizedDeveloperDiskImages()` first for a
-    /// best-effort teardown.
+    /// this is mainly for forcing a clean re-mount. An image the image mounter
+    /// mounted is unmounted there. A Developer Disk Image that Xcode or this
+    /// library installed as a cryptex is uninstalled through cryptexd on a
+    /// CoreDevice tunnel. The device reports its own error when nothing is
+    /// mounted.
     ///
-    /// - Throws: A protocol or transport error when the image mounter cannot
-    ///   complete the request.
+    /// - Throws: A protocol or transport error when the image mounter or
+    ///   cryptexd cannot complete the request.
     public func unmountPersonalizedDeveloperDiskImage() async throws {
+        #if canImport(RorkDeviceLwIP)
+        let uninstallCryptex = uninstallCryptexDeveloperDiskImage
+        #else
+        let uninstallCryptex: (() async throws -> Bool)? = nil
+        #endif
         try await PersonalizedDeveloperDiskImageUnmounter(
             openConnection: {
                 try await self.startService(
                     named: Self.personalizedDeveloperDiskImageServiceName
                 )
-            }
+            },
+            uninstallCryptex: uninstallCryptex
         ).unmount()
     }
 
@@ -430,6 +437,21 @@ public final class DeviceSession: @unchecked Sendable {
                 },
                 ticketRequester: AppleTSSClient()
             ).mount(image)
+        }
+    }
+
+    /// Uninstalls the Developer Disk Image cryptex through cryptexd and
+    /// reports whether one was installed.
+    private func uninstallCryptexDeveloperDiskImage() async throws -> Bool {
+        try await withRemoteServiceDiscovery { remoteServices in
+            try await CryptexDeveloperDiskImageMounter(
+                openConnection: {
+                    try await remoteServices.backend.startRemoteService(
+                        named: CryptexDeveloperDiskImageMounter.serviceName
+                    )
+                },
+                ticketRequester: AppleTSSClient()
+            ).uninstallDeveloperDiskImage()
         }
     }
 

@@ -659,6 +659,12 @@ lists: the cryptex disk image and its `.cryptex_info`, `.root_hash`, and
 `.trustcache` files under `Firmware`. A refusal from cryptexd fails with the
 `cryptexd` failure code.
 
+`image unmount` removes the Developer Disk Image the way it was mounted. When
+`/System/Developer` is backed by the `com.apple.MobileAsset.DDI` cryptex, or
+nothing is mounted there but cryptexd still lists that cryptex, it uninstalls
+the cryptex through cryptexd on a CoreDevice tunnel. Otherwise it unmounts the
+image through the image mounter.
+
 Direct/tunnel Lockdown endpoints can be selected explicitly:
 
 ```bash
