@@ -265,21 +265,22 @@ final class RemoteXPCConnection: @unchecked Sendable {
                 flags: Self.endHeadersFlag,
                 streamIdentifier: transfer.stream
             )
-            try await sendFrame(
-                type: .data,
-                streamIdentifier: transfer.stream,
-                payload: RemoteXPCMessageCodec.encode(
+            try await sendWithinWindows(
+                RemoteXPCMessageCodec.encode(
                     value: nil,
                     flags: Self.alwaysSetFlag | Self.fileOpenFlag,
                     messageIdentifier: transfer.identifier
-                )
+                ),
+                on: transfer.stream
             )
         }
-        try await send(
-            request,
-            flags: Self.alwaysSetFlag | Self.dataFlag | additionalFlags,
-            messageIdentifier: requestIdentifier,
-            on: .control
+        try await sendWithinWindows(
+            RemoteXPCMessageCodec.encode(
+                value: request,
+                flags: Self.alwaysSetFlag | Self.dataFlag | additionalFlags,
+                messageIdentifier: requestIdentifier
+            ),
+            on: Stream.control.identifier
         )
 
         for (transfer, payload) in zip(transfers, payloads) {
@@ -295,6 +296,28 @@ final class RemoteXPCConnection: @unchecked Sendable {
             }
         }
         return .uploaded
+    }
+
+    /// Sends one DATA frame once the peer's windows hold all of it, reading
+    /// frames while it waits for WINDOW_UPDATE.
+    ///
+    /// Only a caller that owns the receive path may wait like this, so other
+    /// sends keep charging their frames after writing them.
+    private func sendWithinWindows(
+        _ payload: Data,
+        on streamIdentifier: UInt32
+    ) async throws {
+        while try !stateLock.withLock({
+            try flowControl.reserveWhole(payload.count, on: streamIdentifier)
+        }) {
+            try await process(receiveFrame())
+        }
+        try await sendFrame(
+            type: .data,
+            streamIdentifier: streamIdentifier,
+            payload: payload,
+            isFlowControlled: false
+        )
     }
 
     /// Reads frames until the peer accepts the transfer announced on a stream.

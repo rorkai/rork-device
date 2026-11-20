@@ -298,6 +298,77 @@ final class RemoteXPCFileTransferTests: XCTestCase {
         XCTAssertEqual(connection.sent.count, sentBeforeUpload)
     }
 
+    func testUploadReleasesStreamsBothEndsHaveClosed() async throws {
+        var settings = Data()
+        settings.appendBigEndian(UInt16(0x3))
+        settings.appendBigEndian(UInt32(3))
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(
+            remoteXPCTestFrame(type: 0x04, streamIdentifier: 0, payload: settings)
+        )
+        inbound.append(try fileOpenReply(identifier: 2, on: 5))
+        inbound.append(
+            remoteXPCTestFrame(type: 0x00, flags: 0x01, streamIdentifier: 5)
+        )
+        inbound.append(
+            remoteXPCTestFrame(
+                type: 0x00,
+                streamIdentifier: 3,
+                payload: try RemoteXPCMessageCodec.encode(
+                    value: .dictionary([:]),
+                    flags: 0x00020101,
+                    messageIdentifier: 1
+                )
+            )
+        )
+        inbound.append(try fileOpenReply(identifier: 4, on: 7))
+        let remoteXPC = try await RemoteXPCConnection.open(
+            over: FakeConnection(inbound: inbound)
+        )
+
+        let first = try await remoteXPC.send(
+            uploading: [.data(Data("a".utf8))]
+        ) { values in
+            .array(values)
+        }
+        _ = try await remoteXPC.receive(on: .reply)
+        let second = try await remoteXPC.send(
+            uploading: [.data(Data("b".utf8))]
+        ) { values in
+            .array(values)
+        }
+
+        XCTAssertEqual(first, .uploaded)
+        XCTAssertEqual(second, .uploaded)
+    }
+
+    func testFileOpenMessageWaitsForStreamWindowCredit() async throws {
+        var inbound = try remoteXPCSessionHandshakeInbound()
+        inbound.append(initialWindowSettings(10))
+        let connection = FakeConnection(inbound: inbound)
+        let remoteXPC = try await RemoteXPCConnection.open(over: connection)
+        // The SETTINGS frame is read while the first receive waits.
+        _ = try? await remoteXPC.receive(on: .reply)
+        let sentBeforeUpload = connection.sent.count
+
+        await XCTAssertThrowsErrorAsync({
+            try await remoteXPC.send(
+                uploading: [.data(Data("0".utf8))]
+            ) { values in
+                .array(values)
+            }
+        }) { error in
+            XCTAssertEqual(
+                error as? RorkDeviceError,
+                .transport("Fake connection underflow.")
+            )
+        }
+        let frames = try sentFrames(
+            Array(connection.sent.dropFirst(sentBeforeUpload))
+        )
+        XCTAssertEqual(frames.map { "\($0.type)/\($0.streamIdentifier)" }, ["1/5"])
+    }
+
     func testFileOpenMessageCountsAgainstItsStreamWindow() throws {
         var flowControl = RemoteXPCSendFlowControl(
             initialWindowSize: 100,

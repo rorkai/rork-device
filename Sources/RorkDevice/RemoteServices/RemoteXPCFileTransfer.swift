@@ -136,8 +136,9 @@ struct RemoteXPCSendFlowControl {
     /// Error codes of file-transfer streams the peer reset.
     private var resetStreams: [UInt32: UInt32] = [:]
 
-    /// File-transfer streams the peer ended with END_STREAM.
-    private var streamsEndedByPeer: Set<UInt32> = []
+    /// File-transfer streams the peer ended with END_STREAM, or reset after
+    /// their upload finished.
+    private var streamsClosedByPeer: Set<UInt32> = []
 
     /// Streams the peer lets the host have open at once, when it set a limit.
     private var maximumConcurrentStreams: Int?
@@ -168,14 +169,14 @@ struct RemoteXPCSendFlowControl {
 
     /// Throws when the peer would refuse more file-transfer streams.
     ///
-    /// The fixed RemoteXPC streams and every transfer stream opened on the
-    /// connection count as open, because the host never ends the fixed
-    /// streams and cannot tell when the peer closed a finished transfer.
+    /// The fixed RemoteXPC streams count as open because the host never ends
+    /// them. A transfer stream stops counting once both ends have closed it.
     func requireCapacity(forFileTransfers count: Int) throws {
         guard let maximumConcurrentStreams else {
             return
         }
-        let openStreams = 2 + streamWindows.count + finishedStreams.count
+        let openStreams = 2 + streamWindows.count
+            + finishedStreams.subtracting(streamsClosedByPeer).count
         guard openStreams + count <= maximumConcurrentStreams else {
             throw RorkDeviceError.protocolViolation(
                 "RemoteXPC peer allows \(maximumConcurrentStreams) concurrent streams, too few for \(count) file transfers beside \(openStreams) open streams."
@@ -204,12 +205,12 @@ struct RemoteXPCSendFlowControl {
 
     /// Records that the peer ended its side of a file-transfer stream.
     mutating func endedByPeer(_ identifier: UInt32) {
-        streamsEndedByPeer.insert(identifier)
+        streamsClosedByPeer.insert(identifier)
     }
 
     /// Whether the peer ended its side of a file-transfer stream.
     func isEndedByPeer(_ identifier: UInt32) -> Bool {
-        streamsEndedByPeer.contains(identifier)
+        streamsClosedByPeer.contains(identifier)
     }
 
     /// Reserves up to `count` bytes of both windows for one DATA frame.
@@ -237,6 +238,26 @@ struct RemoteXPCSendFlowControl {
         return Int(allowance)
     }
 
+    /// Reserves `count` bytes of both windows at once for a message that
+    /// cannot be split, such as a file-open message or a request.
+    ///
+    /// Streams without a tracked window, such as the fixed RemoteXPC
+    /// streams, are limited by the connection window alone.
+    ///
+    /// - Returns: `false` when the caller must wait for a WINDOW_UPDATE.
+    mutating func reserveWhole(_ count: Int, on identifier: UInt32) throws -> Bool {
+        try requireOpen(identifier)
+        let streamWindow = streamWindows[identifier]
+        guard Int64(count) <= min(streamWindow ?? .max, connectionWindow) else {
+            return false
+        }
+        if let streamWindow {
+            streamWindows[identifier] = streamWindow - Int64(count)
+        }
+        connectionWindow -= Int64(count)
+        return true
+    }
+
     /// Charges DATA sent outside an upload reservation, such as a transfer's
     /// file-open message, against the connection window and the window of
     /// the stream it travels on.
@@ -260,6 +281,8 @@ struct RemoteXPCSendFlowControl {
         }
         if streamWindows[identifier] != nil {
             resetStreams[identifier] = errorCode
+        } else {
+            streamsClosedByPeer.insert(identifier)
         }
         return true
     }
