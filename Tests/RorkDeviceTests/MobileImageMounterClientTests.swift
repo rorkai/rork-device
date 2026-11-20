@@ -212,7 +212,7 @@ final class MobileImageMounterClientTests: XCTestCase {
         XCTAssertFalse(result.requiresTunnelRestart)
     }
 
-    func testMountSurfacesPersonalizationManifestDeviceError()
+    func testMountRequestsTicketWhenManifestQueryReturnsAnError()
         async throws
     {
         let fixture = try makeImageFixture(
@@ -221,7 +221,7 @@ final class MobileImageMounterClientTests: XCTestCase {
             securityDomain: "0x01"
         )
         defer { fixture.remove() }
-        let connection = FakeConnection(
+        let initialConnection = FakeConnection(
             inbound: try framedMessages([
                 [
                     "ImagePresent": false,
@@ -229,12 +229,26 @@ final class MobileImageMounterClientTests: XCTestCase {
                 ],
                 personalizationIdentifiersResponse(),
                 [
-                    "Error": "PersonalizationFailed",
-                    "DetailedError": "device rejected manifest query",
+                    "Error": "InternalError",
+                    "DetailedError": "Failed to find a cached manifest (im4m)",
                 ],
             ])
         )
-        let connections = ImageMounterConnectionQueue([connection])
+        let replacementConnection = FakeConnection(
+            inbound: try framedMessages([
+                [
+                    "PersonalizationNonce": Data([0x10, 0x20]),
+                    "Status": "Complete",
+                ],
+                ["Status": "ReceiveBytesAck"],
+                ["Status": "Complete"],
+                ["Status": "Complete"],
+            ])
+        )
+        let connections = ImageMounterConnectionQueue([
+            initialConnection,
+            replacementConnection,
+        ])
         let requester = RecordingDeveloperDiskImageTicketRequester(
             ticket: Data([0xCC])
         )
@@ -245,23 +259,17 @@ final class MobileImageMounterClientTests: XCTestCase {
             ticketRequester: requester
         )
 
-        await XCTAssertThrowsErrorAsync({
-            try await mounter.mount(
-                PersonalizedDeveloperDiskImage(
-                    contentsOf: fixture.restoreDirectory
-                ),
-                ecid: 123
-            )
-        }) { error in
-            XCTAssertEqual(
-                error as? RorkDeviceError,
-                .lockdown(
-                    "QueryPersonalizationManifest failed: PersonalizationFailed: device rejected manifest query"
-                )
-            )
-        }
-        XCTAssertEqual(requester.requestCount, 0)
-        XCTAssertTrue(connection.isClosed)
+        let result = try await mounter.mount(
+            PersonalizedDeveloperDiskImage(
+                contentsOf: fixture.restoreDirectory
+            ),
+            ecid: 123
+        )
+
+        XCTAssertEqual(result, .mounted(ticketSource: .appleTSS))
+        XCTAssertEqual(requester.requestCount, 1)
+        XCTAssertTrue(initialConnection.isClosed)
+        XCTAssertTrue(replacementConnection.isClosed)
     }
 
     func testMountDoesNotTreatTransportFailureAsMissingManifest()

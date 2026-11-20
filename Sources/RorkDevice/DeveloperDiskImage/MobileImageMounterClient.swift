@@ -1,10 +1,11 @@
 import Foundation
 
-/// Signals the service-close response used when no cached manifest is present.
+/// Signals that the device has no cached manifest for the image.
 ///
 /// This sentinel is deliberately narrower than a generic transport error.
-/// Callers may request a new ticket only when the device closes this specific
-/// query, not when communication fails for another reason.
+/// Callers may request a new ticket only when the device answers this specific
+/// query with an error or closes it, not when communication fails for another
+/// reason.
 private struct PersonalizationManifestUnavailable: Error {}
 
 /// Protocol client for iOS 17+ personalized image-mounter commands.
@@ -63,8 +64,9 @@ private struct MobileImageMounterClient {
 
     /// Returns a cached personalization manifest for the image digest.
     ///
-    /// The device closes this service when it has no reusable manifest. Other
-    /// transport failures and explicit device errors remain actionable errors.
+    /// The device reports a missing manifest by closing this service or by
+    /// answering with an error. Other transport failures remain actionable
+    /// errors.
     func personalizationManifest(for imageDigest: Data) async throws -> Data {
         try await send([
             "Command": "QueryPersonalizationManifest",
@@ -75,13 +77,18 @@ private struct MobileImageMounterClient {
 
         let response: [String: Any]
         do {
-            response = try await receive(
-                command: "QueryPersonalizationManifest"
+            response = try await PropertyListMessageFramer.receive(
+                from: connection
             )
         } catch {
             guard isPeerClosedConnectionError(error) else {
                 throw error
             }
+            throw PersonalizationManifestUnavailable()
+        }
+        // iOS 27.0.1 answers a cache miss with an InternalError naming the
+        // missing im4m instead of closing the service (2026-11-20, iPhone18,1).
+        if response.string("Error") != nil {
             throw PersonalizationManifestUnavailable()
         }
         guard let signature = response["ImageSignature"] as? Data,
