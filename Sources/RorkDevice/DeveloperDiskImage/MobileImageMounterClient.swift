@@ -1,11 +1,30 @@
 import Foundation
 
-/// Signals the service-close response used when no cached manifest is present.
+/// Signals that the device has no cached manifest for the image.
 ///
 /// This sentinel is deliberately narrower than a generic transport error.
-/// Callers may request a new ticket only when the device closes this specific
-/// query, not when communication fails for another reason.
+/// Callers may request a new ticket only when the device answers this specific
+/// query with an error or closes it, not when communication fails for another
+/// reason.
 private struct PersonalizationManifestUnavailable: Error {}
+
+/// A disk image `CopyDevices` lists as mounted.
+private struct MountedDiskImage {
+    /// File the device mounted the image from, when the entry names one.
+    let backingImage: String?
+
+    /// Whether cryptexd installed the image, so only cryptexd can remove it.
+    ///
+    /// A Developer Disk Image that cryptexd installed is backed by
+    /// `/private/var/db/com.apple.security.cryptexd/codex.system/cryptex/com.apple.MobileAsset.DDI/gdmg`,
+    /// and `UnmountImage` refuses it with "Failed to unload launchd jobs"
+    /// (2026-11-20, iPhone19,2, iOS 27.2.1).
+    var isCryptex: Bool {
+        backingImage?.hasPrefix(
+            "/private/var/db/com.apple.security.cryptexd/"
+        ) == true
+    }
+}
 
 /// Protocol client for iOS 17+ personalized image-mounter commands.
 private struct MobileImageMounterClient {
@@ -23,9 +42,35 @@ private struct MobileImageMounterClient {
         self.connection = connection
     }
 
-    /// Reports whether any personalized Developer Disk Image is mounted.
-    func isPersonalizedImageMounted() async throws -> Bool {
-        try await lookUpPersonalizedImages().isPresent
+    /// Reports whether a Developer Disk Image is mounted at its mount path.
+    ///
+    /// `LookupImage` misses an image that Xcode installed through cryptexd.
+    /// On an iPhone19,2 with iOS 27.2.1 it returned no signatures while
+    /// `CopyDevices` listed the cryptex-backed image at `/System/Developer`,
+    /// and on an iPhone18,1 with iOS 27 `MountImage` then failed because an
+    /// image was already mounted there (2026-11-20). Both queries are
+    /// consulted so either kind of mount counts.
+    func isDeveloperImageMounted() async throws -> Bool {
+        if try await lookUpPersonalizedImages().isPresent {
+            return true
+        }
+        return try await mountedDeveloperImage() != nil
+    }
+
+    /// Returns the disk image `CopyDevices` lists at the Developer Disk Image
+    /// mount path, or `nil` when nothing is mounted there.
+    func mountedDeveloperImage() async throws -> MountedDiskImage? {
+        try await send(["Command": "CopyDevices"])
+        let response = try await receive(command: "CopyDevices")
+        guard let entries = response["EntryList"] as? [[String: Any]] else {
+            throw RorkDeviceError.protocolViolation(
+                "CopyDevices response did not contain EntryList."
+            )
+        }
+        return entries.lazy
+            .filter { $0["MountPath"] as? String == Self.personalizedMountPath }
+            .map { MountedDiskImage(backingImage: $0["BackingImage"] as? String) }
+            .first
     }
 
     /// Reads the hardware values needed to select a matching build identity.
@@ -63,8 +108,9 @@ private struct MobileImageMounterClient {
 
     /// Returns a cached personalization manifest for the image digest.
     ///
-    /// The device closes this service when it has no reusable manifest. Other
-    /// transport failures and explicit device errors remain actionable errors.
+    /// The device reports a missing manifest by closing this service or by
+    /// answering with an error. Other transport failures remain actionable
+    /// errors.
     func personalizationManifest(for imageDigest: Data) async throws -> Data {
         try await send([
             "Command": "QueryPersonalizationManifest",
@@ -75,14 +121,24 @@ private struct MobileImageMounterClient {
 
         let response: [String: Any]
         do {
-            response = try await receive(
-                command: "QueryPersonalizationManifest"
+            response = try await PropertyListMessageFramer.receive(
+                from: connection
             )
         } catch {
             guard isPeerClosedConnectionError(error) else {
                 throw error
             }
             throw PersonalizationManifestUnavailable()
+        }
+        // iOS 27.0.1 answers a cache miss with an InternalError naming the
+        // missing im4m instead of closing the service (2026-11-20, iPhone18,1).
+        if response.string("Error") != nil {
+            throw PersonalizationManifestUnavailable()
+        }
+        if let detail = response.string("DetailedError") {
+            throw RorkDeviceError.lockdown(
+                "QueryPersonalizationManifest failed: \(detail)"
+            )
         }
         guard let signature = response["ImageSignature"] as? Data,
             !signature.isEmpty
@@ -201,7 +257,7 @@ private struct MobileImageMounterClient {
     ///
     /// The device surfaces its own error when nothing is mounted at the path, so
     /// callers that only want a best-effort teardown should check
-    /// `isPersonalizedImageMounted()` first.
+    /// `isDeveloperImageMounted()` first.
     func unmount() async throws {
         try await send([
             "Command": "UnmountImage",
@@ -333,19 +389,32 @@ struct PersonalizedDeveloperDiskImageMounter {
     /// Requests an Apple ticket when the device has no reusable manifest.
     private let ticketRequester: any DeveloperDiskImageTicketRequesting
 
+    /// Installs the image's Cryptex1 identity, used when the manifest lists
+    /// no personalized identity for the device.
+    private let mountCryptex:
+        ((PersonalizedDeveloperDiskImage) async throws
+            -> DeveloperDiskImageMountResult)?
+
     /// Creates a mounter with replaceable connection and ticket boundaries.
     init(
         openConnection: @escaping () async throws -> DeviceConnection,
-        ticketRequester: any DeveloperDiskImageTicketRequesting
+        ticketRequester: any DeveloperDiskImageTicketRequesting,
+        mountCryptex: (
+            (PersonalizedDeveloperDiskImage) async throws
+                -> DeveloperDiskImageMountResult
+        )? = nil
     ) {
         self.openConnection = openConnection
         self.ticketRequester = ticketRequester
+        self.mountCryptex = mountCryptex
     }
 
     /// Reuses a cached ticket when possible, otherwise requests one from TSS.
     ///
     /// A manifest cache miss closes the initial service, so the nonce and
-    /// upload sequence must continue on a freshly opened connection.
+    /// upload sequence must continue on a freshly opened connection. A device
+    /// the manifest lists no personalized identity for gets the Cryptex1
+    /// identity instead, when the manifest has one.
     func mount(
         _ image: PersonalizedDeveloperDiskImage,
         ecid: UInt64
@@ -359,11 +428,19 @@ struct PersonalizedDeveloperDiskImageMounter {
         var client = MobileImageMounterClient(
             connection: initialConnection
         )
-        if try await client.isPersonalizedImageMounted() {
+        if try await client.isDeveloperImageMounted() {
             return .alreadyMounted
         }
 
         let identifiers = try await client.personalizationIdentifiers()
+        if !image.hasPersonalizedIdentity(matching: identifiers),
+            image.hasCryptexIdentity,
+            let mountCryptex
+        {
+            connection?.close()
+            connection = nil
+            return try await mountCryptex(image)
+        }
         let payload = try image.payload(matching: identifiers)
         let ticket: Data
         let ticketSource: DeveloperDiskImageMountResult.TicketSource
@@ -416,25 +493,56 @@ struct PersonalizedDeveloperDiskImageMounter {
     }
 }
 
-/// Unmounts the personalized Developer Disk Image over one mounter connection.
+/// Unmounts the personalized Developer Disk Image, through cryptexd when
+/// cryptexd installed it.
 struct PersonalizedDeveloperDiskImageUnmounter {
     /// Opens a fresh image-mounter service connection.
     private let openConnection: () async throws -> DeviceConnection
 
-    /// Creates an unmounter with a replaceable connection boundary.
-    init(openConnection: @escaping () async throws -> DeviceConnection) {
+    /// Uninstalls the Developer Disk Image cryptex and reports whether
+    /// cryptexd had one installed.
+    private let uninstallCryptex: (() async throws -> Bool)?
+
+    /// Creates an unmounter with replaceable connection and cryptexd
+    /// boundaries.
+    init(
+        openConnection: @escaping () async throws -> DeviceConnection,
+        uninstallCryptex: (() async throws -> Bool)? = nil
+    ) {
         self.openConnection = openConnection
+        self.uninstallCryptex = uninstallCryptex
     }
 
-    /// Opens the image-mounter service and unmounts the personalized image.
+    /// Removes the image at the Developer Disk Image mount path.
+    ///
+    /// cryptexd is asked when the mounted image is its cryptex and when
+    /// nothing is mounted, since a cryptex it still lists would block the
+    /// next install. Any other image, or no cryptex at all, goes through
+    /// `UnmountImage`, which reports the device's own error when nothing is
+    /// mounted.
     func unmount() async throws {
+        let mounted = try await withClient {
+            try await $0.mountedDeveloperImage()
+        }
+        if mounted?.isCryptex ?? true,
+            let uninstallCryptex,
+            try await uninstallCryptex()
+        {
+            return
+        }
+        try await withClient { try await $0.unmount() }
+    }
+
+    /// Runs one exchange on its own image-mounter connection, so none stays
+    /// open while cryptexd works.
+    private func withClient<Result>(
+        _ body: (MobileImageMounterClient) async throws -> Result
+    ) async throws -> Result {
         let connection = try await openConnection()
         defer {
             connection.close()
         }
-        try await MobileImageMounterClient(
-            connection: connection
-        ).unmount()
+        return try await body(MobileImageMounterClient(connection: connection))
     }
 }
 

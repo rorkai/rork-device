@@ -56,6 +56,13 @@ Brotli 1.2.0 from the same pinned SDK. Their legal texts are reproduced in
 License. The complete license text is reproduced in
 [BigInt-LICENSE.md](ThirdPartyLicenses/BigInt-LICENSE.md).
 
+### go-ios
+
+The cryptexd client that installs Cryptex Developer Disk Images is adapted from
+[go-ios](https://github.com/danielpaulus/go-ios), which is distributed under
+the MIT License. The complete license text is reproduced in
+[go-ios-LICENSE.txt](ThirdPartyLicenses/go-ios-LICENSE.txt).
+
 ### BoringSSL
 
 SwiftNIO SSL statically incorporates

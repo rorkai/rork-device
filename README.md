@@ -648,6 +648,21 @@ rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --recon
 rorkdevice tunnel start --udid DEVICE-UDID --identity selfIdentity.plist --reconnect --exit-when-stdin-closes
 ```
 
+`image mount` and `image auto` need only a Lockdown route, such as `--udid`.
+When the image's `BuildManifest.plist` has no personalized identity for the
+device, as for an iPhone released after the image, they install the image's
+Cryptex1 identity through cryptexd instead. That needs a Cryptex1 identity
+whose chip, type, and product class match the ones cryptexd reports for the
+device. Without one, the command fails with an error naming the board or
+Cryptex1 values the image does not support, and installs nothing. cryptexd is
+reachable only through Remote Service Discovery, so the command opens a
+CoreDevice tunnel for the install and closes it afterwards, alongside any
+tunnel already running for the device. The Restore directory must then contain
+each Cryptex1 file at the path its manifest entry names, relative to the
+Restore directory. Those files are the cryptex disk image and its
+`.cryptex_info`, `.root_hash`, and `.trustcache` files. A refusal from cryptexd
+fails with the `cryptexd` failure code.
+
 Direct/tunnel Lockdown endpoints can be selected explicitly:
 
 ```bash
